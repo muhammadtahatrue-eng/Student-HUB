@@ -1,0 +1,6 @@
+{
+  "name": "StudyVault - Student Study-Material Platform",
+  "description": "Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
