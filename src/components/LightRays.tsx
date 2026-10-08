@@ -207,16 +207,17 @@ export function LightRays({
     }
 
     const initializeWebGL = async () => {
-      if (!containerRef.current) return;
-      await new Promise(resolve => setTimeout(resolve, 10));
-      if (!containerRef.current) return;
+      try {
+        if (!containerRef.current) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        if (!containerRef.current) return;
 
-      const renderer = new Renderer({
-        dpr: Math.min(window.devicePixelRatio, 2),
-        alpha: true
-      });
-      rendererRef.current = renderer;
-      const gl = renderer.gl;
+        const renderer = new Renderer({
+          dpr: Math.min(window.devicePixelRatio, 2),
+          alpha: true
+        });
+        rendererRef.current = renderer;
+        const gl = renderer.gl;
 
       gl.canvas.style.width = '100%';
       gl.canvas.style.height = '100%';
@@ -450,9 +451,12 @@ export function LightRays({
           renderer.gl.canvas.parentNode.removeChild(renderer.gl.canvas);
         }
       };
-    };
+    } catch (err) {
+      console.warn('LightRays: WebGL unavailable or disabled, falling back to CSS background:', err);
+    }
+  };
 
-    initializeWebGL();
+  initializeWebGL();
     return () => cleanupFunctionRef.current?.();
   }, [isVisible]);
 

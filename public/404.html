@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudyVault - Redirecting...</title>
+    <script>
+      // Single Page Application redirect for GitHub Pages
+      // When a user lands on a deep link or 404 on GitHub Pages, redirect to root index.html
+      var pathSegmentsToKeep = 1;
+      var l = window.location;
+      var path = l.pathname.slice(1).split('/');
+      var repo = path.length > 0 ? path[0] : '';
+      
+      // If deployed at username.github.io/repo-name/
+      if (l.hostname.endsWith('github.io') && repo) {
+        l.replace(
+          l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+          '/' + repo + '/?' +
+          (l.search ? '&' + l.search.slice(1) : '') +
+          l.hash
+        );
+      } else {
+        l.replace(
+          l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+          '/?' + (l.search ? '&' + l.search.slice(1) : '') +
+          l.hash
+        );
+      }
+    </script>
+  </head>
+  <body style="background-color: #05070a; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+    <div style="text-align: center;">
+      <h2 style="font-size: 1.25rem; font-weight: 600; color: #00f0ff; margin-bottom: 0.5rem;">StudyVault</h2>
+      <p style="color: #94a3b8; font-size: 0.875rem;">Loading application...</p>
+    </div>
+  </body>
+</html>
