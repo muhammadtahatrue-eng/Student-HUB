@@ -330,6 +330,20 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
     triggerToast(`"${newNote.title}" published to library!`);
   };
 
+  const handleSignOut = async () => {
+    try {
+      const supabase = getSupabaseInstance(supabaseConfig);
+      if (supabase && supabaseConfig.isConnected) {
+        await supabase.auth.signOut();
+      }
+    } catch {
+      // Ignore network errors on logout
+    }
+    localStorage.removeItem('studyvault_active_user');
+    setUser(null);
+    triggerToast('Signed out of student session');
+  };
+
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col font-outfit relative overflow-x-hidden selection:bg-white selection:text-black">
       {/* WebGL Light Rays Atmospheric Background Effect - Intense Holographic Atmosphere */}
@@ -366,6 +380,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
           setIsAuthModalOpen(true);
         }}
         onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+        onSignOut={handleSignOut}
       />
 
       {/* Primary View Routing */}

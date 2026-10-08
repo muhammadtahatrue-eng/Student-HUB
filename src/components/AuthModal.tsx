@@ -867,12 +867,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                           <div>
                             <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                              Semester
+                              Academic Year / Term
                             </label>
                             <div className="grid grid-cols-2 gap-1.5">
                               {[
-                                { id: 'semester_1', label: 'Semester 1' },
-                                { id: 'semester_2', label: 'Semester 2' }
+                                { id: 'semester_1', label: 'First Year' },
+                                { id: 'semester_2', label: 'Second Year' }
                               ].map((sem) => (
                                 <button
                                   key={sem.id}

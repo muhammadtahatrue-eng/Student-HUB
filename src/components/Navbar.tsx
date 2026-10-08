@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   GraduationCap,
   Home,
   BookOpen,
   PlusCircle,
-  User as UserIcon
+  User as UserIcon,
+  Settings,
+  LogOut
 } from 'lucide-react';
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
@@ -16,6 +18,7 @@ interface NavbarProps {
   user: StudentUser | null;
   onOpenAuthModal: (mode?: 'signin' | 'signup') => void;
   onOpenCodeDrawer?: () => void;
+  onSignOut?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -23,7 +26,46 @@ export const Navbar: React.FC<NavbarProps> = ({
   setCurrentTab,
   user,
   onOpenAuthModal,
+  onSignOut,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const profileContainerRef = useRef<HTMLDivElement>(null);
+
+  // Close floating account menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        profileContainerRef.current &&
+        !profileContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    if (isMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isMenuOpen]);
+
+  // Close menu on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isMenuOpen) {
+        setIsMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMenuOpen]);
+
+  const displayHandle = user?.username
+    ? `@${user.username}`
+    : user?.name || 'student';
+
   return (
     <>
       {/* Top Floating Glass Navigation Header (Desktop & Mobile) */}
@@ -76,26 +118,100 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Right Side: Account Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {user ? (
-              <button
-                onClick={() => onOpenAuthModal('signin')}
-                className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-medium text-white/90 hover:text-white transition-all cursor-pointer px-2.5 sm:px-3.5 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/15 group"
-                title="View student profile & settings"
-              >
-                {user.avatarUrl ? (
-                  <img
-                    src={user.avatarUrl}
-                    alt={user.name}
-                    className="w-5 h-5 rounded-full object-cover border border-[#00f0ff] group-hover:scale-105 transition-transform shrink-0"
-                  />
-                ) : (
-                  <div className="w-5 h-5 rounded-full bg-[#00f0ff] text-black font-bold flex items-center justify-center text-[10px] shrink-0">
-                    {user.name.charAt(0).toUpperCase()}
+              <div ref={profileContainerRef} className="relative">
+                {/* Compact 3D Flip Profile Button */}
+                <div
+                  className="[perspective:1000px] cursor-pointer"
+                  onMouseEnter={() => setIsHovered(true)}
+                  onMouseLeave={() => setIsHovered(false)}
+                  onClick={() => setIsMenuOpen((prev) => !prev)}
+                  role="button"
+                  tabIndex={0}
+                  aria-haspopup="menu"
+                  aria-expanded={isMenuOpen}
+                  aria-label={`User profile for ${displayHandle}. Click to open account menu.`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setIsMenuOpen((prev) => !prev);
+                    }
+                  }}
+                >
+                  <div
+                    className={`relative h-9 rounded-full transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] [transform-style:preserve-3d] select-none ${
+                      isHovered
+                        ? '[transform:rotateY(-180deg)] shadow-[0_0_18px_rgba(0,240,255,0.4)] border border-cyan-400/60 ring-1 ring-cyan-400/40'
+                        : 'border border-white/20 hover:border-white/40 shadow-[0_2px_10px_rgba(0,0,0,0.5)]'
+                    }`}
+                    style={{
+                      width: isHovered
+                        ? `${Math.max(105, Math.min(160, displayHandle.length * 8.5 + 32))}px`
+                        : '36px',
+                    }}
+                  >
+                    {/* Front Face: Compact Circular Avatar */}
+                    <div className="absolute inset-0 rounded-full overflow-hidden [backface-visibility:hidden] flex items-center justify-center bg-black/60">
+                      {user.avatarUrl ? (
+                        <img
+                          src={user.avatarUrl}
+                          alt={user.name}
+                          className="w-full h-full object-cover rounded-full"
+                        />
+                      ) : (
+                        <div className="w-full h-full rounded-full bg-gradient-to-tr from-cyan-500/20 to-blue-500/20 text-cyan-300 font-bold flex items-center justify-center text-xs">
+                          {user.name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Back Face: Revealed Username (Rotated -180deg to read cleanly after vertical 3D flip) */}
+                    <div className="absolute inset-0 rounded-full px-2.5 [transform:rotateY(-180deg)] [backface-visibility:hidden] flex items-center justify-center bg-[#0d1017] border border-cyan-400/50 text-cyan-300 text-xs font-mono font-medium truncate">
+                      <span className="truncate max-w-[125px] tracking-tight">
+                        {displayHandle}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Floating Account Menu (Settings & Logout) */}
+                {isMenuOpen && (
+                  <div
+                    className="absolute right-0 top-full mt-2.5 w-44 rounded-2xl bg-[#0c0e14]/95 border border-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.9)] backdrop-blur-2xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200"
+                    role="menu"
+                    aria-label="Account options"
+                  >
+                    {/* Option 1: Settings */}
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenAuthModal('signin');
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer text-left group"
+                      role="menuitem"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-white/60 group-hover:text-cyan-400 transition-colors" />
+                      <span className="font-medium">Settings</span>
+                    </button>
+
+                    {/* Option 2: Logout */}
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        if (onSignOut) {
+                          onSignOut();
+                        } else {
+                          onOpenAuthModal('signin');
+                        }
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-300/85 hover:text-rose-200 hover:bg-rose-500/10 rounded-xl transition-all cursor-pointer text-left group"
+                      role="menuitem"
+                    >
+                      <LogOut className="w-3.5 h-3.5 text-rose-400/80 group-hover:text-rose-400 transition-colors" />
+                      <span className="font-medium">Logout</span>
+                    </button>
                   </div>
                 )}
-                <span className="truncate max-w-[85px] sm:max-w-[130px] font-medium text-[11px] sm:text-xs">
-                  {user.username ? `@${user.username}` : user.name}
-                </span>
-              </button>
+              </div>
             ) : (
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
@@ -160,14 +276,14 @@ export const Navbar: React.FC<NavbarProps> = ({
         <button
           onClick={() => onOpenAuthModal(user ? 'signin' : 'signup')}
           className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            user ? 'text-emerald-400 font-semibold' : 'text-white/60 hover:text-white'
+            user ? 'text-cyan-300 font-semibold' : 'text-white/60 hover:text-white'
           }`}
         >
           {user?.avatarUrl ? (
             <img
               src={user.avatarUrl}
               alt={user.name}
-              className="w-4 h-4 rounded-full object-cover mb-0.5 border border-emerald-400 shrink-0"
+              className="w-4 h-4 rounded-full object-cover mb-0.5 border border-cyan-400 shrink-0"
             />
           ) : (
             <UserIcon className="w-4 h-4 mb-0.5" />
