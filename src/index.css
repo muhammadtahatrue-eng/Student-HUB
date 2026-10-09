@@ -52,12 +52,22 @@
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-/* Hide scrollbar for clean horizontal mobile scrollers */
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
+/* Hide scrollbars cleanly across all browsers */
+.no-scrollbar::-webkit-scrollbar,
+::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
+
 .no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
 }
+
+html, body, * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
 

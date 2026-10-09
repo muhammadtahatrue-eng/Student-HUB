@@ -6,17 +6,18 @@ import {
   PlusCircle,
   User as UserIcon,
   Settings,
-  LogOut
+  LogOut,
+  Compass
 } from 'lucide-react';
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
 interface NavbarProps {
-  currentTab: 'landing' | 'browse' | 'upload';
-  setCurrentTab: (tab: 'landing' | 'browse' | 'upload') => void;
+  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university';
+  setCurrentTab: (tab: 'landing' | 'browse' | 'upload' | 'explore' | 'university') => void;
   supabaseConfig?: SupabaseConfig;
   onOpenSupabaseModal?: () => void;
   user: StudentUser | null;
-  onOpenAuthModal: (mode?: 'signin' | 'signup') => void;
+  onOpenAuthModal: (mode?: 'signin' | 'signup' | 'settings' | 'profile') => void;
   onOpenCodeDrawer?: () => void;
   onSignOut?: () => void;
 }
@@ -66,6 +67,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     ? `@${user.username}`
     : user?.name || 'student';
 
+  const isExpanded = isHovered || isMenuOpen;
+
   return (
     <>
       {/* Top Floating Glass Navigation Header (Desktop & Mobile) */}
@@ -105,6 +108,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                 Study Library
               </button>
               <button
+                onClick={() => setCurrentTab('explore')}
+                className={`hover:text-white transition-colors cursor-pointer ${
+                  currentTab === 'explore' ? 'text-white font-semibold' : ''
+                }`}
+              >
+                Explore
+              </button>
+              <button
+                onClick={() => setCurrentTab('university')}
+                className={`hover:text-white transition-colors cursor-pointer ${
+                  currentTab === 'university' ? 'text-white font-semibold' : ''
+                }`}
+              >
+                My University
+              </button>
+              <button
                 onClick={() => setCurrentTab('upload')}
                 className={`hover:text-white transition-colors cursor-pointer ${
                   currentTab === 'upload' ? 'text-white font-semibold' : ''
@@ -139,12 +158,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                 >
                   <div
                     className={`relative h-9 rounded-full transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] [transform-style:preserve-3d] select-none ${
-                      isHovered
+                      isExpanded
                         ? '[transform:rotateY(-180deg)] shadow-[0_0_18px_rgba(0,240,255,0.4)] border border-cyan-400/60 ring-1 ring-cyan-400/40'
                         : 'border border-white/20 hover:border-white/40 shadow-[0_2px_10px_rgba(0,0,0,0.5)]'
                     }`}
                     style={{
-                      width: isHovered
+                      width: isExpanded
                         ? `${Math.max(105, Math.min(160, displayHandle.length * 8.5 + 32))}px`
                         : '36px',
                     }}
@@ -184,7 +203,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <button
                       onClick={() => {
                         setIsMenuOpen(false);
-                        onOpenAuthModal('signin');
+                        onOpenAuthModal('settings');
                       }}
                       className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer text-left group"
                       role="menuitem"
@@ -259,6 +278,30 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <BookOpen className="w-4 h-4 mb-0.5" />
           <span className="text-[10px] tracking-tight">Library</span>
+        </button>
+
+        <button
+          onClick={() => setCurrentTab('explore')}
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
+            currentTab === 'explore'
+              ? 'text-[#00f0ff] font-bold bg-white/10'
+              : 'text-white/60 hover:text-white'
+          }`}
+        >
+          <Compass className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] tracking-tight">Explore</span>
+        </button>
+
+        <button
+          onClick={() => setCurrentTab('university')}
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
+            currentTab === 'university'
+              ? 'text-[#00f0ff] font-bold bg-white/10'
+              : 'text-white/60 hover:text-white'
+          }`}
+        >
+          <GraduationCap className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] tracking-tight">Campus</span>
         </button>
 
         <button

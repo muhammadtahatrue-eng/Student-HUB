@@ -33,8 +33,17 @@ import { CodeExportModal } from './components/CodeExportModal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { DemoModal } from './components/DemoModal.tsx';
 import { Footer } from './components/Footer.tsx';
+import { VerticalTaskbar } from './components/VerticalTaskbar.tsx';
+import { ExploreUniversitiesView } from './components/university/ExploreUniversitiesView.tsx';
+import { UniversityDirectoryView, UniversityTabKey } from './components/university/UniversityDirectoryView.tsx';
+import { UniversitySetupModal } from './components/university/UniversitySetupModal.tsx';
+import { findUniversityByNameOrFuzzy } from './lib/universityStore.ts';
+
+const ASH_GREY_COLOR = '#9ca3af'; // Ash Grey default
+const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
 
 const HOLOGRAPHIC_NEON_COLORS = [
+  '#9ca3af', // Ash Grey (Default)
   '#00f0ff', // Cyber Cyan
   '#ff007f', // Neon Magenta
   '#10b981', // Aurora Emerald
@@ -48,8 +57,25 @@ const HOLOGRAPHIC_NEON_COLORS = [
 ];
 
 export default function App() {
-  // Navigation: 'landing' (showcase), 'browse' (library), 'upload' (share)
-  const [currentTab, setCurrentTab] = useState<'landing' | 'browse' | 'upload'>('landing');
+  // Navigation: 'landing' (showcase), 'browse' (library), 'upload' (share), 'explore' (universities), 'university' (campus directory)
+  const [currentTab, setCurrentTab] = useState<'landing' | 'browse' | 'upload' | 'explore' | 'university'>('landing');
+
+  // Active university directory state
+  const [selectedUniversityId, setSelectedUniversityId] = useState<string>(() => {
+    try {
+      const savedUser = localStorage.getItem('studyvault_active_user');
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed.universityId) return parsed.universityId;
+        const matched = findUniversityByNameOrFuzzy(parsed.university);
+        if (matched) return matched.id;
+      }
+    } catch {}
+    return 'nust';
+  });
+  const [universitySubTab, setUniversitySubTab] = useState<UniversityTabKey>('overview');
+  const [isUniversitySetupOpen, setIsUniversitySetupOpen] = useState(false);
+  const [uploadPrefill, setUploadPrefill] = useState<{ university?: string; courseCode?: string }>({});
 
   // Supabase & Auth state - anyone can view without registration by default
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(getSavedSupabaseConfig());
@@ -61,7 +87,7 @@ export default function App() {
       return null;
     }
   });
-  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signup');
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup' | 'settings' | 'profile'>('signup');
 
   // Modal visibility
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
@@ -71,51 +97,122 @@ export default function App() {
   const [previewNote, setPreviewNote] = useState<StudyNote | null>(null);
 
   // LightRays atmospheric background effect state
-  const [rayColor, setRayColor] = useState<string>('#00f0ff');
-  const [rayOrigin, setRayOrigin] = useState<RaysOrigin>('top-center');
+  // Default is Ash Grey color and Top-Center position
+  const [rayColor, setRayColor] = useState<string>(() => {
+    try {
+      return localStorage.getItem('studyvault_flare_color') || ASH_GREY_COLOR;
+    } catch {
+      return ASH_GREY_COLOR;
+    }
+  });
+  const [rayOrigin, setRayOrigin] = useState<RaysOrigin>(() => {
+    try {
+      return (localStorage.getItem('studyvault_flare_origin') as RaysOrigin) || DEFAULT_RAY_ORIGIN;
+    } catch {
+      return DEFAULT_RAY_ORIGIN;
+    }
+  });
+  const [isFlareLocked, setIsFlareLocked] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('studyvault_flare_locked');
+      return saved !== null ? JSON.parse(saved) : false;
+    } catch {
+      return false;
+    }
+  });
   const [rayPulsating, setRayPulsating] = useState<boolean>(true);
 
-// Calculate LightRays origin dynamically from cursor click position
-const getOriginFromCursorPosition = (clientX: number, clientY: number): RaysOrigin => {
-  const normX = clientX / window.innerWidth;
-  const normY = clientY / window.innerHeight;
+  // Calculate LightRays origin dynamically from cursor click position
+  const getOriginFromCursorPosition = (clientX: number, clientY: number): RaysOrigin => {
+    const normX = clientX / window.innerWidth;
+    const normY = clientY / window.innerHeight;
 
-  // Upper hemisphere clicks
-  if (normY < 0.5) {
-    if (normX < 0.35) return 'top-left';
-    if (normX > 0.65) return 'top-right';
-    return 'top-center';
-  }
-  // Lower hemisphere clicks
-  if (normX < 0.35) return 'bottom-left';
-  if (normX > 0.65) return 'bottom-right';
-  return 'bottom-center';
-};
+    // Upper hemisphere clicks
+    if (normY < 0.5) {
+      if (normX < 0.35) return 'top-left';
+      if (normX > 0.65) return 'top-right';
+      return 'top-center';
+    }
+    // Lower hemisphere clicks
+    if (normX < 0.35) return 'bottom-left';
+    if (normX > 0.65) return 'bottom-right';
+    return 'bottom-center';
+  };
+
+  // Flare setting handlers
+  const handleToggleFlareLock = (locked: boolean) => {
+    setIsFlareLocked(locked);
+    try {
+      localStorage.setItem('studyvault_flare_locked', JSON.stringify(locked));
+    } catch {}
+    triggerToast(
+      locked
+        ? 'Background flare locked: frozen at latest position & color'
+        : 'Background flare unlocked: dynamic corner and color shifting enabled'
+    );
+  };
+
+  const handleChangeRayColor = (color: string) => {
+    setRayColor(color);
+    try {
+      localStorage.setItem('studyvault_flare_color', color);
+    } catch {}
+  };
+
+  const handleChangeRayOrigin = (origin: RaysOrigin) => {
+    setRayOrigin(origin);
+    try {
+      localStorage.setItem('studyvault_flare_origin', origin);
+    } catch {}
+  };
+
+  const handleResetFlare = () => {
+    setRayColor(ASH_GREY_COLOR);
+    setRayOrigin(DEFAULT_RAY_ORIGIN);
+    try {
+      localStorage.setItem('studyvault_flare_color', ASH_GREY_COLOR);
+      localStorage.setItem('studyvault_flare_origin', DEFAULT_RAY_ORIGIN);
+    } catch {}
+    triggerToast('Flare reset to default Ash Grey (Top Center)');
+  };
 
   // Cursor click interaction: shifts LightRays origin based on click position and cycles neon hue
+  // When locked, stops switching corners and freezes color changing
   useEffect(() => {
     const handleCursorClick = (e: MouseEvent) => {
+      // When flare is locked, stop switching corners and freeze color changes
+      if (isFlareLocked) {
+        return;
+      }
+
       const target = e.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select')) {
+      if (target?.closest('input, textarea, select, button, [role="button"], [role="menuitem"], a, label')) {
         return;
       }
 
       // Dynamic origin shifting according to cursor click coordinates
       const dynamicOrigin = getOriginFromCursorPosition(e.clientX, e.clientY);
       setRayOrigin(dynamicOrigin);
+      try {
+        localStorage.setItem('studyvault_flare_origin', dynamicOrigin);
+      } catch {}
 
       // Holographic neon color shifting
       setRayColor(prev => {
         const pool = HOLOGRAPHIC_NEON_COLORS.filter(
           c => c.toLowerCase() !== prev.toLowerCase()
         );
-        return pool[Math.floor(Math.random() * pool.length)];
+        const nextColor = pool[Math.floor(Math.random() * pool.length)];
+        try {
+          localStorage.setItem('studyvault_flare_color', nextColor);
+        } catch {}
+        return nextColor;
       });
     };
 
     window.addEventListener('click', handleCursorClick);
     return () => window.removeEventListener('click', handleCursorClick);
-  }, []);
+  }, [isFlareLocked]);
 
   // Notes data state
   const [notes, setNotes] = useState<StudyNote[]>([]);
@@ -207,13 +304,31 @@ const getOriginFromCursorPosition = (clientX: number, clientY: number): RaysOrig
     }
   }, [supabaseConfig.isConnected, supabaseConfig.url, supabaseConfig.anonKey]);
 
-  // Extract distinct course codes for popular quick navigation
+  // Extract distinct course codes for quick navigation
   const availableCourses = useMemo(() => {
     const set = new Set<string>();
     notes.forEach(n => {
       if (n.courseCode) set.add(n.courseCode);
     });
     return Array.from(set).sort();
+  }, [notes]);
+
+  // Extract distinct academic years dynamically
+  const availableYears = useMemo(() => {
+    const set = new Set<string>();
+    notes.forEach(n => {
+      if (n.academicYear) set.add(String(n.academicYear));
+    });
+    return Array.from(set).sort().reverse();
+  }, [notes]);
+
+  // Extract distinct subjects dynamically
+  const availableSubjects = useMemo(() => {
+    const set = new Set<string>();
+    notes.forEach(n => {
+      if (n.subject) set.add(n.subject);
+    });
+    return ['All Subjects', ...Array.from(set).sort()];
   }, [notes]);
 
   // Filtered & Sorted notes
@@ -330,6 +445,57 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
     triggerToast(`"${newNote.title}" published to library!`);
   };
 
+  const handleOpenMyUniversity = () => {
+    if (user?.university) {
+      const match = findUniversityByNameOrFuzzy(user.university);
+      if (match) {
+        setSelectedUniversityId(match.id);
+      }
+      setUniversitySubTab('overview');
+      setCurrentTab('university');
+    } else {
+      setIsUniversitySetupOpen(true);
+    }
+  };
+
+  const handleOpenExplore = () => {
+    setCurrentTab('explore');
+  };
+
+  const handleSelectUniversity = (uniId: string) => {
+    setSelectedUniversityId(uniId);
+    setUniversitySubTab('overview');
+    setCurrentTab('university');
+  };
+
+  const handleSaveUserUniversity = (universityName: string, universityId?: string) => {
+    const updatedUser: StudentUser = {
+      ...(user || {
+        id: `student-${Date.now()}`,
+        email: 'student@campus.edu',
+        name: 'Student Scholar',
+        isGuest: true
+      }),
+      university: universityName,
+      universityId: universityId
+    };
+    setUser(updatedUser);
+    try {
+      localStorage.setItem('studyvault_active_user', JSON.stringify(updatedUser));
+    } catch {}
+    triggerToast(`Primary campus set to ${universityName}`);
+    if (universityId) {
+      setSelectedUniversityId(universityId);
+      setUniversitySubTab('overview');
+      setCurrentTab('university');
+    }
+  };
+
+  const handleOpenUploadWithPrefill = (prefillUni?: string, prefillCourse?: string) => {
+    setUploadPrefill({ university: prefillUni, courseCode: prefillCourse });
+    setCurrentTab('upload');
+  };
+
   const handleSignOut = async () => {
     try {
       const supabase = getSupabaseInstance(supabaseConfig);
@@ -371,7 +537,15 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       {/* Top Floating Glass Navigation */}
       <Navbar
         currentTab={currentTab}
-        setCurrentTab={tab => setCurrentTab(tab)}
+        setCurrentTab={tab => {
+          if (tab === 'university') {
+            handleOpenMyUniversity();
+          } else if (tab === 'explore') {
+            handleOpenExplore();
+          } else {
+            setCurrentTab(tab);
+          }
+        }}
         supabaseConfig={supabaseConfig}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
         user={user}
@@ -382,6 +556,24 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
         onSignOut={handleSignOut}
       />
+
+      {/* Floating Vertical Taskbar on Left Side (Detached from edge, floats like top taskbar; hidden on overview/landing page) */}
+      {currentTab !== 'landing' && (
+        <VerticalTaskbar
+          currentTab={currentTab}
+          setCurrentTab={setCurrentTab}
+          filters={filters}
+          setFilters={setFilters}
+          user={user}
+          onOpenMyUniversity={handleOpenMyUniversity}
+          onOpenExplore={handleOpenExplore}
+          onOpenAuthModal={(mode = 'signup') => {
+            setAuthModalMode(mode);
+            setIsAuthModalOpen(true);
+          }}
+          onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+        />
+      )}
 
       {/* Primary View Routing */}
       {currentTab === 'landing' && (
@@ -394,13 +586,44 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         </div>
       )}
 
+      {currentTab === 'explore' && (
+        <main className="relative z-10 flex-1 pb-24 md:pb-8">
+          <ExploreUniversitiesView
+            user={user}
+            notes={notes}
+            onSelectUniversity={handleSelectUniversity}
+            onOpenSetupModal={() => setIsUniversitySetupOpen(true)}
+          />
+        </main>
+      )}
+
+      {currentTab === 'university' && (
+        <main className="relative z-10 flex-1 pb-24 md:pb-8">
+          <UniversityDirectoryView
+            universityId={selectedUniversityId}
+            user={user}
+            notes={notes}
+            activeTab={universitySubTab}
+            onTabChange={setUniversitySubTab}
+            onBackToExplore={() => setCurrentTab('explore')}
+            onPreviewNote={handlePreviewNote}
+            onDownloadNote={handleDownloadNote}
+            onUpvoteNote={handleUpvoteNote}
+            onOpenUpload={handleOpenUploadWithPrefill}
+            onOpenSetupModal={() => setIsUniversitySetupOpen(true)}
+          />
+        </main>
+      )}
+
       {currentTab === 'browse' && (
-        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 py-6 sm:py-8 pb-24 md:pb-8">
           <SearchHeader
             filters={filters}
             setFilters={setFilters}
             totalCount={filteredNotes.length}
             availableCourses={availableCourses}
+            availableYears={availableYears}
+            availableSubjects={availableSubjects}
             user={user}
           />
 
@@ -465,13 +688,15 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       )}
 
       {currentTab === 'upload' && (
-        <main className="relative z-10 flex-1 px-4 sm:px-6 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 pb-24 md:pb-8">
           <UploadView
             onBack={() => setCurrentTab('browse')}
             onSuccess={handleUploadSuccess}
             supabaseConfig={supabaseConfig}
             user={user}
             onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+            initialUniversity={uploadPrefill.university}
+            initialCourseCode={uploadPrefill.courseCode}
           />
         </main>
       )}
@@ -525,6 +750,21 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         onUserChange={u => setUser(u)}
         supabaseConfig={supabaseConfig}
         initialMode={authModalMode}
+        isFlareLocked={isFlareLocked}
+        onToggleFlareLock={handleToggleFlareLock}
+        rayColor={rayColor}
+        onChangeRayColor={handleChangeRayColor}
+        rayOrigin={rayOrigin}
+        onChangeRayOrigin={handleChangeRayOrigin}
+        onResetFlare={handleResetFlare}
+      />
+
+      {/* University Setup Modal (Prompt & Search for unassigned / changing primary campus) */}
+      <UniversitySetupModal
+        isOpen={isUniversitySetupOpen}
+        onClose={() => setIsUniversitySetupOpen(false)}
+        user={user}
+        onSaveUniversity={handleSaveUserUniversity}
       />
     </div>
   );

@@ -29,6 +29,10 @@ export interface StudyNote {
   pageCount: number;
   uploaderName: string;
   uploaderUniversity: string;
+  uploaderId?: string;
+  universityId?: string;
+  departmentId?: string;
+  isRestricted?: boolean; // If true, only students of the same university have full download access
   downloadsCount: number;
   upvotesCount: number;
   hasUpvoted?: boolean;
@@ -75,6 +79,14 @@ export interface StudentUser {
   name: string;
   username?: string;
   university: string;
+  universityId?: string;
+  isCustomUniversity?: boolean;
+  customUniversityDetails?: {
+    name: string;
+    city?: string;
+    province?: string;
+    sector?: 'Public' | 'Private';
+  };
   // Structured Education Hierarchy
   academicProfile?: AcademicProfileInfo;
   educationLevel?: EducationLevel;
@@ -90,4 +102,138 @@ export interface StudentUser {
   bio?: string;
   avatarUrl?: string;
   isGuest?: boolean;
+}
+
+// ============================================================================
+// UNIVERSITY DIRECTORY & COMMUNITY DATA MODELS
+// ============================================================================
+
+export interface University {
+  id: string; // e.g. 'nust', 'fast-nuces', 'lums'
+  name: string;
+  shortName: string;
+  sector?: 'Public' | 'Private';
+  province?: string; // 'Islamabad', 'Punjab', 'Sindh', 'Khyber Pakhtunkhwa', 'Balochistan', 'AJK / GB'
+  city?: string;
+  badge?: string; // e.g. 'HEC Ranked #1 Engineering & Tech', 'Premier Tech & Computing Flagship'
+  logoUrl: string;
+  bannerUrl: string;
+  location: string; // e.g. 'Sector H-12, Islamabad, ICT, Pakistan'
+  country: string;
+  disciplines: string[]; // e.g. ['Computer Science', 'Software Engineering', 'Electrical Engineering']
+  website: string;
+  establishedYear: number;
+  verifiedStudents: number;
+  totalCoursesCount: number;
+  description: string;
+  hecRecognized?: boolean;
+  isCustom?: boolean;
+  status?: 'verified' | 'pending';
+  createdByStudentId?: string;
+  isMemberRestricted?: boolean;
+}
+
+export interface Department {
+  id: string;
+  universityId: string;
+  name: string;
+  code: string; // e.g. 'CS', 'MATH', 'BIO'
+  description: string;
+  courseCount: number;
+}
+
+export interface Course {
+  id: string;
+  universityId: string;
+  departmentId: string;
+  departmentCode: string;
+  code: string; // e.g. 'CS 106B'
+  name: string;
+  description: string;
+  instructor: string;
+  activeStudents: number;
+}
+
+export type DiscussionCategory =
+  | 'Academics'
+  | 'Course Advice'
+  | 'Study Groups'
+  | 'Campus Life'
+  | 'General'
+  | 'Announcements';
+
+export interface DiscussionComment {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorUniversity: string;
+  content: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+}
+
+export interface DiscussionPost {
+  id: string;
+  universityId: string;
+  title: string;
+  content: string;
+  category: DiscussionCategory;
+  courseTag?: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorMajor?: string;
+  authorUniversity: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  commentsCount: number;
+  comments: DiscussionComment[];
+  isPinned?: boolean;
+  isReported?: boolean;
+}
+
+export interface DoubtAttachment {
+  name: string;
+  url: string;
+  size?: string;
+}
+
+export interface DoubtAnswer {
+  id: string;
+  questionId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorRole?: string; // 'Peer', 'Teaching Assistant', 'Honor Student'
+  authorUniversity: string;
+  content: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  isAccepted: boolean;
+}
+
+export interface DoubtQuestion {
+  id: string;
+  universityId: string;
+  title: string;
+  content: string;
+  department: string;
+  courseCode: string;
+  tags: string[];
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorUniversity: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  status: 'answered' | 'unanswered';
+  acceptedAnswerId?: string;
+  attachments?: DoubtAttachment[];
+  answers: DoubtAnswer[];
 }

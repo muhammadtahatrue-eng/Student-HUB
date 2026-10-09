@@ -11,6 +11,7 @@ import {
 import { StudyNote, MaterialType, SupabaseConfig, StudentUser } from '../types/index.ts';
 import { SUBJECT_OPTIONS, MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
 import { getSupabaseInstance, addLocalNote, isValidHttpUrl } from '../lib/supabaseClient.ts';
+import { HecUniversitySelect } from './university/HecUniversitySelect.tsx';
 
 interface UploadViewProps {
   onBack: () => void;
@@ -18,6 +19,8 @@ interface UploadViewProps {
   supabaseConfig: SupabaseConfig;
   user: StudentUser | null;
   onOpenSupabaseModal: () => void;
+  initialUniversity?: string;
+  initialCourseCode?: string;
 }
 
 export const UploadView: React.FC<UploadViewProps> = ({
@@ -26,6 +29,8 @@ export const UploadView: React.FC<UploadViewProps> = ({
   supabaseConfig,
   user,
   onOpenSupabaseModal,
+  initialUniversity,
+  initialCourseCode,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -33,7 +38,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
 
   // Form Fields
   const [title, setTitle] = useState('');
-  const [courseCode, setCourseCode] = useState('');
+  const [courseCode, setCourseCode] = useState(initialCourseCode || '');
   const [courseName, setCourseName] = useState('');
   const [subject, setSubject] = useState('Computer Science');
   const [materialType, setMaterialType] = useState<MaterialType>('lecture_notes');
@@ -43,17 +48,28 @@ export const UploadView: React.FC<UploadViewProps> = ({
   const [description, setDescription] = useState('');
   const [tagsInput, setTagsInput] = useState('');
   const [uploaderName, setUploaderName] = useState(user?.name || '');
-  const [uploaderUniversity, setUploaderUniversity] = useState(user?.university || 'Stanford University');
+  const [uploaderUniversity, setUploaderUniversity] = useState(
+    initialUniversity || user?.university || 'National University of Sciences & Technology (NUST)'
+  );
+  const [uploaderUniversityId, setUploaderUniversityId] = useState<string | undefined>(
+    user?.universityId || 'nust'
+  );
 
   // Sync profile when user signs in or changes
   React.useEffect(() => {
     if (user?.name) {
       setUploaderName(user.name);
     }
-    if (user?.university) {
+    if (initialUniversity) {
+      setUploaderUniversity(initialUniversity);
+    } else if (user?.university) {
       setUploaderUniversity(user.university);
+      setUploaderUniversityId(user.universityId);
     }
-  }, [user]);
+    if (initialCourseCode) {
+      setCourseCode(initialCourseCode);
+    }
+  }, [user, initialUniversity, initialCourseCode]);
 
   // State
   const [isUploading, setIsUploading] = useState(false);
@@ -226,7 +242,8 @@ export const UploadView: React.FC<UploadViewProps> = ({
         fileSizeBytes,
         pageCount: calculatedPages,
         uploaderName: uploaderName.trim() || 'Anonymous Student',
-        uploaderUniversity: uploaderUniversity.trim() || 'Open Campus',
+        uploaderUniversity: uploaderUniversity.trim() || 'National University of Sciences & Technology (NUST)',
+        universityId: uploaderUniversityId,
         downloadsCount: 0,
         upvotesCount: 1,
         hasUpvoted: true,
@@ -592,15 +609,15 @@ export const UploadView: React.FC<UploadViewProps> = ({
               />
             </div>
             <div>
-              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                University / Institution
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Stanford University"
+              <HecUniversitySelect
+                label="University / Institution"
                 value={uploaderUniversity}
-                onChange={(e) => setUploaderUniversity(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40"
+                onChange={(uniName, uniId) => {
+                  setUploaderUniversity(uniName);
+                  setUploaderUniversityId(uniId);
+                }}
+                placeholder="Select or search HEC university..."
+                required
               />
             </div>
           </div>

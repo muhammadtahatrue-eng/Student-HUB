@@ -112,6 +112,154 @@ begin
   where id = note_id;
 end;
 $$ language plpgsql security definer;
+
+-- ==============================================================================
+-- 7. UNIVERSITY DIRECTORY & COMMUNITY SCHEMA EXTENSION
+-- ==============================================================================
+
+-- 7.1 Universities Table
+create table if not exists public.universities (
+  id text primary key, -- stable slug e.g. 'stanford', 'berkeley', 'mit'
+  name text not null,
+  short_name text not null,
+  badge text,
+  logo_url text not null,
+  banner_url text not null,
+  location text not null,
+  country text not null default 'United States',
+  disciplines text[] default array[]::text[],
+  website text,
+  established_year integer,
+  verified_students integer not null default 0,
+  is_member_restricted boolean not null default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7.2 Departments Table
+create table if not exists public.departments (
+  id text primary key,
+  university_id text not null references public.universities(id) on delete cascade,
+  name text not null,
+  code text not null,
+  description text,
+  course_count integer not null default 0
+);
+
+-- 7.3 Courses Table
+create table if not exists public.courses (
+  id text primary key,
+  university_id text not null references public.universities(id) on delete cascade,
+  department_id text not null references public.departments(id) on delete cascade,
+  department_code text not null,
+  code text not null,
+  name text not null,
+  description text,
+  instructor text,
+  active_students integer not null default 0
+);
+
+-- 7.4 University-Wide Discussions Table
+create table if not exists public.university_discussions (
+  id uuid primary key default gen_random_uuid(),
+  university_id text not null references public.universities(id) on delete cascade,
+  title text not null,
+  content text not null,
+  category text not null check (
+    category in ('Academics', 'Course Advice', 'Study Groups', 'Campus Life', 'General', 'Announcements')
+  ),
+  course_tag text,
+  author_id uuid references auth.users(id) on delete set null,
+  author_name text not null default 'Student Scholar',
+  author_avatar text,
+  author_major text,
+  author_university text not null,
+  upvotes_count integer not null default 0,
+  comments_count integer not null default 0,
+  is_pinned boolean not null default false,
+  is_reported boolean not null default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7.5 Discussion Comments Table
+create table if not exists public.discussion_comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.university_discussions(id) on delete cascade,
+  author_id uuid references auth.users(id) on delete set null,
+  author_name text not null default 'Peer Contributor',
+  author_avatar text,
+  author_university text not null,
+  content text not null,
+  upvotes_count integer not null default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7.6 University Doubt Center (Q&A) Table
+create table if not exists public.university_doubts (
+  id uuid primary key default gen_random_uuid(),
+  university_id text not null references public.universities(id) on delete cascade,
+  title text not null,
+  content text not null,
+  department text not null,
+  course_code text not null,
+  tags text[] default array[]::text[],
+  author_id uuid references auth.users(id) on delete set null,
+  author_name text not null default 'Academic Inquirer',
+  author_avatar text,
+  author_university text not null,
+  upvotes_count integer not null default 0,
+  status text not null default 'unanswered' check (status in ('answered', 'unanswered')),
+  accepted_answer_id uuid,
+  attachments jsonb default '[]'::jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7.7 Doubt Answers Table
+create table if not exists public.doubt_answers (
+  id uuid primary key default gen_random_uuid(),
+  question_id uuid not null references public.university_doubts(id) on delete cascade,
+  author_id uuid references auth.users(id) on delete set null,
+  author_name text not null default 'Peer Assistant',
+  author_avatar text,
+  author_role text default 'Peer Contributor',
+  author_university text not null,
+  content text not null,
+  upvotes_count integer not null default 0,
+  is_accepted boolean not null default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7.8 Followed Universities Table
+create table if not exists public.university_follows (
+  user_id uuid references auth.users(id) on delete cascade,
+  university_id text not null references public.universities(id) on delete cascade,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  primary key (user_id, university_id)
+);
+
+-- Enable RLS on all community tables
+alter table public.universities enable row level security;
+alter table public.departments enable row level security;
+alter table public.courses enable row level security;
+alter table public.university_discussions enable row level security;
+alter table public.discussion_comments enable row level security;
+alter table public.university_doubts enable row level security;
+alter table public.doubt_answers enable row level security;
+alter table public.university_follows enable row level security;
+
+-- Read policies: public reads for academic collaboration
+create policy "Anyone can read universities" on public.universities for select using (true);
+create policy "Anyone can read departments" on public.departments for select using (true);
+create policy "Anyone can read courses" on public.courses for select using (true);
+create policy "Anyone can read discussions" on public.university_discussions for select using (true);
+create policy "Anyone can read comments" on public.discussion_comments for select using (true);
+create policy "Anyone can read doubts" on public.university_doubts for select using (true);
+create policy "Anyone can read answers" on public.doubt_answers for select using (true);
+
+-- Insert policies: registered students can contribute
+create policy "Students can post discussions" on public.university_discussions for insert with check (true);
+create policy "Students can comment" on public.discussion_comments for insert with check (true);
+create policy "Students can ask doubts" on public.university_doubts for insert with check (true);
+create policy "Students can post answers" on public.doubt_answers for insert with check (true);
 `
   },
   {
