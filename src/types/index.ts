@@ -32,7 +32,12 @@ export interface StudyNote {
   uploaderId?: string;
   universityId?: string;
   departmentId?: string;
-  isRestricted?: boolean; // If true, only students of the same university have full download access
+  // Core Program Hierarchy Mapping
+  programId?: string; // e.g. 'bs-cs', 'bba', 'ms-ds'
+  programName?: string; // e.g. 'BS Computer Science'
+  degreeTier?: DegreeTier; // 'Undergraduate' | 'Master\'s' | 'PhD' | 'Associate'
+  semesterNumber?: number; // e.g. 1, 2, 3, 4
+  isRestricted?: boolean; // If true, only students of the same program/cohort have full download access
   downloadsCount: number;
   upvotesCount: number;
   hasUpvoted?: boolean;
@@ -73,20 +78,27 @@ export interface AcademicProfileInfo {
 
 export type AcademicLevel = 'undergraduate' | 'graduate' | 'college' | 'high_school';
 
+export type DegreeTier = "Undergraduate" | "Master's" | "PhD" | "Associate";
+
 export interface StudentUser {
   id: string;
   email: string;
   name: string;
   username?: string;
-  university: string;
-  universityId?: string;
-  isCustomUniversity?: boolean;
-  customUniversityDetails?: {
+  // Core Academic Program & Degree-Level System
+  degreeTier?: DegreeTier;
+  program?: string; // e.g. "BS Computer Science"
+  programId?: string; // e.g. "bs-cs"
+  currentSemester?: string; // e.g. "Semester 3"
+  isCustomProgram?: boolean;
+  customProgramDetails?: {
     name: string;
-    city?: string;
-    province?: string;
-    sector?: 'Public' | 'Private';
+    degreeTier: DegreeTier;
+    discipline?: string;
   };
+  // University / Institution (optional or complementary)
+  university?: string;
+  universityId?: string;
   // Structured Education Hierarchy
   academicProfile?: AcademicProfileInfo;
   educationLevel?: EducationLevel;
@@ -105,22 +117,149 @@ export interface StudentUser {
 }
 
 // ============================================================================
-// UNIVERSITY DIRECTORY & COMMUNITY DATA MODELS
+// ACADEMIC PROGRAM & DEGREE-LEVEL DATA MODELS (Core StudyVault Hierarchy)
 // ============================================================================
 
+export interface ProgramCourse {
+  id: string;
+  programId: string;
+  semesterNumber: number;
+  code: string; // e.g. 'CS-201'
+  name: string; // e.g. 'Data Structures & Algorithms'
+  credits: number;
+  description: string;
+  instructor?: string;
+  resourceCount?: number;
+}
+
+export interface ProgramSemester {
+  semesterNumber: number;
+  name: string; // e.g. 'Semester 1: Foundations'
+  courses: ProgramCourse[];
+}
+
+export interface AcademicProgram {
+  id: string; // e.g. 'bs-cs', 'bba', 'ms-ds', 'phd-ai'
+  name: string; // e.g. 'BS Computer Science'
+  shortCode: string; // e.g. 'BSCS'
+  degreeTier: DegreeTier; // 'Undergraduate' | "Master's" | 'PhD' | 'Associate'
+  discipline: string; // e.g. 'Computing & Software', 'Business & Management', etc.
+  description: string;
+  badge?: string; // e.g. 'ABET Accredited', 'High Demand', 'Research Track'
+  durationYears: number;
+  totalSemesters: number;
+  totalCredits: number;
+  activeStudents: number; // dynamic count of registered peers
+  resourceCount: number; // dynamic count of accessible notes & exams
+  iconName?: string;
+  bannerGradient?: string;
+  isCustom?: boolean;
+  status?: 'verified' | 'pending';
+  createdByStudentId?: string;
+  isMemberRestricted?: boolean;
+  semesters?: ProgramSemester[];
+}
+
+export type ProgramDiscussionCategory =
+  | 'Academics'
+  | 'Course Advice'
+  | 'Study Groups'
+  | 'Career & Internships'
+  | 'General'
+  | 'Announcements';
+
+export interface ProgramDiscussionComment {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorProgram: string;
+  authorDegreeTier?: DegreeTier;
+  content: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+}
+
+export interface ProgramDiscussionPost {
+  id: string;
+  programId: string;
+  title: string;
+  content: string;
+  category: ProgramDiscussionCategory;
+  semesterTag?: string;
+  courseTag?: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorProgram: string;
+  authorDegreeTier?: DegreeTier;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  commentsCount: number;
+  comments: ProgramDiscussionComment[];
+  isPinned?: boolean;
+  isReported?: boolean;
+}
+
+export interface ProgramDoubtAttachment {
+  name: string;
+  url: string;
+  size?: string;
+}
+
+export interface ProgramDoubtAnswer {
+  id: string;
+  questionId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorRole?: string; // 'Peer', 'TA', 'Honor Student'
+  authorProgram: string;
+  content: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  isAccepted: boolean;
+}
+
+export interface ProgramDoubtQuestion {
+  id: string;
+  programId: string;
+  title: string;
+  content: string;
+  semesterTag?: string;
+  courseCode: string;
+  tags: string[];
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorProgram: string;
+  createdAt: string;
+  upvotesCount: number;
+  hasUpvoted?: boolean;
+  status: 'answered' | 'unanswered';
+  acceptedAnswerId?: string;
+  attachments?: ProgramDoubtAttachment[];
+  answers: ProgramDoubtAnswer[];
+}
+
+// Backward-compatible University types
 export interface University {
-  id: string; // e.g. 'nust', 'fast-nuces', 'lums'
+  id: string;
   name: string;
   shortName: string;
   sector?: 'Public' | 'Private';
-  province?: string; // 'Islamabad', 'Punjab', 'Sindh', 'Khyber Pakhtunkhwa', 'Balochistan', 'AJK / GB'
+  province?: string;
   city?: string;
-  badge?: string; // e.g. 'HEC Ranked #1 Engineering & Tech', 'Premier Tech & Computing Flagship'
+  badge?: string;
   logoUrl: string;
   bannerUrl: string;
-  location: string; // e.g. 'Sector H-12, Islamabad, ICT, Pakistan'
+  location: string;
   country: string;
-  disciplines: string[]; // e.g. ['Computer Science', 'Software Engineering', 'Electrical Engineering']
+  disciplines: string[];
   website: string;
   establishedYear: number;
   verifiedStudents: number;
