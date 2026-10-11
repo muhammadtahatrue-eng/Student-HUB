@@ -74,9 +74,17 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
   }
 }
 
-createRoot(document.getElementById('root')!).render(
-  <RootErrorBoundary>
-    <App />
-  </RootErrorBoundary>
-);
+const container = document.getElementById('root');
+if (container) {
+  const fallback = document.getElementById('app-loading-fallback');
+  if (fallback) {
+    fallback.remove();
+  }
+  const root = createRoot(container);
+  root.render(
+    <RootErrorBoundary>
+      <App />
+    </RootErrorBoundary>
+  );
+}
 

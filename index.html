@@ -21,20 +21,31 @@
       }
     </style>
     <script>
-      // Synchronous URL & subpath normalizer for GitHub Pages
+      // 1. Dynamic base URL resolution for GitHub Pages subpaths & custom domains
       (function() {
         try {
           var loc = window.location;
           var pathname = loc.pathname;
 
-          // 1. Ensure trailing slash for directory requests on GitHub Pages
-          // e.g. /StudyVault -> /StudyVault/ so relative assets resolve accurately
-          if (pathname && !pathname.endsWith('/') && !pathname.split('/').pop().includes('.')) {
-            loc.replace(loc.protocol + '//' + loc.host + pathname + '/' + loc.search + loc.hash);
-            return;
+          // Calculate correct directory path ending with '/'
+          var baseDir = pathname;
+          if (baseDir.split('/').pop().includes('.')) {
+            baseDir = baseDir.substring(0, baseDir.lastIndexOf('/') + 1);
+          } else if (!baseDir.endsWith('/')) {
+            baseDir = baseDir + '/';
           }
 
-          // 2. Decode SPA 404 redirect from 404.html if present
+          // Inject or update base tag so all relative assets (./assets/...) resolve accurately
+          var base = document.querySelector('base');
+          if (!base) {
+            base = document.createElement('base');
+            base.href = loc.origin + baseDir;
+            document.head.insertBefore(base, document.head.firstChild);
+          } else {
+            base.href = loc.origin + baseDir;
+          }
+
+          // Decode SPA redirect from 404.html if present
           if (loc.search && loc.search.length > 1) {
             var searchParams = loc.search.slice(1);
             if (searchParams.startsWith('/')) {
@@ -43,7 +54,7 @@
               });
               var restoredPath = parts[0];
               var restoredQuery = parts.slice(1).join('&');
-              var newUrl = loc.pathname.slice(0, -1) + restoredPath +
+              var newUrl = baseDir + (restoredPath.startsWith('/') ? restoredPath.slice(1) : restoredPath) +
                 (restoredQuery ? '?' + restoredQuery : '') +
                 loc.hash;
               window.history.replaceState(null, '', newUrl);
@@ -53,11 +64,41 @@
           console.warn('URL normalizer error:', e);
         }
       })();
+
+      // 2. Global diagnostic handler: catches load issues and displays helpful recovery info
+      window.addEventListener('error', function(e) {
+        var fb = document.getElementById('app-loading-fallback');
+        if (fb) {
+          var log = document.getElementById('app-error-log');
+          if (!log) {
+            log = document.createElement('div');
+            log.id = 'app-error-log';
+            log.style = 'margin-top: 1rem; max-width: 480px; padding: 0.75rem 1rem; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; font-family: monospace; font-size: 0.72rem; color: #fca5a5; text-align: left; word-break: break-all;';
+            fb.appendChild(log);
+          }
+          var targetSrc = (e.target && e.target.src) ? e.target.src : '';
+          var msg = e.message || (targetSrc ? ('Resource failed to load: ' + targetSrc) : 'Script loading error');
+          log.innerHTML = '<strong>Notice:</strong> ' + msg + '<br/><span style="color:#94a3b8;font-size:0.68rem;">Base: ' + (document.baseURI || window.location.href) + '</span>';
+        }
+      }, true);
+
+      window.__studyVaultHardReset = function() {
+        try {
+          localStorage.clear();
+          sessionStorage.clear();
+          if (window.caches) {
+            caches.keys().then(function(names) {
+              names.forEach(function(n) { caches.delete(n); });
+            });
+          }
+        } catch (err) {}
+        window.location.reload();
+      };
     </script>
   </head>
   <body class="bg-[#050505] text-white">
     <div id="root">
-      <!-- Fallback shown before React mounts or if network failure occurs -->
+      <!-- Fallback shown before React mounts or if initial network fetch is pending -->
       <div id="app-loading-fallback" style="min-height: 100vh; background-color: #050505; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
         <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
           SV
@@ -70,7 +111,7 @@
           <button onclick="window.location.reload()" style="background-color: #00f0ff; color: #000000; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
             Reload
           </button>
-          <button onclick="try{localStorage.clear();sessionStorage.clear();}catch(e){}window.location.reload();" style="background-color: rgba(255, 255, 255, 0.1); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
+          <button onclick="window.__studyVaultHardReset()" style="background-color: rgba(255, 255, 255, 0.1); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
             Reset Cache
           </button>
         </div>
