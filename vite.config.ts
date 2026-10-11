@@ -4,7 +4,10 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
-  // Base path: use BASE_URL, detected GITHUB_REPOSITORY, or relative './'
+  // Determine base path:
+  // 1. If BASE_URL is set (e.g. from GitHub Actions workflow), use it.
+  // 2. If GITHUB_REPOSITORY is present in CI, compute repository subpath: /<repo>/
+  // 3. Otherwise default to './' so relative asset paths work uniformly on GitHub Pages and local servers.
   let base = './';
   if (process.env.BASE_URL) {
     base = process.env.BASE_URL;
@@ -23,17 +26,7 @@ export default defineConfig(() => {
     },
     build: {
       outDir: 'dist',
-      rollupOptions: {
-        input: {
-          main: path.resolve('index.html'),
-          bundle: path.resolve('src/main.tsx'),
-        },
-        output: {
-          entryFileNames: 'assets/index.js',
-          chunkFileNames: 'assets/[name].js',
-          assetFileNames: 'assets/[name].[ext]',
-        },
-      },
+      assetsDir: 'assets',
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
