@@ -89,7 +89,7 @@ export interface StudentUser {
   degreeTier?: DegreeTier;
   program?: string; // e.g. "BS Computer Science"
   programId?: string; // e.g. "bs-cs"
-  currentSemester?: string; // e.g. "Semester 3"
+  currentSemester?: string | number; // e.g. "Semester 3" or 3
   isCustomProgram?: boolean;
   customProgramDetails?: {
     name: string;
@@ -99,6 +99,13 @@ export interface StudentUser {
   // University / Institution (optional or complementary)
   university?: string;
   universityId?: string;
+  isCustomUniversity?: boolean;
+  customUniversityDetails?: {
+    name: string;
+    city?: string;
+    website?: string;
+    country?: string;
+  };
   // Structured Education Hierarchy
   academicProfile?: AcademicProfileInfo;
   educationLevel?: EducationLevel;

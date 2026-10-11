@@ -22,6 +22,7 @@ interface VerticalTaskbarProps {
   setFilters?: React.Dispatch<React.SetStateAction<FilterState>>;
   user: StudentUser | null;
   onOpenMyProgram: () => void;
+  onOpenMyUniversity?: () => void;
   onOpenExplore: () => void;
   onOpenAuthModal: (mode?: 'signin' | 'signup' | 'settings' | 'profile') => void;
   onOpenCodeDrawer?: () => void;

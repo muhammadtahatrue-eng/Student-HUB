@@ -15,18 +15,25 @@ import { enrollStudentInProgram } from '../../lib/programStore.ts';
 interface ProgramSetupModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentUser: StudentUser | null;
-  onSaveProgram: (program: AcademicProgram, semester?: string) => void;
+  currentUser?: StudentUser | null;
+  user?: StudentUser | null;
+  onSaveProgram: (program: AcademicProgram, semester?: any) => void;
 }
 
 export const ProgramSetupModal: React.FC<ProgramSetupModalProps> = ({
   isOpen,
   onClose,
   currentUser,
+  user,
   onSaveProgram
 }) => {
+  const activeUser = currentUser || user || null;
   const [selectedProgram, setSelectedProgram] = useState<AcademicProgram | null>(null);
-  const [semester, setSemester] = useState<string>(currentUser?.currentSemester || 'Semester 1');
+  const [semester, setSemester] = useState<string>(
+    typeof activeUser?.currentSemester === 'number'
+      ? `Semester ${activeUser.currentSemester}`
+      : activeUser?.currentSemester || 'Semester 1'
+  );
 
   if (!isOpen) return null;
 

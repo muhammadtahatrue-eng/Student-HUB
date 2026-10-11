@@ -64,28 +64,73 @@ export type ProgramTabKey = 'overview' | 'materials' | 'courses' | 'discussions'
 
 interface ProgramDirectoryViewProps {
   programId: string;
-  allNotes: StudyNote[];
-  currentUser: StudentUser | null;
+  allNotes?: StudyNote[];
+  notes?: StudyNote[];
+  currentUser?: StudentUser | null;
+  user?: StudentUser | null;
+  activeTab?: ProgramTabKey;
+  onTabChange?: (tab: ProgramTabKey) => void;
   onBackToExplore: () => void;
   onPreviewNote: (note: StudyNote) => void;
   onDownloadNote: (note: StudyNote) => void;
-  onToggleUpvoteNote: (noteId: string) => void;
-  onUploadToProgram: (programId: string, courseCode?: string) => void;
-  onOpenAuthModal: () => void;
+  onToggleUpvoteNote?: (noteId: string) => void;
+  onUpvoteNote?: (noteOrId: StudyNote | string) => void;
+  onUploadToProgram?: (programId: string, courseCode?: string) => void;
+  onOpenUpload?: (programId: string, courseCode?: string) => void;
+  onOpenAuthModal?: () => void;
+  onOpenSetupModal?: () => void;
 }
 
 export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   programId,
   allNotes,
+  notes,
   currentUser,
+  user,
+  activeTab: controlledTab,
+  onTabChange,
   onBackToExplore,
   onPreviewNote,
   onDownloadNote,
   onToggleUpvoteNote,
+  onUpvoteNote,
   onUploadToProgram,
-  onOpenAuthModal
+  onOpenUpload,
+  onOpenAuthModal,
+  onOpenSetupModal
 }) => {
-  const [activeTab, setActiveTab] = useState<ProgramTabKey>('overview');
+  const [internalTab, setInternalTab] = useState<ProgramTabKey>('overview');
+  const activeTab = controlledTab !== undefined ? controlledTab : internalTab;
+  const setActiveTab = (t: ProgramTabKey) => {
+    setInternalTab(t);
+    onTabChange?.(t);
+  };
+
+  const studentUser = currentUser || user || null;
+  const notesList = allNotes || notes || [];
+
+  const requestAuth = () => {
+    onOpenAuthModal?.();
+  };
+
+  const handleToggleUpvote = (id: string) => {
+    if (onToggleUpvoteNote) {
+      onToggleUpvoteNote(id);
+    } else if (onUpvoteNote) {
+      const match = notesList.find(n => n.id === id);
+      if (match) onUpvoteNote(match);
+      else onUpvoteNote(id);
+    }
+  };
+
+  const handleUploadClick = (progId: string, courseCode?: string) => {
+    if (onOpenUpload) {
+      onOpenUpload(progId, courseCode);
+    } else if (onUploadToProgram) {
+      onUploadToProgram(progId, courseCode);
+    }
+  };
+
   const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds());
 
   // Program details
@@ -93,14 +138,14 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
 
   // Scoped Notes for this Program
   const programNotes = useMemo(() => {
-    return allNotes.filter(
+    return notesList.filter(
       n =>
         n.programId === programId ||
         (program && n.programName?.toLowerCase() === program.name.toLowerCase()) ||
         // Fallback match by subject or default to top program if none
         (programId === 'bs-cs' && (!n.programId || n.subject === 'Computer Science'))
     );
-  }, [allNotes, programId, program]);
+  }, [notesList, programId, program]);
 
   // Notes filtering inside "Study Materials" tab
   const [notesSearch, setNotesSearch] = useState('');
@@ -194,8 +239,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   // Discussions actions
   const handleCreatePost = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     if (!newPostTitle.trim() || !newPostContent.trim()) return;
@@ -207,7 +252,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
       category: newPostCategory,
       semesterTag: newPostSemesterTag.trim() || undefined,
       courseTag: newPostCourseTag.trim() || undefined,
-      author: currentUser
+      author: studentUser
     });
 
     setDiscussions([created, ...discussions]);
@@ -219,8 +264,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   };
 
   const handleUpvotePost = (postId: string) => {
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     const { upvotesCount, hasUpvoted } = toggleUpvoteProgramDiscussion(postId);
@@ -230,8 +275,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   };
 
   const handleAddComment = (postId: string) => {
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     const text = commentInputMap[postId]?.trim();
@@ -240,7 +285,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
     const comment = addProgramDiscussionComment({
       postId,
       content: text,
-      author: currentUser
+      author: studentUser
     });
 
     if (comment) {
@@ -262,8 +307,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   // Doubt actions
   const handleCreateDoubt = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     if (!doubtTitle.trim() || !doubtContent.trim() || !doubtCourseCode.trim()) return;
@@ -280,7 +325,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
       courseCode: doubtCourseCode,
       semesterTag: doubtSemesterTag.trim() || undefined,
       tags: tags.length ? tags : ['Academics'],
-      author: currentUser
+      author: studentUser
     });
 
     setDoubts([created, ...doubts]);
@@ -293,8 +338,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   };
 
   const handleUpvoteDoubt = (doubtId: string) => {
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     const { upvotesCount, hasUpvoted } = toggleUpvoteProgramDoubt(doubtId);
@@ -304,8 +349,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   };
 
   const handleAddAnswer = (doubtId: string) => {
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     const text = answerInputMap[doubtId]?.trim();
@@ -314,8 +359,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
     const answer = addProgramDoubtAnswer({
       questionId: doubtId,
       content: text,
-      author: currentUser,
-      role: currentUser.degreeTier === "Master's" || currentUser.degreeTier === 'PhD' ? 'Graduate Peer' : 'Peer Student'
+      author: studentUser,
+      role: studentUser.degreeTier === "Master's" || studentUser.degreeTier === 'PhD' ? 'Graduate Peer' : 'Peer Student'
     });
 
     if (answer) {
@@ -335,8 +380,8 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   };
 
   const handleAcceptAnswer = (doubtId: string, answerId: string) => {
-    if (!currentUser) {
-      onOpenAuthModal();
+    if (!studentUser) {
+      requestAuth();
       return;
     }
     const success = markAcceptedProgramAnswer(doubtId, answerId);
@@ -425,7 +470,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
           <div className="flex flex-col sm:flex-row md:flex-col gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={() => onUploadToProgram(program.id)}
+              onClick={() => handleUploadClick(program.id)}
               className="px-4 py-2.5 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors cursor-pointer shadow-lg shadow-cyan-400/20 flex items-center justify-center gap-2"
             >
               <Plus className="w-4 h-4" />
@@ -809,7 +854,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
                     <div className="flex items-center gap-3 text-white/50">
                       <button
                         type="button"
-                        onClick={() => onToggleUpvoteNote(note.id)}
+                        onClick={() => handleToggleUpvote(note.id)}
                         className={`flex items-center gap-1 transition-colors cursor-pointer ${
                           note.hasUpvoted ? 'text-cyan-400 font-bold' : 'hover:text-white'
                         }`}
@@ -854,7 +899,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
               <p className="text-xs text-white/50 mt-1 mb-4">Be the first student to upload a lecture note, past exam, or summary for this semester!</p>
               <button
                 type="button"
-                onClick={() => onUploadToProgram(program.id)}
+                onClick={() => handleUploadClick(program.id)}
                 className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300"
               >
                 Upload Resource Now
@@ -972,7 +1017,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
             <button
               type="button"
               onClick={() => {
-                if (!currentUser) onOpenAuthModal();
+                if (!studentUser) requestAuth();
                 else setIsNewPostModalOpen(true);
               }}
               className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors shrink-0 cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-cyan-400/20"
@@ -1230,7 +1275,7 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
             <button
               type="button"
               onClick={() => {
-                if (!currentUser) onOpenAuthModal();
+                if (!studentUser) requestAuth();
                 else setIsAskDoubtModalOpen(true);
               }}
               className="px-4 py-2 rounded-xl bg-amber-400 text-black text-xs font-bold hover:bg-amber-300 transition-colors shrink-0 cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-amber-400/20"

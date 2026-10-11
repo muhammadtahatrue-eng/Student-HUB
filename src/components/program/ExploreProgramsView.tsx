@@ -27,18 +27,24 @@ import {
 import { ProgramSelect } from './ProgramSelect.tsx';
 
 interface ExploreProgramsViewProps {
-  onSelectProgram: (programId: string) => void;
-  currentUser: StudentUser | null;
+  onSelectProgram: (program: string | AcademicProgram) => void;
+  currentUser?: StudentUser | null;
+  user?: StudentUser | null;
+  notes?: any[];
   onOpenAuthModal?: () => void;
   onOpenMyProgram?: () => void;
+  onOpenSetupModal?: () => void;
 }
 
 export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   onSelectProgram,
   currentUser,
+  user,
   onOpenAuthModal,
-  onOpenMyProgram
+  onOpenMyProgram,
+  onOpenSetupModal
 }) => {
+  const activeUser = currentUser || user || null;
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTier, setSelectedTier] = useState<'All' | DegreeTier>('All');
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('All');

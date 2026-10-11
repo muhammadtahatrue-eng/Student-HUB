@@ -38,6 +38,10 @@ import { ExploreUniversitiesView } from './components/university/ExploreUniversi
 import { UniversityDirectoryView, UniversityTabKey } from './components/university/UniversityDirectoryView.tsx';
 import { UniversitySetupModal } from './components/university/UniversitySetupModal.tsx';
 import { findUniversityByNameOrFuzzy } from './lib/universityStore.ts';
+import { AcademicProgram } from './types/index.ts';
+import { ExploreProgramsView } from './components/program/ExploreProgramsView.tsx';
+import { ProgramDirectoryView, ProgramTabKey } from './components/program/ProgramDirectoryView.tsx';
+import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
 
 const ASH_GREY_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
@@ -57,10 +61,24 @@ const HOLOGRAPHIC_NEON_COLORS = [
 ];
 
 export default function App() {
-  // Navigation: 'landing' (showcase), 'browse' (library), 'upload' (share), 'explore' (universities), 'university' (campus directory)
-  const [currentTab, setCurrentTab] = useState<'landing' | 'browse' | 'upload' | 'explore' | 'university'>('landing');
+  // Navigation: 'landing' (showcase), 'browse' (library), 'upload' (share), 'explore' (programs), 'program' (program directory), 'university' (campus)
+  const [currentTab, setCurrentTab] = useState<'landing' | 'browse' | 'upload' | 'explore' | 'program' | 'university'>('landing');
 
-  // Active university directory state
+  // Active program directory state
+  const [selectedProgramId, setSelectedProgramId] = useState<string>(() => {
+    try {
+      const savedUser = localStorage.getItem('studyvault_active_user');
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed.programId) return parsed.programId;
+      }
+    } catch {}
+    return 'bs-cs';
+  });
+  const [programSubTab, setProgramSubTab] = useState<ProgramTabKey>('overview');
+  const [isProgramSetupOpen, setIsProgramSetupOpen] = useState(false);
+
+  // Active university directory state (kept for backward-compatibility)
   const [selectedUniversityId, setSelectedUniversityId] = useState<string>(() => {
     try {
       const savedUser = localStorage.getItem('studyvault_active_user');
@@ -75,7 +93,11 @@ export default function App() {
   });
   const [universitySubTab, setUniversitySubTab] = useState<UniversityTabKey>('overview');
   const [isUniversitySetupOpen, setIsUniversitySetupOpen] = useState(false);
-  const [uploadPrefill, setUploadPrefill] = useState<{ university?: string; courseCode?: string }>({});
+  const [uploadPrefill, setUploadPrefill] = useState<{
+    university?: string;
+    courseCode?: string;
+    programId?: string;
+  }>({});
 
   // Supabase & Auth state - anyone can view without registration by default
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(getSavedSupabaseConfig());
@@ -445,17 +467,51 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
     triggerToast(`"${newNote.title}" published to library!`);
   };
 
-  const handleOpenMyUniversity = () => {
-    if (user?.university) {
-      const match = findUniversityByNameOrFuzzy(user.university);
-      if (match) {
-        setSelectedUniversityId(match.id);
+  const handleOpenMyProgram = () => {
+    if (user?.program || user?.programId) {
+      if (user.programId) {
+        setSelectedProgramId(user.programId);
       }
-      setUniversitySubTab('overview');
-      setCurrentTab('university');
+      setProgramSubTab('overview');
+      setCurrentTab('program');
     } else {
-      setIsUniversitySetupOpen(true);
+      setIsProgramSetupOpen(true);
     }
+  };
+
+  const handleSelectProgram = (program: string | AcademicProgram) => {
+    const progId = typeof program === 'string' ? program : program.id;
+    setSelectedProgramId(progId);
+    setProgramSubTab('overview');
+    setCurrentTab('program');
+  };
+
+  const handleSaveUserProgram = (program: AcademicProgram, semester?: string | number) => {
+    const updatedUser: StudentUser = {
+      ...(user || {
+        id: `student-${Date.now()}`,
+        email: 'student@campus.edu',
+        name: 'Student Scholar',
+        university: 'National University of Sciences & Technology (NUST)',
+        isGuest: true
+      }),
+      degreeTier: program.degreeTier,
+      program: program.name,
+      programId: program.id,
+      currentSemester: semester || 1
+    };
+    setUser(updatedUser);
+    try {
+      localStorage.setItem('studyvault_active_user', JSON.stringify(updatedUser));
+    } catch {}
+    triggerToast(`Enrolled in ${program.name} (${program.degreeTier})`);
+    setSelectedProgramId(program.id);
+    setProgramSubTab('overview');
+    setCurrentTab('program');
+  };
+
+  const handleOpenMyUniversity = () => {
+    handleOpenMyProgram();
   };
 
   const handleOpenExplore = () => {
@@ -463,9 +519,9 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
   };
 
   const handleSelectUniversity = (uniId: string) => {
-    setSelectedUniversityId(uniId);
-    setUniversitySubTab('overview');
-    setCurrentTab('university');
+    setSelectedProgramId(uniId);
+    setProgramSubTab('overview');
+    setCurrentTab('program');
   };
 
   const handleSaveUserUniversity = (universityName: string, universityId?: string) => {
@@ -538,8 +594,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       <Navbar
         currentTab={currentTab}
         setCurrentTab={tab => {
-          if (tab === 'university') {
-            handleOpenMyUniversity();
+          if (tab === 'program' || tab === 'university') {
+            handleOpenMyProgram();
           } else if (tab === 'explore') {
             handleOpenExplore();
           } else {
@@ -565,7 +621,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
           filters={filters}
           setFilters={setFilters}
           user={user}
-          onOpenMyUniversity={handleOpenMyUniversity}
+          onOpenMyProgram={handleOpenMyProgram}
+          onOpenMyUniversity={handleOpenMyProgram}
           onOpenExplore={handleOpenExplore}
           onOpenAuthModal={(mode = 'signup') => {
             setAuthModalMode(mode);
@@ -588,29 +645,33 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
 
       {currentTab === 'explore' && (
         <main className="relative z-10 flex-1 pb-24 md:pb-8">
-          <ExploreUniversitiesView
+          <ExploreProgramsView
             user={user}
             notes={notes}
-            onSelectUniversity={handleSelectUniversity}
-            onOpenSetupModal={() => setIsUniversitySetupOpen(true)}
+            onSelectProgram={handleSelectProgram}
+            onOpenSetupModal={() => setIsProgramSetupOpen(true)}
           />
         </main>
       )}
 
-      {currentTab === 'university' && (
+      {(currentTab === 'program' || currentTab === 'university') && (
         <main className="relative z-10 flex-1 pb-24 md:pb-8">
-          <UniversityDirectoryView
-            universityId={selectedUniversityId}
+          <ProgramDirectoryView
+            programId={selectedProgramId}
             user={user}
             notes={notes}
-            activeTab={universitySubTab}
-            onTabChange={setUniversitySubTab}
+            activeTab={programSubTab}
+            onTabChange={setProgramSubTab}
             onBackToExplore={() => setCurrentTab('explore')}
             onPreviewNote={handlePreviewNote}
             onDownloadNote={handleDownloadNote}
-            onUpvoteNote={handleUpvoteNote}
-            onOpenUpload={handleOpenUploadWithPrefill}
-            onOpenSetupModal={() => setIsUniversitySetupOpen(true)}
+            onToggleUpvoteNote={handleUpvoteNote}
+            onUpvoteNote={(n) => handleUpvoteNote(typeof n === 'string' ? n : n.id)}
+            onOpenUpload={(progId: string, cCode?: string) => {
+              setUploadPrefill({ programId: progId, courseCode: cCode });
+              setCurrentTab('upload');
+            }}
+            onOpenSetupModal={() => setIsProgramSetupOpen(true)}
           />
         </main>
       )}
@@ -697,6 +758,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
             onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
             initialUniversity={uploadPrefill.university}
             initialCourseCode={uploadPrefill.courseCode}
+            initialProgramId={uploadPrefill.programId}
           />
         </main>
       )}
@@ -765,6 +827,14 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         onClose={() => setIsUniversitySetupOpen(false)}
         user={user}
         onSaveUniversity={handleSaveUserUniversity}
+      />
+
+      {/* Program Setup Modal (Prompt & Search for student degree program and semester) */}
+      <ProgramSetupModal
+        isOpen={isProgramSetupOpen}
+        onClose={() => setIsProgramSetupOpen(false)}
+        user={user}
+        onSaveProgram={handleSaveUserProgram}
       />
     </div>
   );

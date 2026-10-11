@@ -8,10 +8,11 @@ import {
   Sparkles,
   Database
 } from 'lucide-react';
-import { StudyNote, MaterialType, SupabaseConfig, StudentUser } from '../types/index.ts';
+import { StudyNote, MaterialType, SupabaseConfig, StudentUser, DegreeTier } from '../types/index.ts';
 import { SUBJECT_OPTIONS, MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
 import { getSupabaseInstance, addLocalNote, isValidHttpUrl } from '../lib/supabaseClient.ts';
 import { HecUniversitySelect } from './university/HecUniversitySelect.tsx';
+import { ProgramSelect } from './program/ProgramSelect.tsx';
 
 interface UploadViewProps {
   onBack: () => void;
@@ -21,6 +22,7 @@ interface UploadViewProps {
   onOpenSupabaseModal: () => void;
   initialUniversity?: string;
   initialCourseCode?: string;
+  initialProgramId?: string;
 }
 
 export const UploadView: React.FC<UploadViewProps> = ({
@@ -31,6 +33,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
   onOpenSupabaseModal,
   initialUniversity,
   initialCourseCode,
+  initialProgramId,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -54,6 +57,20 @@ export const UploadView: React.FC<UploadViewProps> = ({
   const [uploaderUniversityId, setUploaderUniversityId] = useState<string | undefined>(
     user?.universityId || 'nust'
   );
+  const [uploaderProgramId, setUploaderProgramId] = useState<string>(
+    initialProgramId || user?.programId || 'bs-cs'
+  );
+  const [uploaderProgramName, setUploaderProgramName] = useState<string>(
+    user?.program || 'BS Computer Science'
+  );
+  const [uploaderDegreeTier, setUploaderDegreeTier] = useState<DegreeTier>(
+    user?.degreeTier || 'Undergraduate'
+  );
+  const [semesterNumber, setSemesterNumber] = useState<number>(() => {
+    if (typeof user?.currentSemester === 'number') return user.currentSemester;
+    const parsed = parseInt(String(user?.currentSemester || '').replace(/\D/g, ''), 10);
+    return isNaN(parsed) ? 3 : parsed;
+  });
 
   // Sync profile when user signs in or changes
   React.useEffect(() => {
@@ -69,7 +86,18 @@ export const UploadView: React.FC<UploadViewProps> = ({
     if (initialCourseCode) {
       setCourseCode(initialCourseCode);
     }
-  }, [user, initialUniversity, initialCourseCode]);
+    if (initialProgramId) {
+      setUploaderProgramId(initialProgramId);
+    } else if (user?.programId) {
+      setUploaderProgramId(user.programId);
+      if (user.program) setUploaderProgramName(user.program);
+      if (user.degreeTier) setUploaderDegreeTier(user.degreeTier);
+      if (user.currentSemester) {
+        const s = typeof user.currentSemester === 'number' ? user.currentSemester : parseInt(String(user.currentSemester).replace(/\D/g, ''), 10);
+        if (!isNaN(s)) setSemesterNumber(s);
+      }
+    }
+  }, [user, initialUniversity, initialCourseCode, initialProgramId]);
 
   // State
   const [isUploading, setIsUploading] = useState(false);
@@ -244,6 +272,10 @@ export const UploadView: React.FC<UploadViewProps> = ({
         uploaderName: uploaderName.trim() || 'Anonymous Student',
         uploaderUniversity: uploaderUniversity.trim() || 'National University of Sciences & Technology (NUST)',
         universityId: uploaderUniversityId,
+        programId: uploaderProgramId,
+        programName: uploaderProgramName,
+        degreeTier: uploaderDegreeTier,
+        semesterNumber: semesterNumber,
         downloadsCount: 0,
         upvotesCount: 1,
         hasUpvoted: true,
@@ -619,6 +651,41 @@ export const UploadView: React.FC<UploadViewProps> = ({
                 placeholder="Select or search HEC university..."
                 required
               />
+            </div>
+          </div>
+
+          {/* Academic Program & Degree Tier Mapping */}
+          <div className="pt-2 border-t border-white/10 space-y-3">
+            <ProgramSelect
+              label="Academic Program & Degree Level"
+              selectedProgramId={uploaderProgramId}
+              onSelectProgram={(program) => {
+                setUploaderProgramId(program.id);
+                setUploaderProgramName(program.name);
+                setUploaderDegreeTier(program.degreeTier);
+              }}
+              required
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
+                  Program Semester Level
+                </label>
+                <select
+                  value={semesterNumber}
+                  onChange={(e) => setSemesterNumber(Number(e.target.value))}
+                  className="w-full px-3.5 py-2.5 text-sm bg-stone-900 border border-white/15 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-white/40 cursor-pointer"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
+                    <option key={s} value={s}>
+                      Semester {s} Course Material
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center text-xs text-white/50 pt-6">
+                <span>Notes uploaded here appear directly in the program vault, course syllabi, and study library.</span>
+              </div>
             </div>
           </div>
 

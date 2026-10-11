@@ -12,18 +12,54 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <script>
-      // Ensure trailing slash on GitHub Pages directory URLs so relative assets resolve properly
-      if (window.location.hostname.endsWith('github.io') && 
-          window.location.pathname.length > 1 && 
-          !window.location.pathname.endsWith('/') && 
-          !window.location.pathname.split('/').pop().includes('.')) {
-        window.location.replace(window.location.pathname + '/' + window.location.search + window.location.hash);
-      }
+      // Bulletproof GitHub Pages / Subpath Asset & Routing Fix
+      (function() {
+        try {
+          var loc = window.location;
+          var pathname = loc.pathname;
+
+          // If deployed on GitHub Pages or subfolder, ensure trailing slash if hitting directory root
+          var lastSegment = pathname.substring(pathname.lastIndexOf('/') + 1);
+          if (pathname.length > 1 && !pathname.endsWith('/') && !lastSegment.includes('.')) {
+            loc.replace(loc.protocol + '//' + loc.host + pathname + '/' + loc.search + loc.hash);
+            return;
+          }
+
+          // Dynamically compute the base directory ending in '/'
+          var baseDir = pathname.substring(0, pathname.lastIndexOf('/') + 1) || '/';
+          var existingBase = document.querySelector('base');
+          if (!existingBase) {
+            var baseTag = document.createElement('base');
+            baseTag.href = loc.origin + baseDir;
+            document.head.insertBefore(baseTag, document.head.firstChild);
+          }
+        } catch (e) {
+          console.warn('Path resolution handler:', e);
+        }
+      })();
     </script>
   </head>
   <body class="bg-[#05070a] text-white">
-    <div id="root"></div>
+    <div id="root">
+      <!-- Fallback shown only if JavaScript bundle fails or before React hydration -->
+      <div id="app-loading-fallback" style="min-height: 100vh; background-color: #05070a; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
+        <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
+          SV
+        </div>
+        <h1 style="font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem 0; letter-spacing: -0.025em; color: #ffffff;">StudyVault</h1>
+        <p style="font-size: 0.875rem; color: #94a3b8; margin: 0 0 1.5rem 0; max-width: 320px;">
+          Loading student resources and academic programs...
+        </p>
+        <div style="display: flex; gap: 0.75rem;">
+          <button onclick="window.location.reload()" style="background-color: #00f0ff; color: #000000; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
+            Reload
+          </button>
+          <button onclick="try{localStorage.clear();sessionStorage.clear();}catch(e){}window.location.reload();" style="background-color: rgba(255, 255, 255, 0.1); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
+            Reset Cache
+          </button>
+        </div>
+      </div>
+    </div>
     <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
-

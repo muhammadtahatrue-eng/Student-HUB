@@ -471,7 +471,7 @@ export function createDiscussionPost(payload: {
     authorId: payload.user.id,
     authorAvatar: payload.user.avatarUrl,
     authorMajor: payload.user.majorOrField,
-    authorUniversity: payload.user.university
+    authorUniversity: payload.user.university || 'General Campus'
   });
 }
 
@@ -532,7 +532,7 @@ export function addCommentToDiscussion(
     authorName: user.name,
     authorId: user.id,
     authorAvatar: user.avatarUrl,
-    authorUniversity: user.university
+    authorUniversity: user.university || 'General Campus'
   });
 }
 
@@ -705,7 +705,7 @@ export function createDoubtQuestion(payload: {
     authorName: payload.user.name,
     authorId: payload.user.id,
     authorAvatar: payload.user.avatarUrl,
-    authorUniversity: payload.user.university
+    authorUniversity: payload.user.university || 'General Campus'
   });
 }
 
@@ -769,7 +769,7 @@ export function addAnswerToDoubt(
     authorId: user.id,
     authorAvatar: user.avatarUrl,
     authorRole: 'Peer Member',
-    authorUniversity: user.university
+    authorUniversity: user.university || 'General Campus'
   });
 }
 

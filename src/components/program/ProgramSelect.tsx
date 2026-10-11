@@ -19,7 +19,8 @@ interface ProgramSelectProps {
   value?: string; // program name or id
   selectedProgramId?: string;
   selectedDegreeTier?: DegreeTier;
-  onChange: (program: AcademicProgram) => void;
+  onChange?: (program: AcademicProgram) => void;
+  onSelectProgram?: (program: AcademicProgram) => void;
   label?: string;
   placeholder?: string;
   required?: boolean;
@@ -30,6 +31,7 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
   selectedProgramId,
   selectedDegreeTier,
   onChange,
+  onSelectProgram,
   label = 'Degree Level & Academic Program',
   placeholder = 'Select your degree tier & major program...',
   required = false
@@ -99,7 +101,7 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
   }, [programs, tierFilter, searchQuery]);
 
   const handleSelect = (program: AcademicProgram) => {
-    onChange(program);
+    (onSelectProgram || onChange)?.(program);
     setIsOpen(false);
     setSearchQuery('');
   };
@@ -115,7 +117,7 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
       durationYears: parseInt(customDuration, 10) || 4
     });
 
-    onChange(newProg);
+    (onSelectProgram || onChange)?.(newProg);
     setIsCustomModalOpen(false);
     setIsOpen(false);
     setCustomName('');
