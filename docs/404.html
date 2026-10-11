@@ -1,66 +1,49 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StudyVault - Student Study-Material Platform</title>
-    <meta name="description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
-    <meta property="og:title" content="StudyVault - Student Study-Material Platform" />
-    <meta property="og:description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <title>StudyVault - Loading...</title>
+    <style>
+      body {
+        background-color: #050505;
+        color: #ffffff;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+    </style>
     <script>
-      // Bulletproof GitHub Pages / Subpath Asset & Routing Fix
+      // Single Page Application redirect for GitHub Pages
       (function() {
-        try {
-          var loc = window.location;
-          var pathname = loc.pathname;
+        var l = window.location;
+        var pathSegments = l.pathname.slice(1).split('/');
+        var isGithubIo = l.hostname.endsWith('github.io');
+        // If repo name is the first segment (e.g. username.github.io/repo-name)
+        var repoName = (isGithubIo && pathSegments.length > 0 && pathSegments[0]) ? pathSegments[0] : '';
+        
+        var repoPrefix = repoName ? '/' + repoName : '';
+        var remainingPath = repoName ? pathSegments.slice(1).join('/') : pathSegments.join('/');
 
-          // If deployed on GitHub Pages or subfolder, ensure trailing slash if hitting directory root
-          var lastSegment = pathname.substring(pathname.lastIndexOf('/') + 1);
-          if (pathname.length > 1 && !pathname.endsWith('/') && !lastSegment.includes('.')) {
-            loc.replace(loc.protocol + '//' + loc.host + pathname + '/' + loc.search + loc.hash);
-            return;
-          }
+        var redirectTarget = l.protocol + '//' + l.host + repoPrefix + '/?' +
+          (remainingPath ? '/' + remainingPath : '') +
+          (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
+          l.hash;
 
-          // Dynamically compute the base directory ending in '/'
-          var baseDir = pathname.substring(0, pathname.lastIndexOf('/') + 1) || '/';
-          var existingBase = document.querySelector('base');
-          if (!existingBase) {
-            var baseTag = document.createElement('base');
-            baseTag.href = loc.origin + baseDir;
-            document.head.insertBefore(baseTag, document.head.firstChild);
-          }
-        } catch (e) {
-          console.warn('Path resolution handler:', e);
-        }
+        l.replace(redirectTarget);
       })();
     </script>
-    <script type="module" crossorigin src="./assets/index-CoD6EzrC.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DlQOIYQu.css">
   </head>
-  <body class="bg-[#05070a] text-white">
-    <div id="root">
-      <!-- Fallback shown only if JavaScript bundle fails or before React hydration -->
-      <div id="app-loading-fallback" style="min-height: 100vh; background-color: #05070a; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
-        <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
-          SV
-        </div>
-        <h1 style="font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem 0; letter-spacing: -0.025em; color: #ffffff;">StudyVault</h1>
-        <p style="font-size: 0.875rem; color: #94a3b8; margin: 0 0 1.5rem 0; max-width: 320px;">
-          Loading student resources and academic programs...
-        </p>
-        <div style="display: flex; gap: 0.75rem;">
-          <button onclick="window.location.reload()" style="background-color: #00f0ff; color: #000000; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
-            Reload
-          </button>
-          <button onclick="try{localStorage.clear();sessionStorage.clear();}catch(e){}window.location.reload();" style="background-color: rgba(255, 255, 255, 0.1); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
-            Reset Cache
-          </button>
-        </div>
+  <body>
+    <div style="text-align: center;">
+      <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; color: #00f0ff; font-weight: bold; font-size: 1.15rem;">
+        SV
       </div>
+      <h2 style="font-size: 1.25rem; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.02em;">StudyVault</h2>
+      <p style="color: #94a3b8; font-size: 0.875rem; margin: 0;">Restoring page route...</p>
     </div>
   </body>
 </html>

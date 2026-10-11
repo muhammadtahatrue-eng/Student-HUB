@@ -1,11 +1,20 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
+  // Determine base path for GitHub Pages or local dev
+  let base = './';
+  if (process.env.BASE_URL) {
+    base = process.env.BASE_URL;
+  } else if (process.env.GITHUB_REPOSITORY) {
+    const repo = process.env.GITHUB_REPOSITORY.split('/')[1];
+    base = repo && !repo.endsWith('.github.io') ? `/${repo}/` : '/';
+  }
+
   return {
-    base: process.env.BASE_URL || './',
+    base,
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

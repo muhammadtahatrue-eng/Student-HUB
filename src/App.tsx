@@ -590,30 +590,32 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         </div>
       )}
 
-      {/* Top Floating Glass Navigation */}
-      <Navbar
-        currentTab={currentTab}
-        setCurrentTab={tab => {
-          if (tab === 'program' || tab === 'university') {
-            handleOpenMyProgram();
-          } else if (tab === 'explore') {
-            handleOpenExplore();
-          } else {
-            setCurrentTab(tab);
-          }
-        }}
-        supabaseConfig={supabaseConfig}
-        onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
-        user={user}
-        onOpenAuthModal={(mode = 'signup') => {
-          setAuthModalMode(mode);
-          setIsAuthModalOpen(true);
-        }}
-        onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
-        onSignOut={handleSignOut}
-      />
+      {/* Top Floating Glass Navigation - ONLY appears on landing page */}
+      {currentTab === 'landing' && (
+        <Navbar
+          currentTab={currentTab}
+          setCurrentTab={tab => {
+            if (tab === 'program' || tab === 'university') {
+              handleOpenMyProgram();
+            } else if (tab === 'explore') {
+              handleOpenExplore();
+            } else {
+              setCurrentTab(tab);
+            }
+          }}
+          supabaseConfig={supabaseConfig}
+          onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+          user={user}
+          onOpenAuthModal={(mode = 'signup') => {
+            setAuthModalMode(mode);
+            setIsAuthModalOpen(true);
+          }}
+          onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+          onSignOut={handleSignOut}
+        />
+      )}
 
-      {/* Floating Vertical Taskbar on Left Side (Detached from edge, floats like top taskbar; hidden on overview/landing page) */}
+      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing page) */}
       {currentTab !== 'landing' && (
         <VerticalTaskbar
           currentTab={currentTab}
@@ -629,6 +631,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
             setIsAuthModalOpen(true);
           }}
           onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+          supabaseConfig={supabaseConfig}
+          onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
         />
       )}
 
@@ -636,15 +640,22 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       {currentTab === 'landing' && (
         <div className="relative z-10 flex-1 flex flex-col justify-center pb-20 md:pb-0">
           <LandingHero
+            notes={notes}
+            user={user}
             onBrowseMaterials={() => setCurrentTab('browse')}
             onUploadNotes={() => setCurrentTab('upload')}
             onWatchDemo={() => setIsDemoModalOpen(true)}
+            onPreviewNote={handlePreviewNote}
+            onDownloadNote={handleDownloadNote}
+            onUpvoteNote={handleUpvoteNote}
+            onOpenProgram={handleSelectProgram}
+            onOpenExplorePrograms={handleOpenExplore}
           />
         </div>
       )}
 
       {currentTab === 'explore' && (
-        <main className="relative z-10 flex-1 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 pt-6 sm:pt-8 pb-24 md:pb-8">
           <ExploreProgramsView
             user={user}
             notes={notes}
@@ -655,7 +666,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       )}
 
       {(currentTab === 'program' || currentTab === 'university') && (
-        <main className="relative z-10 flex-1 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 pt-6 sm:pt-8 pb-24 md:pb-8">
           <ProgramDirectoryView
             programId={selectedProgramId}
             user={user}
@@ -749,7 +760,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       )}
 
       {currentTab === 'upload' && (
-        <main className="relative z-10 flex-1 px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 pt-6 sm:pt-8 pb-24 md:pb-8">
           <UploadView
             onBack={() => setCurrentTab('browse')}
             onSuccess={handleUploadSuccess}

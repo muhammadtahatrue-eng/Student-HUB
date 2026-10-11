@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="background-color: #050505; color: #ffffff;">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,38 +11,54 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <style>
+      html, body {
+        background-color: #050505 !important;
+        color: #ffffff;
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
+      }
+    </style>
     <script>
-      // Bulletproof GitHub Pages / Subpath Asset & Routing Fix
+      // Synchronous URL & subpath normalizer for GitHub Pages
       (function() {
         try {
           var loc = window.location;
           var pathname = loc.pathname;
 
-          // If deployed on GitHub Pages or subfolder, ensure trailing slash if hitting directory root
-          var lastSegment = pathname.substring(pathname.lastIndexOf('/') + 1);
-          if (pathname.length > 1 && !pathname.endsWith('/') && !lastSegment.includes('.')) {
+          // 1. Ensure trailing slash for directory requests on GitHub Pages
+          // e.g. /StudyVault -> /StudyVault/ so relative assets resolve accurately
+          if (pathname && !pathname.endsWith('/') && !pathname.split('/').pop().includes('.')) {
             loc.replace(loc.protocol + '//' + loc.host + pathname + '/' + loc.search + loc.hash);
             return;
           }
 
-          // Dynamically compute the base directory ending in '/'
-          var baseDir = pathname.substring(0, pathname.lastIndexOf('/') + 1) || '/';
-          var existingBase = document.querySelector('base');
-          if (!existingBase) {
-            var baseTag = document.createElement('base');
-            baseTag.href = loc.origin + baseDir;
-            document.head.insertBefore(baseTag, document.head.firstChild);
+          // 2. Decode SPA 404 redirect from 404.html if present
+          if (loc.search && loc.search.length > 1) {
+            var searchParams = loc.search.slice(1);
+            if (searchParams.startsWith('/')) {
+              var parts = searchParams.split('&').map(function(s) {
+                return s.replace(/~and~/g, '&');
+              });
+              var restoredPath = parts[0];
+              var restoredQuery = parts.slice(1).join('&');
+              var newUrl = loc.pathname.slice(0, -1) + restoredPath +
+                (restoredQuery ? '?' + restoredQuery : '') +
+                loc.hash;
+              window.history.replaceState(null, '', newUrl);
+            }
           }
         } catch (e) {
-          console.warn('Path resolution handler:', e);
+          console.warn('URL normalizer error:', e);
         }
       })();
     </script>
   </head>
-  <body class="bg-[#05070a] text-white">
+  <body class="bg-[#050505] text-white">
     <div id="root">
-      <!-- Fallback shown only if JavaScript bundle fails or before React hydration -->
-      <div id="app-loading-fallback" style="min-height: 100vh; background-color: #05070a; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
+      <!-- Fallback shown before React mounts or if network failure occurs -->
+      <div id="app-loading-fallback" style="min-height: 100vh; background-color: #050505; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
         <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
           SV
         </div>
