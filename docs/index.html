@@ -13,16 +13,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <style>html,body{color:#fff;min-height:100vh;margin:0;padding:0;background-color:#050505!important}</style>
     <script>
-      // 1. Ensure trailing slash on GitHub Pages repository URLs so relative asset paths resolve correctly
+      // 1. GitHub Pages SPA path and trailing-slash handler
       (function() {
         try {
           var p = window.location.pathname;
+          // Ensure repository URLs have a trailing slash so relative paths resolve cleanly
           if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
             window.location.replace(window.location.protocol + '//' + window.location.host + p + '/' + window.location.search + window.location.hash);
             return;
           }
 
-          // 2. Decode SPA redirect from 404.html if present
+          // 2. Decode SPA redirect passed from 404.html
           var search = window.location.search;
           if (search && search.length > 1 && search.charAt(1) === '/') {
             var parts = search.slice(1).split('&').map(function(s) {
@@ -37,11 +38,11 @@
             window.history.replaceState(null, '', newUrl);
           }
         } catch (e) {
-          console.warn('Path normalizer error:', e);
+          console.warn('URL normalizer error:', e);
         }
       })();
 
-      // 3. Hard reset helper for localStorage and cache
+      // 3. Global hard reset helper
       window.__studyVaultHardReset = function() {
         try {
           localStorage.clear();
@@ -52,15 +53,26 @@
             });
           }
         } catch (err) {}
-        window.location.reload();
+        window.location.href = window.location.pathname;
       };
+
+      // 4. Capture any early unhandled errors before React mounts to aid troubleshooting
+      window.__studyVaultBootErrors = [];
+      window.addEventListener('error', function(e) {
+        window.__studyVaultBootErrors.push(e.message || (e.error && e.error.message) || String(e));
+        var diagEl = document.getElementById('boot-error-details');
+        if (diagEl) {
+          diagEl.style.display = 'block';
+          diagEl.textContent = 'Script Error: ' + (e.message || 'Check browser console');
+        }
+      });
     </script>
-    <script type="module" crossorigin src="./assets/index-liLAqUrC.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CIn0w_XO.css">
+    <script type="module" crossorigin src="./assets/index-BhheBn_z.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CLyRlU2j.css">
   </head>
   <body class="bg-[#050505] text-white">
     <div id="root">
-      <!-- Pre-mount fallback displayed before React bundle mounts -->
+      <!-- Pre-mount fallback displayed momentarily before React bundle mounts -->
       <div id="app-loading-fallback" style="min-height: 100vh; background-color: #050505; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
         <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
           SV
@@ -77,6 +89,7 @@
             Reset Cache
           </button>
         </div>
+        <div id="boot-error-details" style="display: none; margin-top: 1rem; padding: 0.5rem 0.75rem; background: rgba(244, 63, 94, 0.15); border: 1px solid rgba(244, 63, 94, 0.3); border-radius: 8px; font-size: 0.75rem; color: #f43f5e; max-width: 420px; font-family: monospace; word-break: break-all;"></div>
       </div>
     </div>
   </body>
