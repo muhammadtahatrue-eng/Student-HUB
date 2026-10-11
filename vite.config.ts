@@ -4,7 +4,7 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
-  // Determine base path for GitHub Pages or local dev
+  // Base path: use BASE_URL, detected GITHUB_REPOSITORY, or relative './'
   let base = './';
   if (process.env.BASE_URL) {
     base = process.env.BASE_URL;
@@ -19,6 +19,20 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve('.'),
+      },
+    },
+    build: {
+      outDir: 'dist',
+      rollupOptions: {
+        input: {
+          main: path.resolve('index.html'),
+          bundle: path.resolve('src/main.tsx'),
+        },
+        output: {
+          entryFileNames: 'assets/index.js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/[name].[ext]',
+        },
       },
     },
     server: {

@@ -65,7 +65,7 @@
         }
       })();
 
-      // 2. Global diagnostic handler: catches load issues and displays helpful recovery info
+      // 2. Global diagnostic handler: catches load issues and displays recovery info
       window.addEventListener('error', function(e) {
         var fb = document.getElementById('app-loading-fallback');
         if (fb) {
@@ -73,7 +73,7 @@
           if (!log) {
             log = document.createElement('div');
             log.id = 'app-error-log';
-            log.style = 'margin-top: 1rem; max-width: 480px; padding: 0.75rem 1rem; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; font-family: monospace; font-size: 0.72rem; color: #fca5a5; text-align: left; word-break: break-all;';
+            log.style = 'margin-top: 1rem; max-width: 520px; padding: 0.75rem 1rem; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; font-family: monospace; font-size: 0.72rem; color: #fca5a5; text-align: left; word-break: break-all;';
             fb.appendChild(log);
           }
           var targetSrc = (e.target && e.target.src) ? e.target.src : '';
@@ -94,6 +94,35 @@
         } catch (err) {}
         window.location.reload();
       };
+    </script>
+    <script>
+      // 3. GitHub Pages Static Host Loader:
+      // If deployed on GitHub Pages (*.github.io) or static hosting, load pre-compiled assets directly
+      (function() {
+        var isGitHubPages = window.location.hostname.endsWith('github.io') || window.location.protocol === 'file:';
+        if (isGitHubPages) {
+          window.__IS_STATIC_HOST = true;
+
+          // Inject compiled stylesheet
+          var css = document.createElement('link');
+          css.rel = 'stylesheet';
+          css.href = './assets/index.css';
+          document.head.appendChild(css);
+
+          // Inject compiled JS bundle
+          var bundle = document.createElement('script');
+          bundle.type = 'module';
+          bundle.src = './assets/index.js';
+          bundle.onerror = function() {
+            // Fallback to docs/assets if served from root and assets are in docs/
+            var fbBundle = document.createElement('script');
+            fbBundle.type = 'module';
+            fbBundle.src = './docs/assets/index.js';
+            document.head.appendChild(fbBundle);
+          };
+          document.head.appendChild(bundle);
+        }
+      })();
     </script>
   </head>
   <body class="bg-[#050505] text-white">
@@ -117,6 +146,11 @@
         </div>
       </div>
     </div>
-    <script type="module" src="./src/main.tsx"></script>
+    <script type="module">
+      // Only request /src/main.tsx when running on development server (NOT on static GitHub Pages)
+      if (!window.__IS_STATIC_HOST) {
+        import('/src/main.tsx');
+      }
+    </script>
   </body>
 </html>
