@@ -43,11 +43,12 @@ import { ExploreProgramsView } from './components/program/ExploreProgramsView.ts
 import { ProgramDirectoryView, ProgramTabKey } from './components/program/ProgramDirectoryView.tsx';
 import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
 
-const DEFAULT_FLARE_COLOR = '#00f0ff'; // Cyber Cyan default as shown in reference
+const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
 
 const HOLOGRAPHIC_NEON_COLORS = [
-  '#00f0ff', // Cyber Cyan (Default)
+  '#9ca3af', // Ash Grey (Default)
+  '#00f0ff', // Cyber Cyan
   '#ffffff', // Pure White
   '#10b981', // Aurora Emerald
   '#b388ff', // Ultraviolet Hologram
@@ -57,7 +58,6 @@ const HOLOGRAPHIC_NEON_COLORS = [
   '#ff3366', // Neon Crimson
   '#39ff14', // Matrix Green
   '#d946ef', // Cyber Fuchsia
-  '#9ca3af', // Ash Grey
 ];
 
 export default function App() {
@@ -119,33 +119,33 @@ export default function App() {
   const [previewNote, setPreviewNote] = useState<StudyNote | null>(null);
 
   // LightRays atmospheric background effect state
-  // Default is Cyber Cyan color and Top-Center position
+  // Default is Ash Grey color, Top-Center position, and Locked
   const [rayColor, setRayColor] = useState<string>(() => {
     try {
-      return localStorage.getItem('studyvault_flare_color') || DEFAULT_FLARE_COLOR;
+      return localStorage.getItem('xeusar_flare_color_v2') || DEFAULT_FLARE_COLOR;
     } catch {
       return DEFAULT_FLARE_COLOR;
     }
   });
   const [rayOrigin, setRayOrigin] = useState<RaysOrigin>(() => {
     try {
-      return (localStorage.getItem('studyvault_flare_origin') as RaysOrigin) || DEFAULT_RAY_ORIGIN;
+      return (localStorage.getItem('xeusar_flare_origin_v2') as RaysOrigin) || DEFAULT_RAY_ORIGIN;
     } catch {
       return DEFAULT_RAY_ORIGIN;
     }
   });
   const [isFlareLocked, setIsFlareLocked] = useState<boolean>(() => {
     try {
-      const saved = localStorage.getItem('studyvault_flare_locked');
-      return saved !== null ? JSON.parse(saved) : false;
+      const saved = localStorage.getItem('xeusar_flare_locked_v2');
+      return saved !== null ? JSON.parse(saved) : true;
     } catch {
-      return false;
+      return true;
     }
   });
   const [rayPulsating, setRayPulsating] = useState<boolean>(true);
   const [rayBrightness, setRayBrightness] = useState<number>(() => {
     try {
-      const saved = localStorage.getItem('studyvault_flare_brightness');
+      const saved = localStorage.getItem('xeusar_flare_brightness_v2');
       if (saved !== null) {
         const parsed = parseFloat(saved);
         if (!Number.isNaN(parsed) && parsed >= 0.1 && parsed <= 2.5) {
@@ -218,7 +218,7 @@ export default function App() {
   const handleToggleFlareLock = (locked: boolean) => {
     setIsFlareLocked(locked);
     try {
-      localStorage.setItem('studyvault_flare_locked', JSON.stringify(locked));
+      localStorage.setItem('xeusar_flare_locked_v2', JSON.stringify(locked));
     } catch {}
     triggerToast(
       locked
@@ -230,14 +230,14 @@ export default function App() {
   const handleChangeRayColor = (color: string) => {
     setRayColor(color);
     try {
-      localStorage.setItem('studyvault_flare_color', color);
+      localStorage.setItem('xeusar_flare_color_v2', color);
     } catch {}
   };
 
   const handleChangeRayOrigin = (origin: RaysOrigin) => {
     setRayOrigin(origin);
     try {
-      localStorage.setItem('studyvault_flare_origin', origin);
+      localStorage.setItem('xeusar_flare_origin_v2', origin);
     } catch {}
   };
 
@@ -245,20 +245,22 @@ export default function App() {
     const clamped = Math.min(2.0, Math.max(0.1, Number(brightness.toFixed(2))));
     setRayBrightness(clamped);
     try {
-      localStorage.setItem('studyvault_flare_brightness', String(clamped));
+      localStorage.setItem('xeusar_flare_brightness_v2', String(clamped));
     } catch {}
   };
 
   const handleResetFlare = () => {
     setRayColor(DEFAULT_FLARE_COLOR);
     setRayOrigin(DEFAULT_RAY_ORIGIN);
+    setIsFlareLocked(true);
     setRayBrightness(1.0);
     try {
-      localStorage.setItem('studyvault_flare_color', DEFAULT_FLARE_COLOR);
-      localStorage.setItem('studyvault_flare_origin', DEFAULT_RAY_ORIGIN);
-      localStorage.setItem('studyvault_flare_brightness', '1');
+      localStorage.setItem('xeusar_flare_color_v2', DEFAULT_FLARE_COLOR);
+      localStorage.setItem('xeusar_flare_origin_v2', DEFAULT_RAY_ORIGIN);
+      localStorage.setItem('xeusar_flare_locked_v2', 'true');
+      localStorage.setItem('xeusar_flare_brightness_v2', '1');
     } catch {}
-    triggerToast('Flare reset to default Cyber Cyan (Top Center, 100% Brightness)');
+    triggerToast('Flare reset to default Ash Grey (Top Center, Locked)');
   };
 
   // Cursor click interaction: shifts LightRays origin based on click position and cycles neon hue
@@ -279,7 +281,7 @@ export default function App() {
       const dynamicOrigin = getOriginFromCursorPosition(e.clientX, e.clientY);
       setRayOrigin(dynamicOrigin);
       try {
-        localStorage.setItem('studyvault_flare_origin', dynamicOrigin);
+        localStorage.setItem('xeusar_flare_origin_v2', dynamicOrigin);
       } catch {}
 
       // Holographic neon color shifting
@@ -289,7 +291,7 @@ export default function App() {
         );
         const nextColor = pool[Math.floor(Math.random() * pool.length)];
         try {
-          localStorage.setItem('studyvault_flare_color', nextColor);
+          localStorage.setItem('xeusar_flare_color_v2', nextColor);
         } catch {}
         return nextColor;
       });

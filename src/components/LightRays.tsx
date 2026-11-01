@@ -37,7 +37,7 @@ export interface LightRaysProps {
   className?: string;
 }
 
-const DEFAULT_COLOR = '#00f0ff';
+const DEFAULT_COLOR = '#9ca3af';
 
 const hexToRgb = (hex: string): [number, number, number] => {
   const cleanHex = hex.replace('#', '');

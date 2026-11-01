@@ -338,7 +338,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onUserChange,
   supabaseConfig,
   initialMode = 'signup',
-  isFlareLocked = false,
+  isFlareLocked = true,
   onToggleFlareLock,
   rayColor = '#9ca3af',
   onChangeRayColor,
