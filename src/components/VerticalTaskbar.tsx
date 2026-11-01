@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Home,
   BookOpen,
@@ -11,27 +11,20 @@ import {
   Code2,
   Compass,
   GraduationCap,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Database,
-  ChevronLeft,
-  ChevronRight
+  Building2
 } from 'lucide-react';
-import { StudentUser, FilterState, SupabaseConfig } from '../types/index.ts';
+import { StudentUser, FilterState } from '../types/index.ts';
 
 interface VerticalTaskbarProps {
-  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'program' | 'university';
-  setCurrentTab: (tab: any) => void;
+  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university';
+  setCurrentTab: (tab: 'landing' | 'browse' | 'upload' | 'explore' | 'university') => void;
   filters?: FilterState;
   setFilters?: React.Dispatch<React.SetStateAction<FilterState>>;
   user: StudentUser | null;
-  onOpenMyProgram: () => void;
-  onOpenMyUniversity?: () => void;
+  onOpenMyUniversity: () => void;
   onOpenExplore: () => void;
   onOpenAuthModal: (mode?: 'signin' | 'signup' | 'settings' | 'profile') => void;
   onOpenCodeDrawer?: () => void;
-  supabaseConfig?: SupabaseConfig;
-  onOpenSupabaseModal?: () => void;
 }
 
 export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
@@ -40,31 +33,11 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
   filters,
   setFilters,
   user,
-  onOpenMyProgram,
+  onOpenMyUniversity,
   onOpenExplore,
   onOpenAuthModal,
   onOpenCodeDrawer,
-  supabaseConfig,
-  onOpenSupabaseModal,
 }) => {
-  const [isMinimized, setIsMinimized] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('studyvault_taskbar_minimized') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const toggleMinimized = () => {
-    setIsMinimized(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem('studyvault_taskbar_minimized', String(next));
-      } catch {}
-      return next;
-    });
-  };
-
   const handleQuickTypeFilter = (typeKey: string) => {
     if (currentTab !== 'browse') {
       setCurrentTab('browse');
@@ -77,65 +50,13 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
     }
   };
 
-  // Minimized collapsed state: Sleek mini handle with maximize button
-  if (isMinimized) {
-    return (
-      <aside
-        aria-label="Vertical Taskbar (Minimized)"
-        className="fixed left-2 sm:left-3 top-1/2 -translate-y-1/2 z-40 font-outfit select-none"
-      >
-        <div className="bg-black/80 backdrop-blur-2xl border border-white/20 hover:border-cyan-400/50 rounded-2xl shadow-2xl p-1.5 flex flex-col items-center gap-1.5 transition-all group">
-          <button
-            type="button"
-            onClick={toggleMinimized}
-            aria-label="Maximize taskbar"
-            title="Maximize taskbar"
-            className="w-8 h-8 rounded-xl flex items-center justify-center bg-cyan-400/10 hover:bg-cyan-400 text-cyan-300 hover:text-black transition-all cursor-pointer shadow-[0_0_15px_rgba(0,240,255,0.25)] active:scale-95 relative"
-          >
-            <ChevronRight className="w-4 h-4" />
-            <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-              Maximize Taskbar
-            </span>
-          </button>
-          
-          <button
-            type="button"
-            onClick={() => setCurrentTab('landing')}
-            aria-label="Overview"
-            title="Back to Landing"
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 transition-colors"
-          >
-            <Home className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </aside>
-    );
-  }
-
-  // Maximized full vertical taskbar
   return (
     <aside
       aria-label="Vertical Taskbar"
-      className="fixed left-3 sm:left-5 md:left-6 top-1/2 -translate-y-1/2 z-40 font-outfit select-none transition-transform duration-200"
+      className="fixed left-3 sm:left-5 md:left-6 top-1/2 -translate-y-1/2 z-40 font-outfit select-none"
     >
-      <div className="bg-black/70 backdrop-blur-2xl border border-white/15 rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/90 p-2 sm:p-2.5 flex flex-col items-center gap-1.5 sm:gap-2">
-        {/* Minimize Button at the top */}
-        <button
-          type="button"
-          onClick={toggleMinimized}
-          aria-label="Minimize sidebar"
-          title="Minimize sidebar"
-          className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white/40 hover:text-cyan-300 hover:bg-white/10 transition-all cursor-pointer relative group active:scale-95"
-        >
-          <PanelLeftClose className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Minimize Sidebar
-          </span>
-        </button>
-
-        <div className="w-5 h-px bg-white/15 my-0.5" />
-
-        {/* Task 1: Overview (Landing page) */}
+      <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-2xl sm:rounded-full shadow-2xl shadow-black/80 p-2 sm:p-2.5 flex flex-col items-center gap-1.5 sm:gap-2">
+        {/* Task 1: Overview */}
         <button
           type="button"
           onClick={() => setCurrentTab('landing')}
@@ -174,28 +95,28 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
           </span>
         </button>
 
-        {/* Task 3: My Program */}
+        {/* Task 3: My University (Module 1) */}
         <button
           type="button"
-          onClick={onOpenMyProgram}
-          aria-label="My Program"
+          onClick={onOpenMyUniversity}
+          aria-label="My University"
           className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
-            currentTab === 'program' || currentTab === 'university'
+            currentTab === 'university'
               ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
               : 'text-white/60 hover:text-white hover:bg-white/10'
           }`}
         >
           <GraduationCap className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            {user?.program ? `My Program: ${user.program}` : 'Set My Program'}
+            {user?.university ? `My University: ${user.university}` : 'Set My University'}
           </span>
         </button>
 
-        {/* Task 4: Explore Programs */}
+        {/* Task 4: Explore Universities with Compass icon (Module 2) */}
         <button
           type="button"
           onClick={onOpenExplore}
-          aria-label="Explore Programs"
+          aria-label="Explore Universities"
           className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
             currentTab === 'explore'
               ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
@@ -204,7 +125,7 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
         >
           <Compass className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Explore Programs
+            Explore Universities
           </span>
         </button>
 
@@ -228,7 +149,7 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
         {/* Gutter separator */}
         <div className="w-5 h-px bg-white/10 my-0.5" />
 
-        {/* Quick Type Filters */}
+        {/* Task 6: Filter Lecture Notes */}
         <button
           type="button"
           onClick={() => handleQuickTypeFilter('lecture_notes')}
@@ -245,6 +166,7 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
           </span>
         </button>
 
+        {/* Task 7: Filter Cheat Sheets */}
         <button
           type="button"
           onClick={() => handleQuickTypeFilter('cheat_sheet')}
@@ -261,6 +183,7 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
           </span>
         </button>
 
+        {/* Task 8: Filter Past Exams */}
         <button
           type="button"
           onClick={() => handleQuickTypeFilter('past_exam')}
@@ -280,23 +203,7 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
         {/* Gutter separator */}
         <div className="w-5 h-px bg-white/10 my-0.5" />
 
-        {/* Database / Supabase indicator and trigger */}
-        {onOpenSupabaseModal && (
-          <button
-            type="button"
-            onClick={onOpenSupabaseModal}
-            aria-label="Database Connection"
-            className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 text-white/60 hover:text-white hover:bg-white/10"
-          >
-            <Database className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            <span className={`w-1.5 h-1.5 rounded-full absolute top-2 right-2 ${supabaseConfig?.isConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400'}`} />
-            <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-              {supabaseConfig?.isConnected ? 'Supabase Connected' : 'Connect Supabase'}
-            </span>
-          </button>
-        )}
-
-        {/* Flare Background Settings */}
+        {/* Task 9: Background Setting */}
         <button
           type="button"
           onClick={() => onOpenAuthModal('settings')}
@@ -305,11 +212,11 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
         >
           <Sparkles className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Background Flare
+            Background Setting
           </span>
         </button>
 
-        {/* Student Profile */}
+        {/* Task 10: Student Profile */}
         <button
           type="button"
           onClick={() => onOpenAuthModal(user ? 'profile' : 'signin')}
@@ -326,11 +233,11 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
             <UserIcon className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           )}
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            {user ? (user.username ? `@${user.username}` : user.name) : 'Student Sign In'}
+            {user ? (user.username ? `@${user.username}` : user.name) : 'Student Profile'}
           </span>
         </button>
 
-        {/* Export Code / Schema */}
+        {/* Task 11: Export Code / Schema */}
         {onOpenCodeDrawer && (
           <button
             type="button"
