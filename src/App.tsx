@@ -646,7 +646,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         noiseAmount={0.10}
         distortion={0.16}
         brightness={rayBrightness}
-        scrollBlur={currentTab === 'landing' ? homeScrollBlur : 0}
+        scrollBlur={currentTab === 'landing' ? homeScrollBlur : 28}
       />
 
       {/* Toast Notification Banner */}

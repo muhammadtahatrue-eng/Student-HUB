@@ -18,24 +18,15 @@ import {
   INITIAL_DOUBTS
 } from '../data/universityData.ts';
 
-const STORAGE_KEY_CUSTOM_UNIS = 'studyvault_custom_universities_v2';
-const STORAGE_KEY_ENROLLMENTS = 'studyvault_student_enrollments_v2';
-const STORAGE_KEY_FOLLOWED = 'studyvault_followed_universities_v2';
-const STORAGE_KEY_DISCUSSIONS = 'studyvault_discussions_v2';
-const STORAGE_KEY_DOUBTS = 'studyvault_doubts_v2';
-const STORAGE_KEY_UPVOTED_ITEMS = 'studyvault_community_upvotes_v2';
+const STORAGE_KEY_CUSTOM_UNIS = 'xeusar_custom_universities_v3';
+const STORAGE_KEY_ENROLLMENTS = 'xeusar_student_enrollments_v3';
+const STORAGE_KEY_FOLLOWED = 'xeusar_followed_universities_v3';
+const STORAGE_KEY_DISCUSSIONS = 'xeusar_discussions_v3';
+const STORAGE_KEY_DOUBTS = 'xeusar_doubts_v3';
+const STORAGE_KEY_UPVOTED_ITEMS = 'xeusar_community_upvotes_v3';
 
-// Seed enrollments for initially active Pakistani HEC universities
-const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {
-  'nust': 1420,
-  'fast-nuces': 1850,
-  'lums': 1220,
-  'comsats': 980,
-  'uet-lahore': 850,
-  'iba-karachi': 740,
-  'giki': 590,
-  'qau': 410,
-};
+// Zero hardcoded enrollments — counts increment only when real students register
+const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
 
 // ============================================================================
 // STUDENT ENROLLMENT & DYNAMIC UNLOCK TRACKING
@@ -222,7 +213,7 @@ export function getFollowedUniversityIds(): string[] {
       return JSON.parse(raw);
     }
   } catch {}
-  return ['nust'];
+  return [];
 }
 
 export function toggleFollowUniversity(universityId: string): { followed: boolean; followedIds: string[] } {

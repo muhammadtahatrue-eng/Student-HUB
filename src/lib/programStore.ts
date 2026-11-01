@@ -18,25 +18,14 @@ import {
 } from '../data/programData.ts';
 
 // Local storage keys
-const STORAGE_KEY_PROGRAMS = 'studyvault_academic_programs_v1';
-const STORAGE_KEY_ENROLLMENTS = 'studyvault_program_enrollments_v1';
-const STORAGE_KEY_FOLLOWED_PROGRAMS = 'studyvault_followed_programs_v1';
-const STORAGE_KEY_DISCUSSIONS = 'studyvault_program_discussions_v1';
-const STORAGE_KEY_DOUBTS = 'studyvault_program_doubts_v1';
+const STORAGE_KEY_PROGRAMS = 'xeusar_academic_programs_v2';
+const STORAGE_KEY_ENROLLMENTS = 'xeusar_program_enrollments_v2';
+const STORAGE_KEY_FOLLOWED_PROGRAMS = 'xeusar_followed_programs_v2';
+const STORAGE_KEY_DISCUSSIONS = 'xeusar_program_discussions_v2';
+const STORAGE_KEY_DOUBTS = 'xeusar_program_doubts_v2';
 
-// Seed enrollment mapping for initial student distribution
-const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {
-  'bs-cs': 1420,
-  'bs-se': 890,
-  'bba': 940,
-  'bs-ds-ai': 620,
-  'bs-ee': 410,
-  'ms-ds': 310,
-  'ms-cs': 240,
-  'phd-cs': 65,
-  'ad-cs': 120,
-  // Other programs like bs-cys, bs-af, mba, phd-mgmt, ad-ba have 0 enrollments initially (LOCKED until student joins)
-};
+// Zero hardcoded enrollments — counts increment only when real students enroll
+const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
 
 // ----------------------------------------------------------------------------
 // ENROLLMENT & DYNAMIC UNLOCK SYSTEM
@@ -168,24 +157,7 @@ export function registerCustomProgram(params: {
     status: 'verified',
     createdByStudentId: params.studentId,
     bannerGradient: 'from-cyan-950/40 via-indigo-950/60 to-black',
-    semesters: [
-      {
-        semesterNumber: 1,
-        name: 'Semester 1: Core Foundation',
-        courses: [
-          {
-            id: `${id}-c1`,
-            programId: id,
-            semesterNumber: 1,
-            code: 'CORE-101',
-            name: `${params.name} Foundations`,
-            credits: 3,
-            description: 'Core introductory coursework and academic methods.',
-            resourceCount: 0
-          }
-        ]
-      }
-    ]
+    semesters: []
   };
 
   try {
@@ -210,7 +182,7 @@ export function getFollowedProgramIds(): string[] {
     const raw = localStorage.getItem(STORAGE_KEY_FOLLOWED_PROGRAMS);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return ['bs-cs']; // default follow
+  return [];
 }
 
 export function toggleFollowProgram(programId: string): boolean {
@@ -233,27 +205,17 @@ export function toggleFollowProgram(programId: string): boolean {
 }
 
 // ----------------------------------------------------------------------------
-// REAL RESOURCE COUNTS FROM STORED & SEED NOTES
+// REAL RESOURCE COUNTS FROM UPLOADED NOTES (NO HARDCODED COUNTS)
 // ----------------------------------------------------------------------------
 
 export function getRealResourceCountsByProgram(): Record<string, number> {
-  const counts: Record<string, number> = {
-    'bs-cs': 88,
-    'bs-se': 54,
-    'bba': 46,
-    'bs-ds-ai': 42,
-    'bs-ee': 29,
-    'ms-ds': 28,
-    'ms-cs': 22,
-    'phd-cs': 14,
-    'ad-cs': 11
-  };
+  const counts: Record<string, number> = {};
 
   try {
-    const customNotesRaw = localStorage.getItem('studyvault_custom_notes');
-    if (customNotesRaw) {
-      const customNotes: StudyNote[] = JSON.parse(customNotesRaw);
-      customNotes.forEach(note => {
+    const localNotesRaw = localStorage.getItem('xeusar_local_notes_v2');
+    if (localNotesRaw) {
+      const localNotes: StudyNote[] = JSON.parse(localNotesRaw);
+      localNotes.forEach(note => {
         if (note.programId) {
           counts[note.programId] = (counts[note.programId] || 0) + 1;
         }
@@ -267,6 +229,16 @@ export function getRealResourceCountsByProgram(): Record<string, number> {
 // ----------------------------------------------------------------------------
 // PROGRAM-SCOPED DISCUSSIONS
 // ----------------------------------------------------------------------------
+
+export function getAllProgramDiscussions(): ProgramDiscussionPost[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
+    const all: ProgramDiscussionPost[] = raw ? JSON.parse(raw) : INITIAL_PROGRAM_DISCUSSIONS;
+    return [...all].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch {
+    return INITIAL_PROGRAM_DISCUSSIONS;
+  }
+}
 
 export function getProgramDiscussions(programId: string): ProgramDiscussionPost[] {
   try {

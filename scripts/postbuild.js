@@ -38,5 +38,11 @@ if (fs.existsSync(distDir)) {
     fs.copyFileSync(dist404, root404);
   }
 
+  const distFavicon = path.resolve('dist/favicon.svg');
+  const rootFavicon = path.resolve('favicon.svg');
+  if (fs.existsSync(distFavicon)) {
+    fs.copyFileSync(distFavicon, rootFavicon);
+  }
+
   console.log('✓ Synced production build to /docs and root /assets for GitHub Pages.');
 }

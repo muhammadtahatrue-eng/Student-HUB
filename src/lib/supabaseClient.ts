@@ -2,9 +2,9 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { StudyNote, SupabaseConfig } from '../types/index.ts';
 import { INITIAL_STUDY_NOTES } from '../data/seedData.ts';
 
-const STORAGE_KEY_CONFIG = 'studyvault_supabase_config';
-const STORAGE_KEY_NOTES = 'studyvault_local_notes';
-const STORAGE_KEY_UPVOTES = 'studyvault_user_upvotes';
+const STORAGE_KEY_CONFIG = 'xeusar_supabase_config_v2';
+const STORAGE_KEY_NOTES = 'xeusar_local_notes_v2';
+const STORAGE_KEY_UPVOTES = 'xeusar_user_upvotes_v2';
 
 // Helper to strictly validate HTTP/HTTPS URLs
 export function isValidHttpUrl(urlString: string | null | undefined): boolean {

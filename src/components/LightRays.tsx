@@ -114,7 +114,7 @@ export function LightRays({
   mouseInfluence = 0.1,
   noiseAmount = 0.0,
   distortion = 0.0,
-  brightness = 1.0,
+  brightness = 0.5,
   scrollBlur = 0,
   className = ''
 }: LightRaysProps) {

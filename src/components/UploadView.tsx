@@ -153,21 +153,6 @@ export const UploadView: React.FC<UploadViewProps> = ({
     }
   };
 
-  const handleQuickPrefill = () => {
-    setTitle('Calculus III: Vector Calculus & Green\'s Theorem Complete Summary');
-    setCourseCode('MATH 21A');
-    setCourseName('Multivariable Calculus');
-    setSubject('Mathematics');
-    setMaterialType('cheat_sheet');
-    setAcademicYear(2025);
-    setSemester('Fall Semester');
-    setProfessor('Prof. David Jerison');
-    setDescription('High-yield derivation notes with vector flux formulas and surface integrals.');
-    setTagsInput('Calculus, Greens Theorem, Stokes Theorem, Flux');
-    setUploaderName('Alex Student');
-    setUploaderUniversity('University of Michigan');
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !courseCode.trim()) {
@@ -322,16 +307,6 @@ export const UploadView: React.FC<UploadViewProps> = ({
           <ArrowLeft className="w-4 h-4" />
           Back to Overview
         </button>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleQuickPrefill}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-white bg-white/10 hover:bg-white/20 rounded-full transition-colors cursor-pointer"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            Quick Example Pre-fill
-          </button>
-        </div>
       </div>
 
       {/* Main Form Container */}

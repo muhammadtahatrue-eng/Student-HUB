@@ -20,7 +20,7 @@ import {
   Compass
 } from 'lucide-react';
 import { StudyNote, StudentUser, AcademicProgram } from '../types/index.ts';
-import { getAllPrograms, getProgramDiscussions } from '../lib/programStore.ts';
+import { getAllPrograms, getAllProgramDiscussions } from '../lib/programStore.ts';
 import { MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
 import { RaysOrigin } from './LightRays.tsx';
 
@@ -54,27 +54,21 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
   onUpvoteNote,
   onOpenProgram,
   onOpenExplorePrograms,
-  rayColor = '#00f0ff',
-  onChangeRayColor,
-  rayOrigin = 'top-center',
-  onChangeRayOrigin,
-  rayPulsating = true,
-  onTogglePulsating,
 }) => {
-  // Dynamically calculated platform metrics
+  // Dynamically calculated platform metrics (zero hardcoded fallbacks)
   const liveStats = useMemo(() => {
     const allPrograms = getAllPrograms();
     const totalStudents = allPrograms.reduce((acc, p) => acc + (p.activeStudents || 0), 0);
     const totalDownloads = notes.reduce((acc, n) => acc + (n.downloadsCount || 0), 0);
     const totalUpvotes = notes.reduce((acc, n) => acc + (n.upvotesCount || 0), 0);
     const verifiedDocs = notes.length;
-    const programsCount = allPrograms.length;
+    const activeProgramsCount = allPrograms.filter(p => (p.activeStudents || 0) > 0).length;
 
     return {
-      activeStudents: totalStudents > 0 ? totalStudents.toLocaleString() : '3,800+',
+      activeStudents: totalStudents.toLocaleString(),
       verifiedDocs: verifiedDocs.toLocaleString(),
       totalDownloads: totalDownloads.toLocaleString(),
-      academicPrograms: programsCount.toString(),
+      academicPrograms: activeProgramsCount.toString(),
       totalUpvotes: totalUpvotes.toLocaleString()
     };
   }, [notes]);
@@ -91,13 +85,12 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
     return getAllPrograms()
       .filter(p => p.activeStudents > 0)
       .slice(0, 4);
-  }, []);
+  }, [notes, user]);
 
   // Real discussions from student store
   const sampleDiscussions = useMemo(() => {
-    const csDiscussions = getProgramDiscussions('bs-cs');
-    return csDiscussions.slice(0, 3);
-  }, []);
+    return getAllProgramDiscussions().slice(0, 3);
+  }, [notes, user]);
 
   return (
     <div className="relative z-10 font-outfit text-white">
@@ -171,67 +164,83 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
           </div>
 
           {/* Dynamic Real Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
-            {trendingNotes.map((note) => (
-              <div
-                key={note.id}
-                className="p-5 sm:p-6 rounded-2xl border border-white/10 bg-white/[0.03] hover:border-cyan-400/50 hover:bg-white/[0.05] transition-all flex flex-col justify-between group shadow-xl"
+          {trendingNotes.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+              {trendingNotes.map((note) => (
+                <div
+                  key={note.id}
+                  className="p-5 sm:p-6 rounded-2xl border border-white/10 bg-white/[0.03] hover:border-cyan-400/50 hover:bg-white/[0.05] transition-all flex flex-col justify-between group shadow-xl"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[10px] font-jetbrains px-2 py-0.5 rounded-full bg-cyan-400/10 text-cyan-300 border border-cyan-400/20 font-semibold uppercase">
+                        {note.courseCode}
+                      </span>
+                      <span className="text-[10px] text-white/50 uppercase tracking-wider font-jetbrains">
+                        {MATERIAL_TYPE_LABELS[note.materialType]?.label || note.materialType}
+                      </span>
+                    </div>
+
+                    <h3 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-2 mb-2">
+                      {note.title}
+                    </h3>
+
+                    <p className="text-xs text-white/60 line-clamp-2 mb-4 leading-relaxed font-light">
+                      {note.description || `${note.subject} material shared for course ${note.courseCode}`}
+                    </p>
+                  </div>
+
+                  <div className="pt-4 border-t border-white/10 flex items-center justify-between text-xs text-white/60">
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1 text-[11px] text-white/70">
+                        <ThumbsUp className="w-3 h-3 text-cyan-400" />
+                        {note.upvotesCount}
+                      </span>
+                      <span className="flex items-center gap-1 text-[11px] text-white/70">
+                        <Download className="w-3 h-3 text-emerald-400" />
+                        {note.downloadsCount}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {onPreviewNote && (
+                        <button
+                          onClick={() => onPreviewNote(note)}
+                          title="Preview PDF"
+                          className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {onDownloadNote && (
+                        <button
+                          onClick={() => onDownloadNote(note)}
+                          title="Download"
+                          className="p-1.5 rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 transition-colors cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-10 px-6 rounded-2xl border border-white/10 bg-white/[0.02] text-center">
+              <FileText className="w-8 h-8 text-white/25 mx-auto mb-2.5" />
+              <p className="text-sm font-semibold text-white/80">No study notes uploaded yet</p>
+              <p className="text-xs text-white/50 mt-1 mb-4">
+                Upload the first PDF lecture note, exam paper, or cheat sheet to populate the repository.
+              </p>
+              <button
+                onClick={onUploadNotes}
+                className="px-5 py-2 rounded-full bg-white text-black text-xs font-bold uppercase tracking-wider hover:bg-white/90 transition-all cursor-pointer"
               >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-[10px] font-jetbrains px-2 py-0.5 rounded-full bg-cyan-400/10 text-cyan-300 border border-cyan-400/20 font-semibold uppercase">
-                      {note.courseCode}
-                    </span>
-                    <span className="text-[10px] text-white/50 uppercase tracking-wider font-jetbrains">
-                      {MATERIAL_TYPE_LABELS[note.materialType]?.label || note.materialType}
-                    </span>
-                  </div>
-
-                  <h3 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-2 mb-2">
-                    {note.title}
-                  </h3>
-
-                  <p className="text-xs text-white/60 line-clamp-2 mb-4 leading-relaxed font-light">
-                    {note.description || `${note.subject} material shared for course ${note.courseCode}`}
-                  </p>
-                </div>
-
-                <div className="pt-4 border-t border-white/10 flex items-center justify-between text-xs text-white/60">
-                  <div className="flex items-center gap-3">
-                    <span className="flex items-center gap-1 text-[11px] text-white/70">
-                      <ThumbsUp className="w-3 h-3 text-cyan-400" />
-                      {note.upvotesCount}
-                    </span>
-                    <span className="flex items-center gap-1 text-[11px] text-white/70">
-                      <Download className="w-3 h-3 text-emerald-400" />
-                      {note.downloadsCount}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {onPreviewNote && (
-                      <button
-                        onClick={() => onPreviewNote(note)}
-                        title="Preview PDF"
-                        className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                    {onDownloadNote && (
-                      <button
-                        onClick={() => onDownloadNote(note)}
-                        title="Download"
-                        className="p-1.5 rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 transition-colors cursor-pointer"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                Upload First Note
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -252,7 +261,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                 { label: 'Active Students', value: liveStats.activeStudents, desc: 'Enrolled in programs' },
                 { label: 'Verified Documents', value: liveStats.verifiedDocs, desc: 'Notes, exams & slides' },
                 { label: 'Downloads Served', value: liveStats.totalDownloads, desc: 'Direct student downloads' },
-                { label: 'Academic Programs', value: liveStats.academicPrograms, desc: 'Accredited degrees' },
+                { label: 'Academic Programs', value: liveStats.academicPrograms, desc: 'Unlocked degrees' },
               ].map((metric) => (
                 <div
                   key={metric.label}
@@ -298,42 +307,60 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {spotlightPrograms.map((prog) => (
-              <div
-                key={prog.id}
-                onClick={() => onOpenProgram && onOpenProgram(prog.id)}
-                className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-cyan-400/50 hover:bg-white/[0.06] transition-all cursor-pointer flex flex-col justify-between group shadow-lg"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-jetbrains px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 font-semibold border border-cyan-500/20">
-                      {prog.shortCode}
+          {spotlightPrograms.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {spotlightPrograms.map((prog) => (
+                <div
+                  key={prog.id}
+                  onClick={() => onOpenProgram && onOpenProgram(prog.id)}
+                  className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-cyan-400/50 hover:bg-white/[0.06] transition-all cursor-pointer flex flex-col justify-between group shadow-lg"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-jetbrains px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 font-semibold border border-cyan-500/20">
+                        {prog.shortCode}
+                      </span>
+                      <span className="text-[10px] text-white/50 uppercase font-jetbrains">
+                        {prog.degreeTier}
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors mb-2">
+                      {prog.name}
+                    </h3>
+                    <p className="text-xs text-white/60 line-clamp-2 mb-4 font-light">
+                      {prog.description}
+                    </p>
+                  </div>
+
+                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-white/50 font-jetbrains">
+                    <span className="flex items-center gap-1">
+                      <Users className="w-3 h-3 text-cyan-400" />
+                      {prog.activeStudents} Students
                     </span>
-                    <span className="text-[10px] text-white/50 uppercase font-jetbrains">
-                      {prog.degreeTier}
+                    <span className="text-cyan-400 flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
+                      View <ArrowRight className="w-3 h-3" />
                     </span>
                   </div>
-                  <h3 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors mb-2">
-                    {prog.name}
-                  </h3>
-                  <p className="text-xs text-white/60 line-clamp-2 mb-4 font-light">
-                    {prog.description}
-                  </p>
                 </div>
-
-                <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-white/50 font-jetbrains">
-                  <span className="flex items-center gap-1">
-                    <Users className="w-3 h-3 text-cyan-400" />
-                    {prog.activeStudents} Students
-                  </span>
-                  <span className="text-cyan-400 flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
-                    View <ArrowRight className="w-3 h-3" />
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-10 px-6 rounded-2xl border border-white/10 bg-white/[0.02] text-center">
+              <GraduationCap className="w-8 h-8 text-white/25 mx-auto mb-2.5" />
+              <p className="text-sm font-semibold text-white/80">No active degree programs unlocked yet</p>
+              <p className="text-xs text-white/50 mt-1 mb-4">
+                Degree programs automatically unlock as soon as the first student enrolls or creates a custom cohort.
+              </p>
+              {onOpenExplorePrograms && (
+                <button
+                  onClick={onOpenExplorePrograms}
+                  className="px-5 py-2 rounded-full bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 border border-cyan-400/30 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
+                >
+                  Unlock a Program
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -361,38 +388,48 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
-            {sampleDiscussions.map((post) => (
-              <div
-                key={post.id}
-                className="p-5 sm:p-6 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-emerald-400/40 transition-all flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-jetbrains text-emerald-400 uppercase tracking-widest">
-                      {post.category}
-                    </span>
-                    <span className="text-[10px] text-white/40 font-jetbrains">
-                      {post.commentsCount || 0} replies
+          {sampleDiscussions.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+              {sampleDiscussions.map((post) => (
+                <div
+                  key={post.id}
+                  className="p-5 sm:p-6 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-emerald-400/40 transition-all flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-jetbrains text-emerald-400 uppercase tracking-widest">
+                        {post.category}
+                      </span>
+                      <span className="text-[10px] text-white/40 font-jetbrains">
+                        {post.commentsCount || 0} replies
+                      </span>
+                    </div>
+                    <h4 className="text-sm font-bold text-white mb-2 line-clamp-2">
+                      {post.title}
+                    </h4>
+                    <p className="text-xs text-white/60 line-clamp-3 mb-4 font-light leading-relaxed">
+                      {post.content}
+                    </p>
+                  </div>
+                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-white/50">
+                    <span>by {post.authorName}</span>
+                    <span className="flex items-center gap-1 text-cyan-400">
+                      <ThumbsUp className="w-3 h-3" />
+                      {post.upvotesCount}
                     </span>
                   </div>
-                  <h4 className="text-sm font-bold text-white mb-2 line-clamp-2">
-                    {post.title}
-                  </h4>
-                  <p className="text-xs text-white/60 line-clamp-3 mb-4 font-light leading-relaxed">
-                    {post.content}
-                  </p>
                 </div>
-                <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-white/50">
-                  <span>by {post.authorName}</span>
-                  <span className="flex items-center gap-1 text-cyan-400">
-                    <ThumbsUp className="w-3 h-3" />
-                    {post.upvotesCount}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-10 px-6 rounded-2xl border border-white/10 bg-white/[0.02] text-center">
+              <MessageSquare className="w-8 h-8 text-white/25 mx-auto mb-2.5" />
+              <p className="text-sm font-semibold text-white/80">No community discussions yet</p>
+              <p className="text-xs text-white/50 mt-1">
+                Join your academic program cohort to start the first peer Q&A thread.
+              </p>
+            </div>
+          )}
         </div>
       </section>
 

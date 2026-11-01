@@ -344,7 +344,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onChangeRayColor,
   rayOrigin = 'top-center',
   onChangeRayOrigin,
-  rayBrightness = 1.0,
+  rayBrightness = 0.5,
   onChangeRayBrightness,
   onResetFlare,
 }) => {
@@ -892,10 +892,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           />
           <div className="flex items-center justify-between gap-1.5 pt-0.5">
             {[
-              { label: 'Subtle (35%)', value: 0.35 },
-              { label: 'Balanced (70%)', value: 0.7 },
-              { label: 'Default (100%)', value: 1.0 },
-              { label: 'Vibrant (140%)', value: 1.4 },
+              { label: 'Subtle (25%)', value: 0.25 },
+              { label: 'Default (50%)', value: 0.5 },
+              { label: 'Balanced (75%)', value: 0.75 },
+              { label: 'Bright (100%)', value: 1.0 },
               { label: 'Max (200%)', value: 2.0 },
             ].map((preset) => {
               const isSelected = Math.abs(rayBrightness - preset.value) < 0.03;

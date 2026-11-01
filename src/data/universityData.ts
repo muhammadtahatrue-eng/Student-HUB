@@ -28,8 +28,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Software Engineering', 'Electrical Engineering', 'Mechanical Engineering', 'Artificial Intelligence', 'Business'],
     website: 'https://nust.edu.pk',
     establishedYear: 1991,
-    verifiedStudents: 1420,
-    totalCoursesCount: 165,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Premier national science and engineering powerhouse recognized internationally for high-impact research, incubation at NSTP, and academic excellence.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -49,8 +49,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Software Engineering', 'Data Science', 'Cybersecurity', 'Artificial Intelligence', 'Electrical Engineering'],
     website: 'https://nu.edu.pk',
     establishedYear: 2000,
-    verifiedStudents: 1850,
-    totalCoursesCount: 190,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Renowned for producing Pakistan top software engineers, rigorous coding fundamentals, competitive programming culture, and pioneering tech research.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -70,8 +70,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Physics', 'Chemistry', 'Biological Sciences', 'International Relations', 'Economics'],
     website: 'https://qau.edu.pk',
     establishedYear: 1967,
-    verifiedStudents: 410,
-    totalCoursesCount: 95,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Highest ranked general university in Pakistan situated at the foot of Margalla Hills, celebrated for post-graduate research and scientific citations.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -91,8 +91,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Software Engineering', 'Electrical Engineering', 'Management Sciences', 'Bioinformatics'],
     website: 'https://comsats.edu.pk',
     establishedYear: 1998,
-    verifiedStudents: 980,
-    totalCoursesCount: 140,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Public research university with multi-campus presence across Pakistan, pioneering digital sciences, engineering innovations, and open research.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -261,8 +261,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Business Administration', 'Economics', 'Electrical Engineering', 'Mathematics', 'Law'],
     website: 'https://lums.edu.pk',
     establishedYear: 1984,
-    verifiedStudents: 1220,
-    totalCoursesCount: 175,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Top-tier private research institution renowned for world-class business leadership, competitive computer science, and liberal arts.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -282,8 +282,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Electrical Engineering', 'Civil Engineering', 'Mechanical Engineering', 'Chemical Engineering'],
     website: 'https://uet.edu.pk',
     establishedYear: 1921,
-    verifiedStudents: 850,
-    totalCoursesCount: 150,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'One of the oldest and most prestigious engineering institutions in South Asia, producing generations of engineers and public leaders.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -303,8 +303,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science (PUCIT)', 'Pharmacy', 'Law', 'Commerce', 'Pure Sciences', 'Humanities'],
     website: 'https://pu.edu.pk',
     establishedYear: 1882,
-    verifiedStudents: 650,
-    totalCoursesCount: 220,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Historic apex educational institution featuring the famed Punjab University College of Information Technology (PUCIT).',
     hecRecognized: true,
     isMemberRestricted: false
@@ -536,8 +536,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Economics', 'Business Administration', 'Data Science', 'Mathematics', 'Finance'],
     website: 'https://iba.edu.pk',
     establishedYear: 1955,
-    verifiedStudents: 740,
-    totalCoursesCount: 120,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'First business school in South Asia outside North America, renowned for producing top chief executives, financial analysts, and computer scientists.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -706,8 +706,8 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
     disciplines: ['Computer Science', 'Software Engineering', 'Artificial Intelligence', 'Mechanical Engineering', 'Materials & Chemical Engineering'],
     website: 'https://giki.edu.pk',
     establishedYear: 1993,
-    verifiedStudents: 590,
-    totalCoursesCount: 110,
+    verifiedStudents: 0,
+    totalCoursesCount: 0,
     description: 'Secluded residential engineering sanctuary situated near Tarbela Dam, legendary for student society initiatives, robotics, and coding rigor.',
     hecRecognized: true,
     isMemberRestricted: false
@@ -870,276 +870,11 @@ export const HEC_MASTER_UNIVERSITIES: University[] = [
 // Initial active universities default list (aliases HEC master dataset)
 export const INITIAL_UNIVERSITIES: University[] = HEC_MASTER_UNIVERSITIES;
 
-// ============================================================================
-// DEPARTMENTS & COURSES (SEEDED FOR TOP ACTIVE CAMPUSES)
-// ============================================================================
+export const INITIAL_DEPARTMENTS: Department[] = [];
 
-export const INITIAL_DEPARTMENTS: Department[] = [
-  // --- NUST ---
-  {
-    id: 'dept-nust-seecs',
-    universityId: 'nust',
-    name: 'School of Electrical Engineering and Computer Science (SEECS)',
-    code: 'SEECS',
-    description: 'Center of computing innovation, intelligent systems, cyber security, and networking research.',
-    courseCount: 4
-  },
-  {
-    id: 'dept-nust-nbs',
-    universityId: 'nust',
-    name: 'NUST Business School (NBS)',
-    code: 'NBS',
-    description: 'Accredited business institute training strategic executives and data-driven finance analysts.',
-    courseCount: 2
-  },
-
-  // --- FAST-NUCES ---
-  {
-    id: 'dept-fast-cs',
-    universityId: 'fast-nuces',
-    name: 'Department of Computer Science & Software Engineering',
-    code: 'CS',
-    description: 'Flagship computing faculty recognized for rigorous coding curriculum, algorithms, and systems engineering.',
-    courseCount: 4
-  },
-
-  // --- LUMS ---
-  {
-    id: 'dept-lums-sbasse',
-    universityId: 'lums',
-    name: 'Syed Babar Ali School of Science and Engineering (SBASSE)',
-    code: 'SBASSE',
-    description: 'Premier multidisciplinary STEM school emphasizing pure scientific research and software architecture.',
-    courseCount: 3
-  },
-  {
-    id: 'dept-lums-sdsb',
-    universityId: 'lums',
-    name: 'Suleman Dawood School of Business (SDSB)',
-    code: 'SDSB',
-    description: 'AACSB-accredited business school delivering case-method management instruction.',
-    courseCount: 2
-  },
-
-  // --- COMSATS ---
-  {
-    id: 'dept-cui-cs',
-    universityId: 'comsats',
-    name: 'Department of Computer Science',
-    code: 'CS',
-    description: 'Comprehensive computer science education, software testing, and network security laboratories.',
-    courseCount: 3
-  },
-
-  // --- UET LAHORE ---
-  {
-    id: 'dept-uet-cse',
-    universityId: 'uet-lahore',
-    name: 'Department of Computer Science and Engineering',
-    code: 'CS',
-    description: 'Pioneering public department educating software developers and hardware system architects.',
-    courseCount: 3
-  },
-
-  // --- GIKI ---
-  {
-    id: 'dept-giki-fcse',
-    universityId: 'giki',
-    name: 'Faculty of Computer Science and Engineering (FCSE)',
-    code: 'FCSE',
-    description: 'High-rigor computing and AI laboratory nestled in Topi, focused on competitive programming and robotics.',
-    courseCount: 3
-  },
-
-  // --- IBA KARACHI ---
-  {
-    id: 'dept-iba-smcs',
-    universityId: 'iba-karachi',
-    name: 'School of Mathematics and Computer Science (SMCS)',
-    code: 'SMCS',
-    description: 'Interdisciplinary mathematical sciences, algorithmic trading, and software engineering division.',
-    courseCount: 3
-  },
-
-  // --- QAU ---
-  {
-    id: 'dept-qau-cs',
-    universityId: 'qau',
-    name: 'Department of Computer Science',
-    code: 'CS',
-    description: 'Research-focused computing division advancing computational intelligence and semantic web.',
-    courseCount: 2
-  }
-];
-
-export const INITIAL_COURSES: Course[] = [
-  // --- NUST ---
-  {
-    id: 'course-nust-cs214',
-    universityId: 'nust',
-    departmentId: 'dept-nust-seecs',
-    departmentCode: 'SEECS',
-    code: 'CS-214',
-    name: 'Data Structures and Algorithm Analysis',
-    description: 'Complexity analysis, balanced search trees, graph algorithms, and dynamic programming applications.',
-    instructor: 'Dr. Faisal Shafait',
-    activeStudents: 290
-  },
-  {
-    id: 'course-nust-se311',
-    universityId: 'nust',
-    departmentId: 'dept-nust-seecs',
-    departmentCode: 'SEECS',
-    code: 'SE-311',
-    name: 'Software Design and Architecture',
-    description: 'Object-oriented patterns, microservices architectures, architectural styles, and quality attributes.',
-    instructor: 'Dr. Muhammad Moazam',
-    activeStudents: 240
-  },
-  {
-    id: 'course-nust-ee221',
-    universityId: 'nust',
-    departmentId: 'dept-nust-seecs',
-    departmentCode: 'SEECS',
-    code: 'EE-221',
-    name: 'Signals and Systems',
-    description: 'Continuous & discrete time signals, Fourier and Laplace transformations, filter designs.',
-    instructor: 'Dr. Hassaan Khaliq',
-    activeStudents: 180
-  },
-
-  // --- FAST-NUCES ---
-  {
-    id: 'course-fast-cs2001',
-    universityId: 'fast-nuces',
-    departmentId: 'dept-fast-cs',
-    departmentCode: 'CS',
-    code: 'CS-2001',
-    name: 'Data Structures & Algorithms',
-    description: 'Intense C++ memory management, amortized bounds, AVL, Red-Black trees, heaps, and shortest path algorithms.',
-    instructor: 'Prof. Farooq Ahmad',
-    activeStudents: 410
-  },
-  {
-    id: 'course-fast-cs3005',
-    universityId: 'fast-nuces',
-    departmentId: 'dept-fast-cs',
-    departmentCode: 'CS',
-    code: 'CS-3005',
-    name: 'Operating Systems & Kernel Internals',
-    description: 'Process scheduling, POSIX threads, synchronization primitives, page replacements, and XV6 OS hacking.',
-    instructor: 'Dr. Kashif Zafar',
-    activeStudents: 380
-  },
-  {
-    id: 'course-fast-cs3006',
-    universityId: 'fast-nuces',
-    departmentId: 'dept-fast-cs',
-    departmentCode: 'CS',
-    code: 'CS-3006',
-    name: 'Database Systems & SQL Optimization',
-    description: 'Relational calculus, ER design, B+ Tree indexing, ACID transactions, and query plans.',
-    instructor: 'Dr. Mehreen Saeed',
-    activeStudents: 320
-  },
-
-  // --- LUMS ---
-  {
-    id: 'course-lums-cs310',
-    universityId: 'lums',
-    departmentId: 'dept-lums-sbasse',
-    departmentCode: 'SBASSE',
-    code: 'CS-310',
-    name: 'Algorithms & Computational Complexity',
-    description: 'Asymptotic notation, divide-and-conquer, greedy algorithms, network flow, NP-completeness reductions.',
-    instructor: 'Dr. Ihsan Ayyub Qazi',
-    activeStudents: 220
-  },
-  {
-    id: 'course-lums-math101',
-    universityId: 'lums',
-    departmentId: 'dept-lums-sbasse',
-    departmentCode: 'SBASSE',
-    code: 'MATH-101',
-    name: 'Calculus I & Real Analysis',
-    description: 'Limits, differentiability, Mean Value Theorem, Taylor series, and Riemann integration.',
-    instructor: 'Dr. Sultan Sial',
-    activeStudents: 350
-  },
-
-  // --- COMSATS ---
-  {
-    id: 'course-cui-csc241',
-    universityId: 'comsats',
-    departmentId: 'dept-cui-cs',
-    departmentCode: 'CS',
-    code: 'CSC-241',
-    name: 'Object Oriented Programming',
-    description: 'Inheritance, polymorphism, virtual tables, template metaprogramming, and standard template library.',
-    instructor: 'Dr. Sohail Asghar',
-    activeStudents: 260
-  },
-  {
-    id: 'course-cui-csc339',
-    universityId: 'comsats',
-    departmentId: 'dept-cui-cs',
-    departmentCode: 'CS',
-    code: 'CSC-339',
-    name: 'Computer Networks & Protocols',
-    description: 'OSI / TCP-IP stack, sliding window protocols, congestion control, BGP routing, and socket programming.',
-    instructor: 'Dr. Majid Iqbal Khan',
-    activeStudents: 210
-  },
-
-  // --- UET LAHORE ---
-  {
-    id: 'course-uet-cs202',
-    universityId: 'uet-lahore',
-    departmentId: 'dept-uet-cse',
-    departmentCode: 'CS',
-    code: 'CS-202',
-    name: 'Database Engineering',
-    description: 'Relational algebra, normal forms (1NF-BCNF), stored procedures, and concurrency control.',
-    instructor: 'Dr. Shazia Arshad',
-    activeStudents: 230
-  },
-
-  // --- GIKI ---
-  {
-    id: 'course-giki-cs201',
-    universityId: 'giki',
-    departmentId: 'dept-giki-fcse',
-    departmentCode: 'FCSE',
-    code: 'CS-201',
-    name: 'Data Structures & Problem Solving',
-    description: 'Hands-on algorithm implementations, asymptotic bounds, binary heaps, dynamic programming on trees.',
-    instructor: 'Dr. Zahid Halim',
-    activeStudents: 195
-  },
-
-  // --- IBA KARACHI ---
-  {
-    id: 'course-iba-cse141',
-    universityId: 'iba-karachi',
-    departmentId: 'dept-iba-smcs',
-    departmentCode: 'SMCS',
-    code: 'CSE-141',
-    name: 'Introduction to Computer Programming',
-    description: 'Algorithmic reasoning, modular design, recursion, and object models.',
-    instructor: 'Dr. Tariq Mahmood',
-    activeStudents: 210
-  }
-];
-
-// ============================================================================
-// REAL CAMPUS DISCUSSIONS (Hardcoded mock entries removed)
-// ============================================================================
+export const INITIAL_COURSES: Course[] = [];
 
 export const INITIAL_DISCUSSIONS: DiscussionPost[] = [];
-
-// ============================================================================
-// REAL CAMPUS DOUBTS (Hardcoded mock entries removed)
-// ============================================================================
 
 export const INITIAL_DOUBTS: DoubtQuestion[] = [];
 
