@@ -31,6 +31,7 @@ import { UploadView } from './components/UploadView.tsx';
 import { SupabaseModal } from './components/SupabaseModal.tsx';
 import { CodeExportModal } from './components/CodeExportModal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
+import { UserSettingsModal, UserSettingsTab } from './components/UserSettingsModal.tsx';
 import { DemoModal } from './components/DemoModal.tsx';
 import { Footer } from './components/Footer.tsx';
 import { VerticalTaskbar } from './components/VerticalTaskbar.tsx';
@@ -45,9 +46,11 @@ import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
 
 const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
+const DEFAULT_FLARE_BRIGHTNESS = 0.5; // 50% default intensity
 
 const HOLOGRAPHIC_NEON_COLORS = [
   '#9ca3af', // Ash Grey (Default)
+  'rgb',     // RGB Spectrum
   '#00f0ff', // Cyber Cyan
   '#ffffff', // Pure White
   '#10b981', // Aurora Emerald
@@ -104,7 +107,12 @@ export default function App() {
   const [user, setUser] = useState<StudentUser | null>(() => {
     try {
       const saved = localStorage.getItem('studyvault_active_user');
-      return saved ? JSON.parse(saved) : null;
+      if (!saved) return null;
+      const parsed = JSON.parse(saved);
+      if (parsed && parsed.email && parsed.email !== 'student@campus.edu') {
+        parsed.isGuest = false;
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -115,6 +123,8 @@ export default function App() {
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isCodeExportOpen, setIsCodeExportOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
+  const [userSettingsTab, setUserSettingsTab] = useState<UserSettingsTab>('profile');
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
   const [previewNote, setPreviewNote] = useState<StudyNote | null>(null);
 
@@ -145,7 +155,7 @@ export default function App() {
   const [rayPulsating, setRayPulsating] = useState<boolean>(true);
   const [rayBrightness, setRayBrightness] = useState<number>(() => {
     try {
-      const saved = localStorage.getItem('xeusar_flare_brightness_v2');
+      const saved = localStorage.getItem('xeusar_flare_brightness_v3');
       if (saved !== null) {
         const parsed = parseFloat(saved);
         if (!Number.isNaN(parsed) && parsed >= 0.1 && parsed <= 2.5) {
@@ -153,7 +163,7 @@ export default function App() {
         }
       }
     } catch {}
-    return 1.0;
+    return DEFAULT_FLARE_BRIGHTNESS;
   });
   const [homeScrollBlur, setHomeScrollBlur] = useState<number>(0);
 
@@ -245,7 +255,7 @@ export default function App() {
     const clamped = Math.min(2.0, Math.max(0.1, Number(brightness.toFixed(2))));
     setRayBrightness(clamped);
     try {
-      localStorage.setItem('xeusar_flare_brightness_v2', String(clamped));
+      localStorage.setItem('xeusar_flare_brightness_v3', String(clamped));
     } catch {}
   };
 
@@ -253,14 +263,14 @@ export default function App() {
     setRayColor(DEFAULT_FLARE_COLOR);
     setRayOrigin(DEFAULT_RAY_ORIGIN);
     setIsFlareLocked(true);
-    setRayBrightness(1.0);
+    setRayBrightness(DEFAULT_FLARE_BRIGHTNESS);
     try {
       localStorage.setItem('xeusar_flare_color_v2', DEFAULT_FLARE_COLOR);
       localStorage.setItem('xeusar_flare_origin_v2', DEFAULT_RAY_ORIGIN);
       localStorage.setItem('xeusar_flare_locked_v2', 'true');
-      localStorage.setItem('xeusar_flare_brightness_v2', '1');
+      localStorage.setItem('xeusar_flare_brightness_v3', String(DEFAULT_FLARE_BRIGHTNESS));
     } catch {}
-    triggerToast('Flare reset to default Ash Grey (Top Center, Locked)');
+    triggerToast('Flare reset to default Ash Grey (Top Center, Locked, 50% Intensity)');
   };
 
   // Cursor click interaction: shifts LightRays origin based on click position and cycles neon hue
@@ -905,6 +915,29 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         rayBrightness={rayBrightness}
         onChangeRayBrightness={handleChangeRayBrightness}
         onResetFlare={handleResetFlare}
+      />
+
+      {/* Dedicated User Settings Window (Accessible after user registration) */}
+      <UserSettingsModal
+        isOpen={isUserSettingsOpen}
+        onClose={() => setIsUserSettingsOpen(false)}
+        user={user}
+        onUserChange={u => setUser(u)}
+        supabaseConfig={supabaseConfig}
+        initialTab={userSettingsTab}
+        isFlareLocked={isFlareLocked}
+        onToggleFlareLock={handleToggleFlareLock}
+        rayColor={rayColor}
+        onChangeRayColor={handleChangeRayColor}
+        rayOrigin={rayOrigin}
+        onChangeRayOrigin={handleChangeRayOrigin}
+        rayBrightness={rayBrightness}
+        onChangeRayBrightness={handleChangeRayBrightness}
+        onResetFlare={handleResetFlare}
+        onOpenAuthModal={(mode) => {
+          setAuthModalMode(mode);
+          setIsAuthModalOpen(true);
+        }}
       />
 
       {/* University Setup Modal (Prompt & Search for unassigned / changing primary campus) */}

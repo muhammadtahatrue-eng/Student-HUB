@@ -63,8 +63,9 @@ interface AuthModalProps {
   onResetFlare?: () => void;
 }
 
-const FLARE_PRESET_COLORS = [
+const FLARE_PRESET_COLORS: { name: string; hex: string; isRgb?: boolean }[] = [
   { name: 'Ash Grey (Default)', hex: '#9ca3af' },
+  { name: 'RGB Spectrum', hex: 'rgb', isRgb: true },
   { name: 'Cyber Cyan', hex: '#00f0ff' },
   { name: 'Aurora Emerald', hex: '#10b981' },
   { name: 'Neon Magenta', hex: '#ff007f' },
@@ -594,7 +595,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           semester: 'semester_1',
           majorOrField: 'Computer Science',
           bio: 'Undergraduate student sharing lecture summaries, cheat sheets, and lab guides.',
-          isGuest: true
+          isGuest: false
         };
         registerStudentToUniversity(simulatedUser.id, resolvedUniId);
         localStorage.setItem('studyvault_active_user', JSON.stringify(simulatedUser));
@@ -951,8 +952,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
       </div>
 
-      {/* 3. COLOR PALETTE SWATCHES */}
-      <div className="space-y-2">
+      {/* 3. COLOR PALETTE SWATCHES & RGB SELECTION */}
+      <div className="space-y-2.5">
         <div className="flex items-center justify-between text-xs">
           <span className="font-medium text-white/80 flex items-center gap-1.5">
             <Palette className="w-3.5 h-3.5 text-cyan-400" />
@@ -960,15 +961,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </span>
           <div className="flex items-center gap-1.5">
             <span
-              className="w-3.5 h-3.5 rounded-full border border-white/40 shadow-sm"
-              style={{ backgroundColor: rayColor }}
+              className="w-3.5 h-3.5 rounded-full border border-white/40 shadow-sm shrink-0"
+              style={
+                rayColor.toLowerCase() === 'rgb'
+                  ? {
+                      background:
+                        'conic-gradient(from 0deg, #ff0055, #ffaa00, #00ff66, #00f0ff, #7c3aed, #ff0055)'
+                    }
+                  : { backgroundColor: rayColor }
+              }
             />
             <span className="text-[11px] font-mono text-white/80 font-medium">
-              {rayColor.toLowerCase() === '#9ca3af' ? 'Ash Grey (Default)' : rayColor}
+              {rayColor.toLowerCase() === '#9ca3af'
+                ? 'Ash Grey (Default)'
+                : rayColor.toLowerCase() === 'rgb'
+                ? 'RGB Spectrum'
+                : rayColor.toUpperCase()}
             </span>
           </div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {FLARE_PRESET_COLORS.map((color) => {
             const isSelected = rayColor.toLowerCase() === color.hex.toLowerCase();
             return (
@@ -978,18 +990,55 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 onClick={() => onChangeRayColor?.(color.hex)}
                 className={`p-2 rounded-xl text-[11px] font-medium border transition-all cursor-pointer flex items-center gap-2 ${
                   isSelected
-                    ? 'bg-white/10 border-white/40 text-white shadow-[0_0_12px_rgba(255,255,255,0.15)] font-semibold'
+                    ? color.isRgb
+                      ? 'bg-gradient-to-r from-rose-500/20 via-emerald-500/20 to-cyan-500/20 border-cyan-400/60 text-white shadow-[0_0_14px_rgba(0,240,255,0.25)] font-semibold'
+                      : 'bg-white/10 border-white/40 text-white shadow-[0_0_12px_rgba(255,255,255,0.15)] font-semibold'
                     : 'bg-white/[0.02] border-white/10 text-white/60 hover:text-white hover:bg-white/5'
                 }`}
               >
                 <span
-                  className="w-3 h-3 rounded-full shrink-0 border border-white/30"
-                  style={{ backgroundColor: color.hex }}
+                  className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/30"
+                  style={
+                    color.isRgb
+                      ? {
+                          background:
+                            'conic-gradient(from 0deg, #ff0055, #ffaa00, #00ff66, #00f0ff, #7c3aed, #ff0055)'
+                        }
+                      : { backgroundColor: color.hex }
+                  }
                 />
                 <span className="truncate">{color.name}</span>
               </button>
             );
           })}
+        </div>
+
+        {/* Custom RGB Color Picker */}
+        <div className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-black/40 border border-white/10">
+          <div className="flex items-center gap-2 min-w-0">
+            <div
+              className="w-4 h-4 rounded-md shrink-0 border border-white/30"
+              style={{
+                background:
+                  'linear-gradient(135deg, #ff0055 0%, #00ff66 50%, #00f0ff 100%)'
+              }}
+            />
+            <span className="text-[11px] text-white/75 font-medium truncate">
+              Custom RGB Color Picker
+            </span>
+          </div>
+          <label className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/15 cursor-pointer transition-colors shrink-0">
+            <input
+              type="color"
+              value={rayColor.startsWith('#') && rayColor.length === 7 ? rayColor : '#00f0ff'}
+              onChange={(e) => onChangeRayColor?.(e.target.value)}
+              className="w-4 h-4 rounded cursor-pointer bg-transparent border-0 p-0"
+              title="Choose custom RGB color"
+            />
+            <span className="text-[10px] font-mono text-cyan-300">
+              {rayColor.startsWith('#') ? rayColor.toUpperCase() : 'Pick RGB'}
+            </span>
+          </label>
         </div>
       </div>
     </div>

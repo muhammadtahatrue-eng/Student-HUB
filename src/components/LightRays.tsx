@@ -40,18 +40,21 @@ export interface LightRaysProps {
 const DEFAULT_COLOR = '#9ca3af';
 
 const hexToRgb = (hex: string): [number, number, number] => {
+  if (!hex || hex.toLowerCase() === 'rgb') {
+    return [1.0, 1.0, 1.0];
+  }
   const cleanHex = hex.replace('#', '');
   if (cleanHex.length === 3) {
     return [
-      parseInt(cleanHex[0] + cleanHex[0], 16) / 255,
-      parseInt(cleanHex[1] + cleanHex[1], 16) / 255,
-      parseInt(cleanHex[2] + cleanHex[2], 16) / 255
+      (parseInt(cleanHex[0] + cleanHex[0], 16) || 0) / 255,
+      (parseInt(cleanHex[1] + cleanHex[1], 16) || 0) / 255,
+      (parseInt(cleanHex[2] + cleanHex[2], 16) || 0) / 255
     ];
   }
   return [
-    parseInt(cleanHex.slice(0, 2), 16) / 255,
-    parseInt(cleanHex.slice(2, 4), 16) / 255,
-    parseInt(cleanHex.slice(4, 6), 16) / 255
+    (parseInt(cleanHex.slice(0, 2), 16) || 0) / 255,
+    (parseInt(cleanHex.slice(2, 4), 16) || 0) / 255,
+    (parseInt(cleanHex.slice(4, 6), 16) || 0) / 255
   ];
 };
 
@@ -63,6 +66,7 @@ interface Uniforms {
   rayPos: { value: Vec2 };
   rayDir: { value: Vec2 };
   raysColor: { value: [number, number, number] };
+  rgbMode: { value: number };
   raysSpeed: { value: number };
   lightSpread: { value: number };
   rayLength: { value: number };
@@ -130,6 +134,8 @@ export function LightRays({
 
   const targetColorRef = useRef<[number, number, number]>(hexToRgb(raysColor));
   const currentColorRef = useRef<[number, number, number]>(hexToRgb(raysColor));
+  const targetRgbModeRef = useRef<number>(raysColor.toLowerCase() === 'rgb' ? 1.0 : 0.0);
+  const currentRgbModeRef = useRef<number>(raysColor.toLowerCase() === 'rgb' ? 1.0 : 0.0);
 
   // Fluid spring physics simulation state for place changing
   const targetRayPosRef = useRef<Vec2>([0, 0]);
@@ -143,6 +149,7 @@ export function LightRays({
   // Dynamic uniform updates without context re-creation
   useEffect(() => {
     targetColorRef.current = hexToRgb(raysColor);
+    targetRgbModeRef.current = raysColor.toLowerCase() === 'rgb' ? 1.0 : 0.0;
     if (uniformsRef.current) {
       uniformsRef.current.raysSpeed.value = raysSpeed;
       uniformsRef.current.lightSpread.value = lightSpread;
@@ -250,6 +257,7 @@ export function LightRays({
           uniform vec2  rayPos;
           uniform vec2  rayDir;
           uniform vec3  raysColor;
+          uniform float rgbMode;
           uniform float raysSpeed;
           uniform float lightSpread;
           uniform float rayLength;
@@ -350,8 +358,13 @@ export function LightRays({
             // Rich mid-tone boost for vibrant visual presence scaled by brightness setting
             totalIntensity = pow(totalIntensity, 0.85) * 1.25 * max(brightness, 0.0);
 
-            // Color tinting
-            vec3 col = raysColor * totalIntensity;
+            // Color tinting (supports solid hex color and smooth prismatic RGB spectrum)
+            float rgbPhase = modAngle * 2.2 + distNorm * 2.4 - iTime * raysSpeed * 0.85;
+            vec3 rainbowColor = 0.5 + 0.5 * cos(rgbPhase + vec3(0.0, 2.094395, 4.188790));
+            rainbowColor = mix(vec3(1.0), rainbowColor, 0.92) * 1.15;
+            vec3 activeTint = mix(raysColor, rainbowColor, clamp(rgbMode, 0.0, 1.0));
+
+            vec3 col = activeTint * totalIntensity;
             if (saturation != 1.0) {
               float gray = dot(col, vec3(0.299, 0.587, 0.114));
               col = mix(vec3(gray), col, saturation);
@@ -369,6 +382,7 @@ export function LightRays({
           rayPos: { value: [0, 0] },
           rayDir: { value: [0, -1] },
           raysColor: { value: hexToRgb(raysColor) },
+          rgbMode: { value: raysColor.toLowerCase() === 'rgb' ? 1.0 : 0.0 },
           raysSpeed: { value: raysSpeed },
           lightSpread: { value: lightSpread },
           rayLength: { value: rayLength },
@@ -435,6 +449,9 @@ export function LightRays({
           curCol[1] += (tgtCol[1] - curCol[1]) * 0.035;
           curCol[2] += (tgtCol[2] - curCol[2]) * 0.035;
           uniforms.raysColor.value = [curCol[0], curCol[1], curCol[2]];
+
+          currentRgbModeRef.current += (targetRgbModeRef.current - currentRgbModeRef.current) * 0.05;
+          uniforms.rgbMode.value = currentRgbModeRef.current;
 
           // Spring physics for position gliding
           const stiffness = 0.040;
