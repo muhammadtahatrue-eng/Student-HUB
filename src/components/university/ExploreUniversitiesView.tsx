@@ -11,15 +11,19 @@ import {
   ArrowRight,
   Sparkles,
   Building2,
-  Globe,
-  SlidersHorizontal
+  ShieldCheck,
+  MessageSquare,
+  HelpCircle,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import { University, StudentUser, StudyNote } from '../../types/index.ts';
 import {
-  getUniversities,
+  getUnlockedUniversities,
+  getAllHecUniversities,
   getFollowedUniversityIds,
   toggleFollowUniversity,
-  getUniversityRealResourceCounts
+  getUniversityRealStats
 } from '../../lib/universityStore.ts';
 
 interface ExploreUniversitiesViewProps {
@@ -37,23 +41,28 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('all');
-  const [selectedCountry, setSelectedCountry] = useState<string>('all');
+  const [selectedProvince, setSelectedProvince] = useState<string>('all');
+  const [selectedSector, setSelectedSector] = useState<'all' | 'Public' | 'Private'>('all');
   const [onlyFollowed, setOnlyFollowed] = useState<boolean>(false);
   const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedUniversityIds());
 
-  const universities = useMemo(() => getUniversities(), []);
+  // Dynamic Unlock Rule: Only universities with >= 1 registered student appear in the Explore grid
+  const unlockedUniversities = useMemo(() => getUnlockedUniversities(), [user]);
+  const allMasterCount = useMemo(() => getAllHecUniversities().length, []);
 
-  // Compute available countries and disciplines
-  const countries = useMemo(() => {
-    const list = Array.from(new Set(universities.map(u => u.country))).sort();
+  // Compute available provinces and disciplines from unlocked pool
+  const provinces = useMemo(() => {
+    const list = Array.from(
+      new Set(unlockedUniversities.map(u => u.province).filter(Boolean) as string[])
+    ).sort();
     return ['all', ...list];
-  }, [universities]);
+  }, [unlockedUniversities]);
 
   const allDisciplines = useMemo(() => {
     const set = new Set<string>();
-    universities.forEach(u => u.disciplines.forEach(d => set.add(d)));
+    unlockedUniversities.forEach(u => u.disciplines.forEach(d => set.add(d)));
     return ['all', ...Array.from(set).sort()];
-  }, [universities]);
+  }, [unlockedUniversities]);
 
   const handleToggleFollow = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -61,12 +70,13 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
     setFollowedIds(result.followedIds);
   };
 
-  // Filter universities
+  // Filter unlocked universities
   const filteredUniversities = useMemo(() => {
-    return universities.filter(u => {
+    return unlockedUniversities.filter(u => {
       if (onlyFollowed && !followedIds.includes(u.id)) return false;
 
-      if (selectedCountry !== 'all' && u.country !== selectedCountry) return false;
+      if (selectedProvince !== 'all' && u.province !== selectedProvince) return false;
+      if (selectedSector !== 'all' && u.sector !== selectedSector) return false;
 
       if (
         selectedDiscipline !== 'all' &&
@@ -78,68 +88,107 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesName = u.name.toLowerCase().includes(q) || u.shortName.toLowerCase().includes(q);
-        const matchesLocation = u.location.toLowerCase().includes(q) || u.country.toLowerCase().includes(q);
+        const matchesLocation =
+          (u.location || '').toLowerCase().includes(q) ||
+          (u.city || '').toLowerCase().includes(q) ||
+          (u.province || '').toLowerCase().includes(q);
         const matchesDiscipline = u.disciplines.some(d => d.toLowerCase().includes(q));
         if (!matchesName && !matchesLocation && !matchesDiscipline) return false;
       }
 
       return true;
     });
-  }, [universities, searchQuery, selectedDiscipline, selectedCountry, onlyFollowed, followedIds]);
+  }, [
+    unlockedUniversities,
+    searchQuery,
+    selectedDiscipline,
+    selectedProvince,
+    selectedSector,
+    onlyFollowed,
+    followedIds
+  ]);
 
   return (
-    <div className="relative z-10 max-w-6xl w-full mx-auto px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 py-6 sm:py-8 font-outfit">
+    <div className="relative z-10 max-w-6xl w-full mx-auto px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 py-6 sm:py-8 font-outfit text-white">
       {/* Header Banner */}
-      <div className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/10 pb-6">
+      <div className="mb-6 flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/10 pb-6">
         <div>
           <div className="flex items-center gap-2 text-cyan-400 text-xs font-mono uppercase tracking-wider mb-2">
             <Compass className="w-4 h-4 animate-spin-slow" />
-            <span>Academic Directory & Campus Vault</span>
+            <span>HEC Academic Directory & Campus Vaults</span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
             Explore Universities
           </h1>
           <p className="text-xs sm:text-sm text-white/60 mt-1 max-w-2xl leading-relaxed">
-            Discover verified campus repositories, browse peer lecture notes, engage in scoped university discussions, and collaborate across academic communities.
+            Discover unlocked HEC-recognized campus repositories in Pakistan. Access verified course materials, peer discussions, and doubt resolution.
           </p>
         </div>
 
-        {/* Home university affiliation prompt */}
+        {/* Student affiliation status / Set university prompt */}
         {user?.university ? (
-          <div className="bg-white/[0.03] border border-cyan-500/30 rounded-xl p-3 flex items-center gap-3 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-cyan-400/10 border border-cyan-400/30 flex items-center justify-center text-cyan-400">
-              <Building2 className="w-4 h-4" />
+          <div className="bg-white/[0.03] border border-cyan-500/30 rounded-2xl p-3 flex items-center gap-3 shrink-0 shadow-lg">
+            <div className="w-9 h-9 rounded-xl bg-cyan-400/10 border border-cyan-400/30 flex items-center justify-center text-cyan-400">
+              <Building2 className="w-4.5 h-4.5" />
             </div>
             <div>
-              <div className="text-[11px] text-white/50">Your Campus</div>
-              <div className="text-xs font-semibold text-white">{user.university}</div>
+              <div className="text-[10px] uppercase font-mono text-cyan-300">Your Primary Campus</div>
+              <div className="text-xs font-semibold text-white truncate max-w-[200px] sm:max-w-xs">
+                {user.university}
+              </div>
             </div>
             <button
               onClick={onOpenSetupModal}
-              className="text-[11px] text-cyan-400 hover:text-cyan-300 underline ml-2 cursor-pointer"
+              className="text-[11px] text-cyan-400 hover:text-cyan-300 underline ml-2 cursor-pointer transition-colors"
             >
-              Change
+              Switch
             </button>
           </div>
         ) : (
           <button
             onClick={onOpenSetupModal}
-            className="px-4 py-2.5 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors cursor-pointer flex items-center gap-2 shrink-0 shadow-[0_0_15px_rgba(0,240,255,0.2)]"
+            className="px-4 py-2.5 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors cursor-pointer flex items-center gap-2 shrink-0 shadow-[0_0_20px_rgba(0,240,255,0.25)] active:scale-95"
           >
             <GraduationCap className="w-4 h-4" />
-            <span>Set My University</span>
+            <span>Connect My University</span>
           </button>
         )}
       </div>
 
+      {/* Dynamic Unlock Rule Info Banner */}
+      <div className="mb-6 p-3.5 bg-gradient-to-r from-cyan-950/40 via-zinc-900/60 to-black border border-cyan-500/20 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs backdrop-blur-md">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 text-cyan-300 flex items-center justify-center shrink-0">
+            <Unlock className="w-3.5 h-3.5" />
+          </div>
+          <div>
+            <span className="font-semibold text-white">
+              Showing {unlockedUniversities.length} Active Campus Directories
+            </span>
+            <span className="text-white/50 block text-[11px]">
+              Universities automatically unlock the moment at least 1 student registers. ({allMasterCount} recognized institutions in HEC registry).
+            </span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onOpenSetupModal}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-cyan-300 border border-cyan-400/30 text-xs font-semibold transition-all shrink-0 cursor-pointer self-start sm:self-auto"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          <span>Unlock Your Campus</span>
+        </button>
+      </div>
+
       {/* Filter Toolbar */}
-      <div className="bg-zinc-950/80 backdrop-blur-xl border border-white/10 rounded-2xl p-4 sm:p-5 mb-8 space-y-4">
+      <div className="bg-zinc-950/80 backdrop-blur-xl border border-white/10 rounded-2xl p-4 sm:p-5 mb-8 space-y-4 shadow-2xl">
         {/* Search Bar */}
         <div className="relative">
           <Search className="w-4 h-4 text-white/40 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Search universities by name, location, country, or department..."
+            placeholder="Search unlocked universities by name, acronym (NUST, FAST, LUMS), city, or discipline..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 text-xs sm:text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400 transition-colors"
@@ -151,7 +200,7 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
           {/* Disciplines Horizontal Scroll */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
             <span className="text-xs text-white/40 font-mono mr-1 shrink-0">Field:</span>
-            {allDisciplines.slice(0, 7).map(d => (
+            {allDisciplines.slice(0, 6).map(d => (
               <button
                 key={d}
                 type="button"
@@ -168,17 +217,28 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
           </div>
 
           {/* Secondary Dropdowns & Follow Toggle */}
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Country Selector */}
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {/* Sector Selector */}
             <select
-              value={selectedCountry}
-              onChange={e => setSelectedCountry(e.target.value)}
+              value={selectedSector}
+              onChange={e => setSelectedSector(e.target.value as any)}
               className="px-3 py-1.5 text-xs bg-zinc-900 border border-white/15 rounded-lg text-white/80 focus:outline-none focus:border-cyan-400 cursor-pointer"
             >
-              <option value="all">All Countries</option>
-              {countries.filter(c => c !== 'all').map(c => (
-                <option key={c} value={c}>
-                  {c}
+              <option value="all">All Sectors</option>
+              <option value="Public">Public Sector</option>
+              <option value="Private">Private Sector</option>
+            </select>
+
+            {/* Province Selector */}
+            <select
+              value={selectedProvince}
+              onChange={e => setSelectedProvince(e.target.value)}
+              className="px-3 py-1.5 text-xs bg-zinc-900 border border-white/15 rounded-lg text-white/80 focus:outline-none focus:border-cyan-400 cursor-pointer"
+            >
+              <option value="all">All Regions</option>
+              {provinces.filter(p => p !== 'all').map(p => (
+                <option key={p} value={p}>
+                  {p}
                 </option>
               ))}
             </select>
@@ -199,41 +259,47 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
         </div>
       </div>
 
-      {/* Grid of Universities */}
+      {/* Grid of Unlocked Universities */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredUniversities.map(uni => {
           const isFollowed = followedIds.includes(uni.id);
           const isMyUniversity =
-            user?.university?.toLowerCase().includes(uni.shortName.toLowerCase()) ||
-            user?.university?.toLowerCase() === uni.name.toLowerCase() ||
-            user?.universityId === uni.id;
+            user?.universityId === uni.id ||
+            user?.university?.toLowerCase().trim() === uni.name.toLowerCase().trim();
 
-          const stats = getUniversityRealResourceCounts(uni.id, notes);
+          const stats = getUniversityRealStats(uni, notes);
 
           return (
             <div
               key={uni.id}
               onClick={() => onSelectUniversity(uni.id)}
-              className="group relative bg-zinc-950/70 hover:bg-zinc-900/90 border border-white/10 hover:border-cyan-500/40 rounded-2xl p-5 transition-all duration-300 cursor-pointer flex flex-col justify-between shadow-xl hover:shadow-cyan-500/5 hover:-translate-y-1"
+              className="group relative bg-[#0c0d12]/90 hover:bg-[#12141a] border border-white/10 hover:border-cyan-500/50 rounded-2xl p-5 transition-all duration-300 cursor-pointer flex flex-col justify-between shadow-xl hover:shadow-[0_0_25px_rgba(0,240,255,0.12)] hover:-translate-y-1"
             >
-              {/* Card Top: Banner accent + Header */}
+              {/* Card Top: Header */}
               <div>
                 <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <img
                       src={uni.logoUrl}
                       alt={uni.name}
                       className="w-12 h-12 rounded-xl object-cover border border-white/15 group-hover:border-cyan-400/40 transition-colors shrink-0 shadow-md"
                     />
-                    <div>
+                    <div className="min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <h3 className="text-base font-bold text-white group-hover:text-cyan-300 transition-colors leading-snug">
+                        <h3 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors leading-snug truncate">
                           {uni.name}
                         </h3>
                       </div>
-                      <div className="flex items-center gap-1 text-xs text-white/50 mt-0.5">
-                        <MapPin className="w-3 h-3 text-white/40 shrink-0" />
-                        <span className="truncate">{uni.location}</span>
+                      <div className="flex items-center gap-2 text-xs text-white/50 mt-0.5">
+                        <span className="flex items-center gap-1 truncate">
+                          <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
+                          <span className="truncate">{uni.city || uni.location}</span>
+                        </span>
+                        {uni.sector && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/5 border border-white/10 text-white/70">
+                            {uni.sector}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -253,47 +319,66 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
                   </button>
                 </div>
 
+                {/* Badge if custom or HEC verified */}
+                <div className="flex items-center gap-2 mb-3">
+                  {uni.hecRecognized ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md border border-emerald-400/20 font-mono">
+                      <ShieldCheck className="w-3 h-3" />
+                      <span>HEC Recognized</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-300 bg-amber-400/10 px-2 py-0.5 rounded-md border border-amber-400/20 font-mono">
+                      <Sparkles className="w-3 h-3 text-amber-400" />
+                      <span>Pending HEC Verification</span>
+                    </span>
+                  )}
+                  {uni.badge && (
+                    <span className="text-[10px] text-cyan-300 font-mono truncate">
+                      {uni.badge}
+                    </span>
+                  )}
+                </div>
+
                 {/* Description */}
                 <p className="text-xs text-white/60 line-clamp-2 leading-relaxed mb-4">
                   {uni.description}
                 </p>
 
-                {/* Disciplines (Unboxed inline text, anti-AI slop) */}
+                {/* Disciplines */}
                 <div className="text-[11px] text-white/40 mb-4 truncate font-mono">
                   {uni.disciplines.join(' · ')}
                 </div>
               </div>
 
-              {/* Card Bottom: Metadata & Stats (Clean typographic layout) */}
+              {/* Card Bottom: Real-Time Stats (No Fake Counts) */}
               <div className="pt-4 border-t border-white/10">
-                <div className="flex items-center justify-between text-xs text-white/60 mb-3">
-                  <div className="flex items-center gap-1">
-                    <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>
-                      <strong className="text-white">{stats.documentsCount}</strong> documents
-                    </span>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs text-white/70 mb-3 bg-white/[0.02] p-2 rounded-xl border border-white/5">
+                  <div>
+                    <div className="font-bold text-white text-xs sm:text-sm">{stats.documentsCount}</div>
+                    <div className="text-[10px] text-white/40">Notes</div>
                   </div>
-                  <span className="text-white/20">·</span>
-                  <div className="flex items-center gap-1">
-                    <Users className="w-3.5 h-3.5 text-white/40" />
-                    <span>
-                      <strong className="text-white">{uni.verifiedStudents.toLocaleString()}</strong> peers
-                    </span>
+                  <div>
+                    <div className="font-bold text-white text-xs sm:text-sm">{stats.discussionsCount}</div>
+                    <div className="text-[10px] text-white/40">Posts</div>
+                  </div>
+                  <div>
+                    <div className="font-bold text-white text-xs sm:text-sm">{stats.studentsCount}</div>
+                    <div className="text-[10px] text-white/40">Students</div>
                   </div>
                 </div>
 
                 {/* Action button */}
                 <div className="flex items-center justify-between pt-1">
                   {isMyUniversity ? (
-                    <span className="text-[11px] text-cyan-400 font-medium font-mono flex items-center gap-1">
+                    <span className="text-[11px] text-cyan-400 font-semibold font-mono flex items-center gap-1">
                       <GraduationCap className="w-3.5 h-3.5" />
-                      Your University
+                      Your Campus
                     </span>
                   ) : (
                     <span className="text-[11px] text-white/40">Est. {uni.establishedYear}</span>
                   )}
                   <span className="text-xs font-semibold text-white/80 group-hover:text-cyan-400 transition-colors flex items-center gap-1">
-                    Enter Directory
+                    Enter Vault
                     <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                   </span>
                 </div>
@@ -306,21 +391,30 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
       {filteredUniversities.length === 0 && (
         <div className="text-center py-20 px-6 bg-zinc-950/50 border border-white/10 rounded-2xl max-w-md mx-auto">
           <Compass className="w-10 h-10 text-white/30 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-white mb-1">No universities found</h3>
+          <h3 className="text-base font-bold text-white mb-1">No unlocked universities found</h3>
           <p className="text-xs text-white/50 mb-5 leading-relaxed">
-            Try resetting your search query or field filters to see the full list of campus vaults.
+            No registered students currently mapped to this filter. You can unlock any HEC university or create a custom campus directory right now.
           </p>
-          <button
-            onClick={() => {
-              setSearchQuery('');
-              setSelectedDiscipline('all');
-              setSelectedCountry('all');
-              setOnlyFollowed(false);
-            }}
-            className="px-4 py-2 text-xs font-semibold text-black bg-cyan-400 rounded-lg hover:bg-cyan-300 transition-colors"
-          >
-            Clear All Filters
-          </button>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setSelectedDiscipline('all');
+                setSelectedProvince('all');
+                setSelectedSector('all');
+                setOnlyFollowed(false);
+              }}
+              className="px-4 py-2 text-xs font-semibold text-white bg-white/10 rounded-xl hover:bg-white/20 transition-colors cursor-pointer"
+            >
+              Reset Filters
+            </button>
+            <button
+              onClick={onOpenSetupModal}
+              className="px-4 py-2 text-xs font-bold text-black bg-cyan-400 rounded-xl hover:bg-cyan-300 transition-colors cursor-pointer"
+            >
+              Unlock a University
+            </button>
+          </div>
         </div>
       )}
     </div>

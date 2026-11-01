@@ -7,6 +7,15 @@ export default defineConfig(() => {
   return {
     base: process.env.BASE_URL || './',
     plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        output: {
+          entryFileNames: 'assets/app.js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/app.[ext]',
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve('.'),

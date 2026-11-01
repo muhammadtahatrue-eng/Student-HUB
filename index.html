@@ -11,6 +11,15 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <style>
+      html, body {
+        background-color: #05070a;
+        color: #ffffff;
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+      }
+    </style>
     <script>
       // Ensure trailing slash on GitHub Pages directory URLs so relative assets resolve properly
       if (window.location.hostname.endsWith('github.io') && 
@@ -24,6 +33,34 @@
   <body class="bg-[#05070a] text-white">
     <div id="root"></div>
     <script type="module" src="./src/main.tsx"></script>
+    <script>
+      // Automatic fallback when GitHub Pages serves raw /index.html from repository root "/ (root)"
+      (function () {
+        var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
+        var rawEntry = document.querySelector('script[src*="src/main.tsx"]');
+        if (!isViteDev && rawEntry) {
+          rawEntry.remove();
+          var css = document.createElement('link');
+          css.rel = 'stylesheet';
+          css.href = './assets/app.css';
+          css.onerror = function () {
+            css.href = './docs/assets/app.css';
+          };
+          document.head.appendChild(css);
+
+          var js = document.createElement('script');
+          js.type = 'module';
+          js.src = './assets/app.js';
+          js.onerror = function () {
+            var fallbackJs = document.createElement('script');
+            fallbackJs.type = 'module';
+            fallbackJs.src = './docs/assets/app.js';
+            document.body.appendChild(fallbackJs);
+          };
+          document.body.appendChild(js);
+        }
+      })();
+    </script>
   </body>
 </html>
 

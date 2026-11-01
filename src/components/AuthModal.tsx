@@ -42,6 +42,8 @@ import {
 } from '../types/index.ts';
 import { getSupabaseInstance } from '../lib/supabaseClient.ts';
 import { RaysOrigin } from './LightRays.tsx';
+import { HecUniversitySelect } from './university/HecUniversitySelect.tsx';
+import { registerStudentToUniversity, findUniversityByNameOrFuzzy } from '../lib/universityStore.ts';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -348,7 +350,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState('');
-  const [university, setUniversity] = useState('');
+  const [university, setUniversity] = useState('National University of Sciences & Technology (NUST)');
+  const [universityId, setUniversityId] = useState<string | undefined>('nust');
+  const [isCustomUni, setIsCustomUni] = useState(false);
+  const [customUniDetails, setCustomUniDetails] = useState<{ name: string; city?: string; province?: string; sector?: 'Public' | 'Private' } | undefined>();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -367,6 +372,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [educationLevel, setEducationLevel] = useState<EducationLevel>('undergraduate');
   const [undergraduateStage, setUndergraduateStage] = useState<UndergraduateStage>('college');
   const [institution, setInstitution] = useState('');
+  const [institutionId, setInstitutionId] = useState<string | undefined>();
   const [academicYear, setAcademicYear] = useState('Freshman (1st Year)');
   const [semester, setSemester] = useState<AcademicSemester>('semester_1');
   const [majorOrField, setMajorOrField] = useState('');
@@ -405,7 +411,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           (user.academicLevel === 'high_school' ? 'high_school' : 'college')
         );
 
-        setInstitution(prof?.institution || user.university || '');
+        const currentInst = prof?.institution || user.university || 'National University of Sciences & Technology (NUST)';
+        setInstitution(currentInst);
+        const resolvedId = user.universityId || findUniversityByNameOrFuzzy(currentInst)?.id;
+        setInstitutionId(resolvedId);
+        setIsCustomUni(Boolean(user.isCustomUniversity));
+        setCustomUniDetails(user.customUniversityDetails);
 
         // Normalize academic year based on education level
         const storedYear = prof?.academicYear || user.academicYear || user.undergraduateYear || '';
@@ -549,10 +560,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         // Local student auth simulation
         await new Promise(r => setTimeout(r, 300));
         const generatedUsername = email ? email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') : `student_${Date.now().toString().slice(-4)}`;
+        const resolvedUniId = universityId || findUniversityByNameOrFuzzy(university)?.id || 'nust';
         const initialProfile: AcademicProfileInfo = {
           educationLevel: 'undergraduate',
           undergraduateStage: 'college',
-          institution: university.trim() || 'Stanford University',
+          institution: university.trim() || 'National University of Sciences & Technology (NUST)',
           academicYear: 'Freshman (1st Year)',
           semester: 'semester_1',
           majorOrField: 'Computer Science'
@@ -563,7 +575,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           email: email.trim() || 'student@university.edu',
           name: name.trim() || (email ? email.split('@')[0] : 'Alex Student'),
           username: generatedUsername,
-          university: university.trim() || 'Stanford University',
+          university: university.trim() || 'National University of Sciences & Technology (NUST)',
+          universityId: resolvedUniId,
+          isCustomUniversity: isCustomUni,
+          customUniversityDetails: customUniDetails,
+          degreeTier: 'Undergraduate',
+          program: 'BS Computer Science',
+          programId: 'bs-cs',
+          currentSemester: 3,
           academicProfile: initialProfile,
           educationLevel: 'undergraduate',
           undergraduateStage: 'college',
@@ -573,6 +592,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           bio: 'Undergraduate student sharing lecture summaries, cheat sheets, and lab guides.',
           isGuest: true
         };
+        registerStudentToUniversity(simulatedUser.id, resolvedUniId);
         localStorage.setItem('studyvault_active_user', JSON.stringify(simulatedUser));
         onUserChange(simulatedUser);
         setSuccessMsg(isSignUp ? 'Student account created!' : 'Signed in successfully!');
@@ -663,6 +683,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMsg(null);
 
     const cleanInstitution = institution.trim();
+    const resolvedInstId = institutionId || findUniversityByNameOrFuzzy(cleanInstitution)?.id || user.universityId;
     const isUndergraduate = educationLevel === 'undergraduate';
     const computedYear = isUndergraduate
       ? (semester === 'semester_1' ? 'First Year (Term 1)' : 'Second Year (Term 2)')
@@ -680,6 +701,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const updatedUser: StudentUser = {
       ...user,
       university: cleanInstitution || user.university || '',
+      universityId: resolvedInstId,
+      isCustomUniversity: isCustomUni,
+      customUniversityDetails: customUniDetails,
       // Structured Academic Hierarchy
       academicProfile: structuredProfile,
       educationLevel,
@@ -692,6 +716,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       undergraduateYear: computedYear,
       fieldOfStudy: structuredProfile.majorOrField,
     };
+
+    if (resolvedInstId) {
+      registerStudentToUniversity(user.id, resolvedInstId);
+    }
 
     try {
       const supabase = getSupabaseInstance(supabaseConfig);
@@ -1459,19 +1487,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         </div>
 
                         {/* 2b. Academic Institution */}
-                        <div>
-                          <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                            Institution Name
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={institution}
-                            onChange={(e) => setInstitution(e.target.value)}
-                            placeholder=""
-                            className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff] transition-all"
-                          />
-                        </div>
+                        <HecUniversitySelect
+                          label="Academic Institution"
+                          value={institution}
+                          onChange={(uniName, uniId, isCust, details) => {
+                            setInstitution(uniName);
+                            setInstitutionId(uniId);
+                            setIsCustomUni(Boolean(isCust));
+                            setCustomUniDetails(details);
+                          }}
+                          placeholder="Select HEC university or college..."
+                          studentId={user.id}
+                          required
+                        />
 
                         {/* 2c. Academic Year / Term (Adjusted: Academic Year dropdown removed, term/cycle adjusted) */}
                         <div>
@@ -1533,19 +1561,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         />
 
                         {/* 3b. Major University / Institution Name */}
-                        <div>
-                          <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                            Major University / Institution Name
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={institution}
-                            onChange={(e) => setInstitution(e.target.value)}
-                            placeholder=""
-                            className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff] transition-all"
-                          />
-                        </div>
+                        <HecUniversitySelect
+                          label="Major University / Institution Name"
+                          value={institution}
+                          onChange={(uniName, uniId, isCust, details) => {
+                            setInstitution(uniName);
+                            setInstitutionId(uniId);
+                            setIsCustomUni(Boolean(isCust));
+                            setCustomUniDetails(details);
+                          }}
+                          placeholder="Select HEC university or institution..."
+                          studentId={user.id}
+                          required
+                        />
 
                         {/* 3c. Academic Year & 3d. Semester */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1612,19 +1640,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         />
 
                         {/* 4b. Major University / Institution Name */}
-                        <div>
-                          <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                            Major University / Institution Name
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={institution}
-                            onChange={(e) => setInstitution(e.target.value)}
-                            placeholder=""
-                            className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff] transition-all"
-                          />
-                        </div>
+                        <HecUniversitySelect
+                          label="Major University / Institution Name"
+                          value={institution}
+                          onChange={(uniName, uniId, isCust, details) => {
+                            setInstitution(uniName);
+                            setInstitutionId(uniId);
+                            setIsCustomUni(Boolean(isCust));
+                            setCustomUniDetails(details);
+                          }}
+                          placeholder="Select HEC university or institution..."
+                          studentId={user.id}
+                          required
+                        />
 
                         {/* 4c. Academic Year (Year 1, Year 2) & 4d. Semester */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1698,19 +1726,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         />
 
                         {/* 5b. Major University / Institution Name */}
-                        <div>
-                          <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                            Major University / Institution Name
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={institution}
-                            onChange={(e) => setInstitution(e.target.value)}
-                            placeholder=""
-                            className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff] transition-all"
-                          />
-                        </div>
+                        <HecUniversitySelect
+                          label="Major University / Institution Name"
+                          value={institution}
+                          onChange={(uniName, uniId, isCust, details) => {
+                            setInstitution(uniName);
+                            setInstitutionId(uniId);
+                            setIsCustomUni(Boolean(isCust));
+                            setCustomUniDetails(details);
+                          }}
+                          placeholder="Select HEC doctoral university or institution..."
+                          studentId={user.id}
+                          required
+                        />
 
                         {/* 5c. Academic Year (Year 1, 2, 3, 4+) & 5d. Semester */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1867,17 +1895,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-white/80 font-medium mb-1.5 flex items-center gap-1.5">
-                        <Building className="w-3.5 h-3.5 text-white/40" />
-                        <span>Major University / Institution</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder=""
+                      <HecUniversitySelect
+                        label="Major University / Institution"
                         value={university}
-                        onChange={(e) => setUniversity(e.target.value)}
-                        className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff] transition-all"
+                        onChange={(uniName, uniId, isCust, details) => {
+                          setUniversity(uniName);
+                          setUniversityId(uniId);
+                          setIsCustomUni(Boolean(isCust));
+                          setCustomUniDetails(details);
+                        }}
+                        placeholder="Select or search HEC-recognized university..."
+                        required
                       />
                     </div>
                   </>

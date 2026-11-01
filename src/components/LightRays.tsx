@@ -4,8 +4,9 @@ import { Renderer, Program, Triangle, Mesh } from 'ogl';
 /**
  * LightRays Background Component
  * 
- * A high-performance WebGL-based light ray effect that simulates atmospheric lighting.
- * Supports various origins, mouse following, and organic movement using OGL.
+ * High-performance WebGL-based atmospheric flare and draped curtain god-rays.
+ * Simulates flowing aurora borealis / silky light curtains emanating from dynamic origins
+ * (top-center, top-left, top-right, bottom, etc.) across the viewport.
  */
 
 export type RaysOrigin =
@@ -19,78 +20,47 @@ export type RaysOrigin =
   | 'bottom-left';
 
 export interface LightRaysProps {
-  /** The starting point of the light rays */
   raysOrigin?: RaysOrigin;
-  /** Primary color of the rays (hex) */
   raysColor?: string;
-  /** Animation speed multiplier */
   raysSpeed?: number;
-  /** Spread/width of the light beam */
   lightSpread?: number;
-  /** Length of the rays relative to container size */
   rayLength?: number;
-  /** Enable pulsing intensity */
   pulsating?: boolean;
-  /** Distance before rays fade out */
   fadeDistance?: number;
-  /** Color saturation (0 to 1) */
   saturation?: number;
-  /** Whether rays should tilt towards the mouse */
   followMouse?: boolean;
-  /** Intensity of mouse influence (0 to 1) */
   mouseInfluence?: number;
-  /** Amount of grain/noise texture */
   noiseAmount?: number;
-  /** Amount of wave distortion */
   distortion?: number;
-  /** Additional CSS classes */
   className?: string;
 }
 
-const DEFAULT_COLOR = '#ffffff';
+const DEFAULT_COLOR = '#00f0ff';
 
 const hexToRgb = (hex: string): [number, number, number] => {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return m ? [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255] : [1, 1, 1];
-};
-
-const getAnchorAndDir = (
-  origin: RaysOrigin,
-  w: number,
-  h: number
-): { anchor: [number, number]; dir: [number, number] } => {
-  const outside = 0.2;
-  // In WebGL gl_FragCoord: (0,0) is bottom-left, (w,h) is top-right
-  switch (origin) {
-    case 'top-left':
-      return { anchor: [-outside * w, (1 + outside) * h], dir: [0.707, -0.707] };
-    case 'top-right':
-      return { anchor: [(1 + outside) * w, (1 + outside) * h], dir: [-0.707, -0.707] };
-    case 'left':
-      return { anchor: [-outside * w, 0.5 * h], dir: [1, 0] };
-    case 'right':
-      return { anchor: [(1 + outside) * w, 0.5 * h], dir: [-1, 0] };
-    case 'bottom-left':
-      return { anchor: [-outside * w, -outside * h], dir: [0.707, 0.707] };
-    case 'bottom-center':
-      return { anchor: [0.5 * w, -outside * h], dir: [0, 1] };
-    case 'bottom-right':
-      return { anchor: [(1 + outside) * w, -outside * h], dir: [-0.707, 0.707] };
-    case 'top-center':
-    default:
-      return { anchor: [0.5 * w, (1 + outside) * h], dir: [0, -1] };
+  const cleanHex = hex.replace('#', '');
+  if (cleanHex.length === 3) {
+    return [
+      parseInt(cleanHex[0] + cleanHex[0], 16) / 255,
+      parseInt(cleanHex[1] + cleanHex[1], 16) / 255,
+      parseInt(cleanHex[2] + cleanHex[2], 16) / 255
+    ];
   }
+  return [
+    parseInt(cleanHex.slice(0, 2), 16) / 255,
+    parseInt(cleanHex.slice(2, 4), 16) / 255,
+    parseInt(cleanHex.slice(4, 6), 16) / 255
+  ];
 };
 
 type Vec2 = [number, number];
-type Vec3 = [number, number, number];
 
 interface Uniforms {
   iTime: { value: number };
   iResolution: { value: Vec2 };
   rayPos: { value: Vec2 };
   rayDir: { value: Vec2 };
-  raysColor: { value: Vec3 };
+  raysColor: { value: [number, number, number] };
   raysSpeed: { value: number };
   lightSpread: { value: number };
   rayLength: { value: number };
@@ -101,9 +71,32 @@ interface Uniforms {
   mouseInfluence: { value: number };
   noiseAmount: { value: number };
   distortion: { value: number };
-  flowPhase: { value: number };
-  flowMotion: { value: number };
 }
+
+/**
+ * Calculates anchor position and main orientation vector
+ * WebGL coordinate system: (0, 0) is bottom-left, (w, h) is top-right.
+ */
+const getAnchorAndDir = (origin: RaysOrigin, width: number, height: number): { anchor: Vec2; dir: Vec2 } => {
+  switch (origin) {
+    case 'top-left':
+      return { anchor: [0.12 * width, 1.05 * height], dir: [0.707, -0.707] };
+    case 'top-right':
+      return { anchor: [0.88 * width, 1.05 * height], dir: [-0.707, -0.707] };
+    case 'left':
+      return { anchor: [-0.05 * width, 0.50 * height], dir: [1.0, 0.0] };
+    case 'right':
+      return { anchor: [1.05 * width, 0.50 * height], dir: [-1.0, 0.0] };
+    case 'bottom-left':
+      return { anchor: [0.12 * width, -0.05 * height], dir: [0.707, 0.707] };
+    case 'bottom-center':
+      return { anchor: [0.50 * width, -0.05 * height], dir: [0.0, 1.0] };
+    case 'bottom-right':
+      return { anchor: [0.88 * width, -0.05 * height], dir: [-0.707, 0.707] };
+    default: // 'top-center'
+      return { anchor: [0.50 * width, 1.05 * height], dir: [0.0, -1.0] };
+  }
+};
 
 export function LightRays({
   raysOrigin = 'top-center',
@@ -126,7 +119,6 @@ export function LightRays({
   const mouseRef = useRef({ x: 0.5, y: 0.5 });
   const smoothMouseRef = useRef({ x: 0.5, y: 0.5 });
   const animationIdRef = useRef<number | null>(null);
-  const meshRef = useRef<Mesh | null>(null);
   const cleanupFunctionRef = useRef<(() => void) | null>(null);
   const [isVisible, setIsVisible] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -134,38 +126,36 @@ export function LightRays({
   const targetColorRef = useRef<[number, number, number]>(hexToRgb(raysColor));
   const currentColorRef = useRef<[number, number, number]>(hexToRgb(raysColor));
 
-  // Fluid spring simulation state for organic flowing motion
-  const targetRayPosRef = useRef<[number, number]>([0, 0]);
-  const currentRayPosRef = useRef<[number, number]>([0, 0]);
-  const posVelocityRef = useRef<[number, number]>([0, 0]);
+  // Fluid spring physics simulation state for place changing
+  const targetRayPosRef = useRef<Vec2>([0, 0]);
+  const currentRayPosRef = useRef<Vec2>([0, 0]);
+  const posVelocityRef = useRef<Vec2>([0, 0]);
 
-  const targetRayDirRef = useRef<[number, number]>([0, -1]);
-  const currentRayDirRef = useRef<[number, number]>([0, -1]);
-  const dirVelocityRef = useRef<[number, number]>([0, 0]);
+  const targetRayDirRef = useRef<Vec2>([0, -1]);
+  const currentRayDirRef = useRef<Vec2>([0, -1]);
+  const dirVelocityRef = useRef<Vec2>([0, 0]);
 
-  const flowPhaseRef = useRef<number>(0);
-  const smoothFlowMotionRef = useRef<number>(0);
-
-  // Dynamic uniform updates without re-allocating WebGL context
+  // Dynamic uniform updates without context re-creation
   useEffect(() => {
     targetColorRef.current = hexToRgb(raysColor);
-    if (!uniformsRef.current) return;
-    uniformsRef.current.raysSpeed.value = raysSpeed;
-    uniformsRef.current.lightSpread.value = lightSpread;
-    uniformsRef.current.rayLength.value = rayLength;
-    uniformsRef.current.pulsating.value = pulsating ? 1.0 : 0.0;
-    uniformsRef.current.fadeDistance.value = fadeDistance;
-    uniformsRef.current.saturation.value = saturation;
-    uniformsRef.current.mouseInfluence.value = mouseInfluence;
-    uniformsRef.current.noiseAmount.value = noiseAmount;
-    uniformsRef.current.distortion.value = distortion;
+    if (uniformsRef.current) {
+      uniformsRef.current.raysSpeed.value = raysSpeed;
+      uniformsRef.current.lightSpread.value = lightSpread;
+      uniformsRef.current.rayLength.value = rayLength;
+      uniformsRef.current.pulsating.value = pulsating ? 1.0 : 0.0;
+      uniformsRef.current.fadeDistance.value = fadeDistance;
+      uniformsRef.current.saturation.value = saturation;
+      uniformsRef.current.mouseInfluence.value = mouseInfluence;
+      uniformsRef.current.noiseAmount.value = noiseAmount;
+      uniformsRef.current.distortion.value = distortion;
 
-    if (rendererRef.current && containerRef.current) {
-      const { clientWidth: wCSS, clientHeight: hCSS } = containerRef.current;
-      const dpr = rendererRef.current.dpr;
-      const { anchor, dir } = getAnchorAndDir(raysOrigin, wCSS * dpr, hCSS * dpr);
-      targetRayPosRef.current = anchor;
-      targetRayDirRef.current = dir;
+      if (rendererRef.current && containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        const dpr = rendererRef.current.dpr;
+        const { anchor, dir } = getAnchorAndDir(raysOrigin, clientWidth * dpr, clientHeight * dpr);
+        targetRayPosRef.current = anchor;
+        targetRayDirRef.current = dir;
+      }
     }
   }, [
     raysOrigin,
@@ -183,14 +173,23 @@ export function LightRays({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    observerRef.current = new IntersectionObserver(
-      entries => {
-        const entry = entries[0];
-        setIsVisible(entry.isIntersecting);
-      },
-      { threshold: 0.05 }
-    );
-    observerRef.current.observe(containerRef.current);
+    try {
+      if (typeof IntersectionObserver !== 'undefined') {
+        observerRef.current = new IntersectionObserver(
+          entries => {
+            const entry = entries[0];
+            setIsVisible(entry ? entry.isIntersecting : true);
+          },
+          { threshold: 0.05 }
+        );
+        observerRef.current.observe(containerRef.current);
+      } else {
+        setIsVisible(true);
+      }
+    } catch {
+      setIsVisible(true);
+    }
+
     return () => {
       if (observerRef.current) {
         observerRef.current.disconnect();
@@ -213,250 +212,265 @@ export function LightRays({
         if (!containerRef.current) return;
 
         const renderer = new Renderer({
-          dpr: Math.min(window.devicePixelRatio, 2),
+          dpr: Math.min(window.devicePixelRatio || 1, 2),
           alpha: true
         });
         rendererRef.current = renderer;
         const gl = renderer.gl;
 
-      gl.canvas.style.width = '100%';
-      gl.canvas.style.height = '100%';
-      gl.canvas.style.display = 'block';
+        gl.canvas.style.width = '100%';
+        gl.canvas.style.height = '100%';
+        gl.canvas.style.display = 'block';
 
-      while (containerRef.current.firstChild) {
-        containerRef.current.removeChild(containerRef.current.firstChild);
-      }
-      containerRef.current.appendChild(gl.canvas);
-
-      const vert = `
-        attribute vec2 position;
-        varying vec2 vUv;
-        void main() {
-          vUv = position * 0.5 + 0.5;
-          gl_Position = vec4(position, 0.0, 1.0);
+        while (containerRef.current.firstChild) {
+          containerRef.current.removeChild(containerRef.current.firstChild);
         }
-      `;
+        containerRef.current.appendChild(gl.canvas);
 
-      const frag = `
-        precision highp float;
-        uniform float iTime;
-        uniform vec2  iResolution;
-        uniform vec2  rayPos;
-        uniform vec2  rayDir;
-        uniform vec3  raysColor;
-        uniform float raysSpeed;
-        uniform float lightSpread;
-        uniform float rayLength;
-        uniform float pulsating;
-        uniform float fadeDistance;
-        uniform float saturation;
-        uniform vec2  mousePos;
-        uniform float mouseInfluence;
-        uniform float noiseAmount;
-        uniform float distortion;
-        uniform float flowPhase;
-        uniform float flowMotion;
-        varying vec2 vUv;
+        const vert = `
+          attribute vec2 position;
+          varying vec2 vUv;
+          void main() {
+            vUv = position * 0.5 + 0.5;
+            gl_Position = vec4(position, 0.0, 1.0);
+          }
+        `;
 
-        float noise(vec2 st) {
-          return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-        }
+        const frag = `
+          precision highp float;
+          uniform float iTime;
+          uniform vec2  iResolution;
+          uniform vec2  rayPos;
+          uniform vec2  rayDir;
+          uniform vec3  raysColor;
+          uniform float raysSpeed;
+          uniform float lightSpread;
+          uniform float rayLength;
+          uniform float pulsating;
+          uniform float fadeDistance;
+          uniform float saturation;
+          uniform vec2  mousePos;
+          uniform float mouseInfluence;
+          uniform float noiseAmount;
+          uniform float distortion;
 
-        float rayStrength(vec2 raySource, vec2 rayRefDirection, vec2 coord,
-                          float seedA, float seedB, float speed) {
-          vec2 sourceToCoord = coord - raySource;
-          vec2 dirNorm = normalize(sourceToCoord);
-          float cosAngle = dot(dirNorm, rayRefDirection);
-          
-          // Organic fluid wave ripples traveling along the beams as they flow across space
-          float flowRipple = sin(length(sourceToCoord) * 0.0055 - flowPhase * 3.4);
-          float d = distortion * (sin(iTime * 1.5 + length(sourceToCoord) * 0.005) + flowRipple * flowMotion * 0.55);
-          float distortedAngle = cosAngle + d;
-          
-          // Gently widen the beam while moving to create a liquid volumetric stream
-          float dynamicSpread = lightSpread + flowMotion * 0.28;
-          float spreadFactor = pow(max(distortedAngle, 0.0), 1.0 / max(dynamicSpread, 0.001));
-          float distance = length(sourceToCoord);
-          float maxDistance = max(iResolution.x, iResolution.y) * rayLength;
-          float lengthFalloff = clamp((maxDistance - distance) / maxDistance, 0.0, 1.0);
-          
-          float fadeFactor = fadeDistance * max(iResolution.x, iResolution.y);
-          float fadeFalloff = clamp((fadeFactor - distance) / fadeFactor, 0.0, 1.0);
-          
-          float pulse = pulsating > 0.5 ? (0.85 + 0.15 * sin(iTime * speed * 4.0)) : 1.0;
-          
-          float baseStrength = clamp(
-            (0.5 + 0.2 * sin(distortedAngle * seedA + iTime * speed + flowPhase * 0.6)) +
-            (0.3 + 0.2 * cos(-distortedAngle * seedB + iTime * speed * 0.8 - flowPhase * 0.45)),
-            0.0, 1.0
-          );
-          
-          return baseStrength * lengthFalloff * fadeFalloff * spreadFactor * pulse;
-        }
+          varying vec2 vUv;
 
-        void main() {
-          vec2 fragCoord = gl_FragCoord.xy;
-          vec2 coord = vec2(fragCoord.x, fragCoord.y);
-          
-          vec2 finalRayDir = normalize(rayDir);
-          if (mouseInfluence > 0.0) {
-            vec2 mouseScreenPos = mousePos * iResolution.xy;
-            vec2 mouseDirection = normalize(mouseScreenPos - rayPos);
-            finalRayDir = normalize(mix(finalRayDir, mouseDirection, mouseInfluence));
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
           }
 
-          float r1 = rayStrength(rayPos, finalRayDir, coord, 45.2, 31.4, 0.8 * raysSpeed);
-          float r2 = rayStrength(rayPos, finalRayDir, coord, 28.5, 19.8, 1.2 * raysSpeed);
-          float r3 = rayStrength(rayPos, finalRayDir, coord, 12.1, 56.2, 0.5 * raysSpeed);
-          
-          float combined = (r1 * 0.4 + r2 * 0.4 + r3 * 0.2);
-          combined = pow(combined, 0.7); // Boost mid-tones for visibility
-          combined *= 1.5; // Overall intensity boost
-          vec3 finalColor = raysColor * combined;
-          
-          if (noiseAmount > 0.0) {
-            float n = noise(coord * 0.01 + iTime * 0.05);
-            finalColor *= (1.0 - noiseAmount + noiseAmount * n);
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+              mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+              u.y
+            );
           }
 
-          if (saturation != 1.0) {
-            float gray = dot(finalColor, vec3(0.299, 0.587, 0.114));
-            finalColor = mix(vec3(gray), finalColor, saturation);
+          void main() {
+            vec2 coord = gl_FragCoord.xy;
+            vec2 toFrag = coord - rayPos;
+            float dist = length(toFrag);
+            float maxDim = max(iResolution.x, iResolution.y);
+
+            // Direction from ray source
+            vec2 dir = dist > 0.001 ? normalize(toFrag) : vec2(0.0, -1.0);
+            vec2 mainDir = normalize(rayDir);
+
+            // Broad forward hemisphere dispersion (fans outward across the screen)
+            float dotDir = dot(dir, mainDir);
+            float forwardSpread = clamp((dotDir + 0.35) / 1.35, 0.0, 1.0);
+            forwardSpread = pow(forwardSpread, 0.55);
+
+            // Angle of rays
+            float angle = atan(toFrag.y, toFrag.x);
+
+            // Slow majestic billowing curtain displacement
+            float time = iTime * raysSpeed * 0.40;
+            float foldWave = sin(dist * 0.0035 - time * 1.8) * (0.08 + distortion * 0.12)
+                           + sin(dist * 0.008 + time * 1.2) * 0.04;
+            float modAngle = angle + foldWave;
+
+            // Multi-frequency harmonic rays creating rich draped curtain folds
+            float rayA = sin(modAngle * 7.0 + time * 0.70);
+            float rayB = sin(modAngle * 13.0 - time * 0.50);
+            float rayC = cos(modAngle * 23.0 + time * 1.10);
+            float rayD = sin(modAngle * 4.0 + time * 0.30);
+            float rayE = cos(modAngle * 37.0 - time * 0.85);
+
+            float rayMix = 0.35 * rayA + 0.28 * rayB + 0.22 * rayC + 0.35 * rayD + 0.14 * rayE;
+            float raysNormalized = clamp(0.5 + 0.5 * rayMix, 0.0, 1.0);
+
+            // Spread factor shapes fold clarity and fullness
+            float spreadExp = 1.0 / max(lightSpread * 0.85, 0.15);
+            float curtainBeams = pow(raysNormalized, spreadExp * 1.4);
+
+            // Distance falloff from origin
+            float maxDistance = maxDim * max(rayLength, 0.85);
+            float distNorm = clamp(dist / maxDistance, 0.0, 1.0);
+            float falloff = pow(1.0 - distNorm, max(fadeDistance, 0.28));
+
+            // Origin hotspot glow & broad atmospheric radiance
+            float coreGlow = exp(-dist / (maxDim * 0.18)) * 1.45;
+            float atmosphericHalo = exp(-dist / (maxDim * 0.55)) * 0.70;
+
+            // Pulsating modulation
+            float pulse = pulsating > 0.5 ? (0.88 + 0.12 * sin(iTime * raysSpeed * 2.2)) : 1.0;
+
+            // Combined volumetric radiance
+            float rayIntensity = curtainBeams * forwardSpread * falloff * 1.65;
+            float totalIntensity = (rayIntensity + coreGlow * forwardSpread + atmosphericHalo * forwardSpread) * pulse;
+
+            // Dynamic mouse influence: attracts rays toward cursor
+            if (mouseInfluence > 0.0) {
+              vec2 mouseScreen = mousePos * iResolution;
+              float mouseDist = length(coord - mouseScreen);
+              float mouseGlow = exp(-mouseDist / (maxDim * 0.32)) * mouseInfluence * 0.45;
+              totalIntensity += mouseGlow;
+            }
+
+            // Atmospheric dust grain
+            if (noiseAmount > 0.0) {
+              float n = noise(coord * 0.012 + vec2(0.0, time * 0.04));
+              totalIntensity *= (1.0 - noiseAmount * 0.5 + noiseAmount * n);
+            }
+
+            // Rich mid-tone boost for vibrant visual presence
+            totalIntensity = pow(totalIntensity, 0.85) * 1.25;
+
+            // Color tinting
+            vec3 col = raysColor * totalIntensity;
+            if (saturation != 1.0) {
+              float gray = dot(col, vec3(0.299, 0.587, 0.114));
+              col = mix(vec3(gray), col, saturation);
+            }
+
+            // Soft atmospheric alpha blending
+            float alpha = clamp(totalIntensity * 0.90, 0.0, 0.96);
+            gl_FragColor = vec4(col, alpha);
+          }
+        `;
+
+        const uniforms: Uniforms = {
+          iTime: { value: 0 },
+          iResolution: { value: [1, 1] },
+          rayPos: { value: [0, 0] },
+          rayDir: { value: [0, -1] },
+          raysColor: { value: hexToRgb(raysColor) },
+          raysSpeed: { value: raysSpeed },
+          lightSpread: { value: lightSpread },
+          rayLength: { value: rayLength },
+          pulsating: { value: pulsating ? 1.0 : 0.0 },
+          fadeDistance: { value: fadeDistance },
+          saturation: { value: saturation },
+          mousePos: { value: [0.5, 0.5] },
+          mouseInfluence: { value: mouseInfluence },
+          noiseAmount: { value: noiseAmount },
+          distortion: { value: distortion }
+        };
+
+        uniformsRef.current = uniforms;
+
+        const geometry = new Triangle(gl);
+        const program = new Program(gl, {
+          vertex: vert,
+          fragment: frag,
+          uniforms: uniforms as any,
+          transparent: true
+        });
+
+        const mesh = new Mesh(gl, { geometry, program });
+
+        const updatePlacement = () => {
+          if (!containerRef.current || !renderer) return;
+          const { clientWidth, clientHeight } = containerRef.current;
+          renderer.setSize(clientWidth, clientHeight);
+          const dpr = renderer.dpr;
+          const w = clientWidth * dpr;
+          const h = clientHeight * dpr;
+          uniforms.iResolution.value = [w, h];
+
+          const { anchor, dir } = getAnchorAndDir(raysOrigin, w, h);
+          targetRayPosRef.current = anchor;
+          targetRayDirRef.current = dir;
+
+          if (currentRayPosRef.current[0] === 0 && currentRayPosRef.current[1] === 0) {
+            currentRayPosRef.current = [anchor[0], anchor[1]];
+            currentRayDirRef.current = [dir[0], dir[1]];
+            posVelocityRef.current = [0, 0];
+            dirVelocityRef.current = [0, 0];
+            uniforms.rayPos.value = anchor;
+            uniforms.rayDir.value = dir;
+          }
+        };
+
+        const loop = (now: number) => {
+          if (!containerRef.current || !uniformsRef.current || !rendererRef.current) return;
+          uniforms.iTime.value = now * 0.001;
+
+          if (followMouse && mouseInfluence > 0) {
+            const ease = 0.05;
+            smoothMouseRef.current.x += (mouseRef.current.x - smoothMouseRef.current.x) * ease;
+            smoothMouseRef.current.y += (mouseRef.current.y - smoothMouseRef.current.y) * ease;
+            uniforms.mousePos.value = [smoothMouseRef.current.x, 1.0 - smoothMouseRef.current.y];
           }
 
-          gl_FragColor = vec4(finalColor, combined * 0.85);
-        }
-      `;
+          // Smooth color transitions
+          const curCol = currentColorRef.current;
+          const tgtCol = targetColorRef.current;
+          curCol[0] += (tgtCol[0] - curCol[0]) * 0.035;
+          curCol[1] += (tgtCol[1] - curCol[1]) * 0.035;
+          curCol[2] += (tgtCol[2] - curCol[2]) * 0.035;
+          uniforms.raysColor.value = [curCol[0], curCol[1], curCol[2]];
 
-      const uniforms: Uniforms = {
-        iTime: { value: 0 },
-        iResolution: { value: [1, 1] },
-        rayPos: { value: [0, 0] },
-        rayDir: { value: [0, -1] },
-        raysColor: { value: hexToRgb(raysColor) },
-        raysSpeed: { value: raysSpeed },
-        lightSpread: { value: lightSpread },
-        rayLength: { value: rayLength },
-        pulsating: { value: pulsating ? 1.0 : 0.0 },
-        fadeDistance: { value: fadeDistance },
-        saturation: { value: saturation },
-        mousePos: { value: [0.5, 0.5] },
-        mouseInfluence: { value: mouseInfluence },
-        noiseAmount: { value: noiseAmount },
-        distortion: { value: distortion },
-        flowPhase: { value: 0 },
-        flowMotion: { value: 0 }
-      };
-      uniformsRef.current = uniforms;
+          // Spring physics for position gliding
+          const stiffness = 0.040;
+          const damping = 0.86;
+          const curPos = currentRayPosRef.current;
+          const tgtPos = targetRayPosRef.current;
+          const pVel = posVelocityRef.current;
+          pVel[0] = (pVel[0] + (tgtPos[0] - curPos[0]) * stiffness) * damping;
+          pVel[1] = (pVel[1] + (tgtPos[1] - curPos[1]) * stiffness) * damping;
+          curPos[0] += pVel[0];
+          curPos[1] += pVel[1];
+          uniforms.rayPos.value = [curPos[0], curPos[1]];
 
-      const geometry = new Triangle(gl);
-      const program = new Program(gl, {
-        vertex: vert,
-        fragment: frag,
-        uniforms,
-        transparent: true
-      });
-      const mesh = new Mesh(gl, { geometry, program });
-      meshRef.current = mesh;
+          // Spring physics for direction steering
+          const curDir = currentRayDirRef.current;
+          const tgtDir = targetRayDirRef.current;
+          const dVel = dirVelocityRef.current;
+          dVel[0] = (dVel[0] + (tgtDir[0] - curDir[0]) * stiffness) * damping;
+          dVel[1] = (dVel[1] + (tgtDir[1] - curDir[1]) * stiffness) * damping;
+          curDir[0] += dVel[0];
+          curDir[1] += dVel[1];
+          const dLen = Math.hypot(curDir[0], curDir[1]) || 1;
+          uniforms.rayDir.value = [curDir[0] / dLen, curDir[1] / dLen];
 
-      const updatePlacement = () => {
-        if (!containerRef.current || !renderer) return;
-        const { clientWidth: wCSS, clientHeight: hCSS } = containerRef.current;
-        renderer.setSize(wCSS, hCSS);
-        const dpr = renderer.dpr;
-        const w = wCSS * dpr;
-        const h = hCSS * dpr;
-        
-        uniforms.iResolution.value = [w, h];
-        const { anchor, dir } = getAnchorAndDir(raysOrigin, w, h);
-        targetRayPosRef.current = anchor;
-        currentRayPosRef.current = [anchor[0], anchor[1]];
-        posVelocityRef.current = [0, 0];
-        targetRayDirRef.current = dir;
-        currentRayDirRef.current = [dir[0], dir[1]];
-        dirVelocityRef.current = [0, 0];
-        uniforms.rayPos.value = anchor;
-        uniforms.rayDir.value = dir;
-      };
+          renderer.render({ scene: mesh });
+          animationIdRef.current = requestAnimationFrame(loop);
+        };
 
-      const loop = (t: number) => {
-        if (!rendererRef.current || !uniformsRef.current || !meshRef.current) return;
-        
-        uniforms.iTime.value = t * 0.001;
-        
-        if (followMouse && mouseInfluence > 0.0) {
-          const smoothing = 0.965;
-          smoothMouseRef.current.x = smoothMouseRef.current.x * smoothing + mouseRef.current.x * (1 - smoothing);
-          smoothMouseRef.current.y = smoothMouseRef.current.y * smoothing + mouseRef.current.y * (1 - smoothing);
-          uniforms.mousePos.value = [smoothMouseRef.current.x, 1.0 - smoothMouseRef.current.y];
-        }
-
-        // Slower, velvety color melt for liquid holographic hue transitions
-        const cur = currentColorRef.current;
-        const tgt = targetColorRef.current;
-        cur[0] += (tgt[0] - cur[0]) * 0.016;
-        cur[1] += (tgt[1] - cur[1]) * 0.016;
-        cur[2] += (tgt[2] - cur[2]) * 0.016;
-        uniforms.raysColor.value = [cur[0], cur[1], cur[2]];
-
-        // Slower, ultra-smooth fluid spring physics for majestic gliding rays
-        const posStiffness = 0.009;
-        const posDamping = 0.89;
-
-        const curPos = currentRayPosRef.current;
-        const tgtPos = targetRayPosRef.current;
-        const pVel = posVelocityRef.current;
-        pVel[0] = (pVel[0] + (tgtPos[0] - curPos[0]) * posStiffness) * posDamping;
-        pVel[1] = (pVel[1] + (tgtPos[1] - curPos[1]) * posStiffness) * posDamping;
-        curPos[0] += pVel[0];
-        curPos[1] += pVel[1];
-        uniforms.rayPos.value = [curPos[0], curPos[1]];
-
-        // Deliberate, sweeping direction pivot for cinematic spotlight motion
-        const dirStiffness = 0.007;
-        const dirDamping = 0.90;
-
-        const curDir = currentRayDirRef.current;
-        const tgtDir = targetRayDirRef.current;
-        const dVel = dirVelocityRef.current;
-        dVel[0] = (dVel[0] + (tgtDir[0] - curDir[0]) * dirStiffness) * dirDamping;
-        dVel[1] = (dVel[1] + (tgtDir[1] - curDir[1]) * dirStiffness) * dirDamping;
-        curDir[0] += dVel[0];
-        curDir[1] += dVel[1];
-        const dLen = Math.hypot(curDir[0], curDir[1]) || 1;
-        uniforms.rayDir.value = [curDir[0] / dLen, curDir[1] / dLen];
-
-        // Gentle undulating wave flow proportional to the slower majestic pace
-        const maxDim = Math.max(uniforms.iResolution.value[0], uniforms.iResolution.value[1]) || 1000;
-        const motionVel = Math.hypot(pVel[0], pVel[1]) / (maxDim * 0.005);
-        const targetMotion = Math.min(motionVel, 1.4);
-        smoothFlowMotionRef.current += (targetMotion - smoothFlowMotionRef.current) * 0.05;
-        uniforms.flowMotion.value = smoothFlowMotionRef.current;
-
-        flowPhaseRef.current += 0.010 + smoothFlowMotionRef.current * 0.030;
-        uniforms.flowPhase.value = flowPhaseRef.current;
-
-        renderer.render({ scene: mesh });
+        window.addEventListener('resize', updatePlacement);
+        updatePlacement();
         animationIdRef.current = requestAnimationFrame(loop);
-      };
 
-      window.addEventListener('resize', updatePlacement);
-      updatePlacement();
-      animationIdRef.current = requestAnimationFrame(loop);
+        cleanupFunctionRef.current = () => {
+          if (animationIdRef.current) cancelAnimationFrame(animationIdRef.current);
+          window.removeEventListener('resize', updatePlacement);
+          if (renderer.gl.canvas.parentNode) {
+            renderer.gl.canvas.parentNode.removeChild(renderer.gl.canvas);
+          }
+        };
+      } catch (err) {
+        console.warn('LightRays: WebGL unavailable or disabled, falling back to CSS background:', err);
+      }
+    };
 
-      cleanupFunctionRef.current = () => {
-        if (animationIdRef.current) cancelAnimationFrame(animationIdRef.current);
-        window.removeEventListener('resize', updatePlacement);
-        if (renderer.gl.canvas.parentNode) {
-          renderer.gl.canvas.parentNode.removeChild(renderer.gl.canvas);
-        }
-      };
-    } catch (err) {
-      console.warn('LightRays: WebGL unavailable or disabled, falling back to CSS background:', err);
-    }
-  };
-
-  initializeWebGL();
+    initializeWebGL();
     return () => cleanupFunctionRef.current?.();
   }, [isVisible]);
 
@@ -465,8 +479,8 @@ export function LightRays({
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       mouseRef.current = {
-        x: (e.clientX - rect.left) / rect.width,
-        y: (e.clientY - rect.top) / rect.height
+        x: (e.clientX - rect.left) / (rect.width || 1),
+        y: (e.clientY - rect.top) / (rect.height || 1)
       };
     };
 

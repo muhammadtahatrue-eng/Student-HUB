@@ -12,8 +12,8 @@ import {
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
 interface NavbarProps {
-  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university';
-  setCurrentTab: (tab: 'landing' | 'browse' | 'upload' | 'explore' | 'university') => void;
+  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university' | 'program';
+  setCurrentTab: (tab: any) => void;
   supabaseConfig?: SupabaseConfig;
   onOpenSupabaseModal?: () => void;
   user: StudentUser | null;
@@ -116,12 +116,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                 Explore
               </button>
               <button
-                onClick={() => setCurrentTab('university')}
+                onClick={() => setCurrentTab('program')}
                 className={`hover:text-white transition-colors cursor-pointer ${
-                  currentTab === 'university' ? 'text-white font-semibold' : ''
+                  currentTab === 'program' || currentTab === 'university' ? 'text-white font-semibold' : ''
                 }`}
               >
-                My University
+                My Program
               </button>
               <button
                 onClick={() => setCurrentTab('upload')}
@@ -293,15 +293,15 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         <button
-          onClick={() => setCurrentTab('university')}
+          onClick={() => setCurrentTab('program')}
           className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            currentTab === 'university'
+            currentTab === 'program' || currentTab === 'university'
               ? 'text-[#00f0ff] font-bold bg-white/10'
               : 'text-white/60 hover:text-white'
           }`}
         >
           <GraduationCap className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] tracking-tight">Campus</span>
+          <span className="text-[10px] tracking-tight">Program</span>
         </button>
 
         <button

@@ -16,14 +16,15 @@
       if (l.hostname.endsWith('github.io') && repo) {
         l.replace(
           l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-          '/' + repo + '/?' +
-          (l.search ? '&' + l.search.slice(1) : '') +
+          '/' + repo + '/' +
+          l.search +
           l.hash
         );
       } else {
         l.replace(
           l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-          '/?' + (l.search ? '&' + l.search.slice(1) : '') +
+          '/' +
+          l.search +
           l.hash
         );
       }
