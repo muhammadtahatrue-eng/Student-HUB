@@ -58,6 +58,8 @@ interface AuthModalProps {
   onChangeRayColor?: (color: string) => void;
   rayOrigin?: RaysOrigin;
   onChangeRayOrigin?: (origin: RaysOrigin) => void;
+  rayBrightness?: number;
+  onChangeRayBrightness?: (brightness: number) => void;
   onResetFlare?: () => void;
 }
 
@@ -342,6 +344,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onChangeRayColor,
   rayOrigin = 'top-center',
   onChangeRayOrigin,
+  rayBrightness = 1.0,
+  onChangeRayBrightness,
   onResetFlare,
 }) => {
   // Unauthenticated Form State
@@ -863,7 +867,58 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
       </div>
 
-      {/* 2. CORNER & POSITION SELECTOR */}
+      {/* 2. BRIGHTNESS INTENSITY SLIDER */}
+      <div className="p-3.5 bg-black/40 border border-white/10 rounded-xl space-y-3">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-medium text-white/90 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Brightness Intensity</span>
+          </span>
+          <span className="text-[11px] font-mono font-bold text-cyan-300 bg-cyan-400/10 px-2.5 py-0.5 rounded-full border border-cyan-400/30">
+            {Math.round(rayBrightness * 100)}%
+          </span>
+        </div>
+
+        <div className="space-y-2">
+          <input
+            type="range"
+            min={0.1}
+            max={2.0}
+            step={0.05}
+            value={rayBrightness}
+            onChange={(e) => onChangeRayBrightness?.(parseFloat(e.target.value))}
+            aria-label="Background flare brightness intensity"
+            className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-white/15 accent-[#00f0ff] focus:outline-none"
+          />
+          <div className="flex items-center justify-between gap-1.5 pt-0.5">
+            {[
+              { label: 'Subtle (35%)', value: 0.35 },
+              { label: 'Balanced (70%)', value: 0.7 },
+              { label: 'Default (100%)', value: 1.0 },
+              { label: 'Vibrant (140%)', value: 1.4 },
+              { label: 'Max (200%)', value: 2.0 },
+            ].map((preset) => {
+              const isSelected = Math.abs(rayBrightness - preset.value) < 0.03;
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => onChangeRayBrightness?.(preset.value)}
+                  className={`flex-1 py-1 px-1.5 rounded-lg text-[10px] font-mono transition-all cursor-pointer border text-center truncate ${
+                    isSelected
+                      ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-300 font-bold shadow-[0_0_10px_rgba(0,240,255,0.2)]'
+                      : 'bg-white/[0.03] border-white/10 text-white/50 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* 3. CORNER & POSITION SELECTOR */}
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs">
           <span className="font-medium text-white/80 flex items-center gap-1.5">
@@ -1963,7 +2018,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       Authenticating with Supabase...
                     </span>
                   ) : (
-                    <span>{isSignUp ? 'Create Student Account' : 'Sign In to StudyVault'}</span>
+                    <span>{isSignUp ? 'Create Student Account' : 'Sign In to Xeusar'}</span>
                   )}
                 </button>
 
@@ -1993,7 +2048,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 {/* Open access note */}
                 <div className="pt-3 border-t border-white/5 text-center">
                   <p className="text-[11px] text-white/40 leading-relaxed">
-                    StudyVault is open to all students. Registration is free and lets you contribute notes & customize your structured academic profile.
+                    Xeusar is open to all students. Registration is free and lets you contribute notes & customize your structured academic profile.
                   </p>
                 </div>
 

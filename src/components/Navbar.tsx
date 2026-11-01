@@ -85,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <GraduationCap className="w-4 h-4 text-black" />
               </div>
               <span className="text-base sm:text-xl font-bold tracking-tighter uppercase text-white group-hover:text-white/90">
-                StudyVault
+                Xeusar
               </span>
             </button>
 

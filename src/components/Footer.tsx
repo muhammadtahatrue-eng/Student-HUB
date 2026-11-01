@@ -22,7 +22,7 @@ export const Footer: React.FC<FooterProps> = ({
             <GraduationCap className="w-3.5 h-3.5 text-black" />
           </div>
           <span className="font-black tracking-tighter uppercase text-sm text-white">
-            StudyVault
+            Xeusar
           </span>
           <span className="text-white/40 text-xs ml-2">
             Student Study-Material Sharing Platform
@@ -41,18 +41,6 @@ export const Footer: React.FC<FooterProps> = ({
             className="hover:text-white transition-colors cursor-pointer"
           >
             Share Notes
-          </button>
-          <button
-            onClick={onOpenCodeDrawer}
-            className="hover:text-white transition-colors cursor-pointer"
-          >
-            Export Next.js Code
-          </button>
-          <button
-            onClick={onOpenSupabaseModal}
-            className="hover:text-white transition-colors cursor-pointer"
-          >
-            Supabase Connection
           </button>
         </div>
       </div>

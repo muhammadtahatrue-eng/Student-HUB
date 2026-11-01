@@ -280,22 +280,6 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
         {/* Gutter separator */}
         <div className="w-5 h-px bg-white/10 my-0.5" />
 
-        {/* Database / Supabase indicator and trigger */}
-        {onOpenSupabaseModal && (
-          <button
-            type="button"
-            onClick={onOpenSupabaseModal}
-            aria-label="Database Connection"
-            className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 text-white/60 hover:text-white hover:bg-white/10"
-          >
-            <Database className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            <span className={`w-1.5 h-1.5 rounded-full absolute top-2 right-2 ${supabaseConfig?.isConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400'}`} />
-            <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-              {supabaseConfig?.isConnected ? 'Supabase Connected' : 'Connect Supabase'}
-            </span>
-          </button>
-        )}
-
         {/* Flare Background Settings */}
         <button
           type="button"
@@ -329,21 +313,6 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
             {user ? (user.username ? `@${user.username}` : user.name) : 'Student Sign In'}
           </span>
         </button>
-
-        {/* Export Code / Schema */}
-        {onOpenCodeDrawer && (
-          <button
-            type="button"
-            onClick={onOpenCodeDrawer}
-            aria-label="Export Code"
-            className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 text-white/50 hover:text-white hover:bg-white/10"
-          >
-            <Code2 className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-              Export Code
-            </span>
-          </button>
-        )}
       </div>
     </aside>
   );

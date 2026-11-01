@@ -103,20 +103,19 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
     <div className="relative z-10 font-outfit text-white">
       {/* 1. HERO SHOWCASE SECTION */}
       <section className="relative min-h-[75vh] sm:min-h-[85vh] flex flex-col items-center justify-center text-center px-4 overflow-hidden pt-8 sm:pt-12 pb-12 sm:pb-16">
-        <div className="max-w-5xl mx-auto w-full">
-          {/* Badge */}
-          <div className="inline-flex items-center gap-2 px-3 sm:px-4 py-1.5 mb-6 sm:mb-8 text-[11px] sm:text-xs font-bold tracking-[0.15em] sm:tracking-[0.2em] uppercase bg-white/10 border border-white/20 rounded-full backdrop-blur-md">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Next-Gen Learning Experience</span>
-          </div>
-
+        {/* Radial dark contrast scrim so hero typography and controls stay crisp under any light ray color */}
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(5,7,10,0.62)_0%,rgba(5,7,10,0.32)_52%,transparent_82%)]"
+          aria-hidden="true"
+        />
+        <div className="relative z-10 max-w-5xl mx-auto w-full">
           {/* Headline */}
-          <h1 className="text-4xl xs:text-5xl sm:text-7xl md:text-8xl lg:text-9xl font-black uppercase tracking-tighter mb-4 sm:mb-6 neon-text [text-wrap:balance] break-words">
+          <h1 className="text-4xl xs:text-5xl sm:text-7xl md:text-8xl lg:text-9xl font-black uppercase tracking-tighter mb-4 sm:mb-6 text-white drop-shadow-[0_4px_28px_rgba(0,0,0,0.95)] [text-wrap:balance] break-words">
             Connect. Learn. Share.
           </h1>
 
           {/* Subtitle */}
-          <p className="text-sm sm:text-base md:text-xl text-white/70 mb-8 sm:mb-10 max-w-2xl mx-auto leading-relaxed [text-wrap:balance] px-2 font-light">
+          <p className="text-sm sm:text-base md:text-xl text-white/90 drop-shadow-[0_2px_12px_rgba(0,0,0,0.95)] mb-8 sm:mb-10 max-w-2xl mx-auto leading-relaxed [text-wrap:balance] px-2 font-normal">
             The ultimate interactive platform for students to exchange materials, engage in high-level discussions, and build a global knowledge network.
           </p>
 
@@ -124,152 +123,17 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 sm:gap-4 max-w-xs sm:max-w-none mx-auto w-full">
             <button
               onClick={onBrowseMaterials}
-              className="w-full sm:w-auto px-8 sm:px-10 py-3.5 sm:py-4 bg-white text-black font-black uppercase text-xs sm:text-sm tracking-widest rounded-full hover:bg-white/90 hover:shadow-[0_0_35px_rgba(255,255,255,0.45)] transition-all cursor-pointer text-center active:scale-95"
+              className="w-full sm:w-auto px-8 sm:px-10 py-3.5 sm:py-4 bg-white text-black font-black uppercase text-xs sm:text-sm tracking-widest rounded-full hover:bg-white/90 hover:shadow-[0_0_35px_rgba(255,255,255,0.45)] transition-all cursor-pointer text-center active:scale-95 shadow-xl"
             >
               Explore Materials
             </button>
             <button
               onClick={onWatchDemo}
-              className="w-full sm:w-auto px-8 sm:px-10 py-3.5 sm:py-4 bg-white/5 border border-white/20 text-white font-black uppercase text-xs sm:text-sm tracking-widest rounded-full hover:bg-white/10 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95"
+              className="w-full sm:w-auto px-8 sm:px-10 py-3.5 sm:py-4 bg-black/65 border border-white/30 text-white font-black uppercase text-xs sm:text-sm tracking-widest rounded-full hover:bg-white/15 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95 backdrop-blur-md shadow-xl"
             >
               <Play className="w-3.5 h-3.5 fill-white" />
               <span>Watch Demo</span>
             </button>
-          </div>
-
-          {/* Interactive Light Rays Controls */}
-          <div className="mt-8 sm:mt-10 flex flex-col items-center justify-center gap-2.5 max-w-xl mx-auto px-4 select-none">
-            {/* Color Selectors */}
-            <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-              <span className="text-white/60 flex items-center gap-1 font-mono text-[11px] font-semibold">
-                <Sparkles className="w-3 h-3 text-cyan-400" />
-                <span>Light Rays:</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => onChangeRayColor?.('#ffffff')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
-                  rayColor?.toLowerCase() === '#ffffff'
-                    ? 'bg-white/20 border-white text-white shadow-[0_0_12px_rgba(255,255,255,0.4)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-white shrink-0 shadow-[0_0_6px_#ffffff]"></span>
-                <span>WHITE</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayColor?.('#00f0ff')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
-                  rayColor?.toLowerCase() === '#00f0ff'
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 shadow-[0_0_12px_rgba(0,240,255,0.4)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-[#00f0ff] shrink-0 shadow-[0_0_6px_#00f0ff]"></span>
-                <span>CYAN</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayColor?.('#10b981')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
-                  rayColor?.toLowerCase() === '#10b981'
-                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-[#10b981] shrink-0 shadow-[0_0_6px_#10b981]"></span>
-                <span>EMERALD</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayColor?.('#b388ff')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
-                  rayColor?.toLowerCase() === '#b388ff'
-                    ? 'bg-purple-500/20 border-purple-400 text-purple-300 shadow-[0_0_12px_rgba(179,136,255,0.4)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-[#b388ff] shrink-0 shadow-[0_0_6px_#b388ff]"></span>
-                <span>VIOLET</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayColor?.('#f59e0b')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
-                  rayColor?.toLowerCase() === '#f59e0b'
-                    ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <span className="w-2 h-2 rounded-full bg-[#f59e0b] shrink-0 shadow-[0_0_6px_#f59e0b]"></span>
-                <span>AMBER</span>
-              </button>
-            </div>
-
-            {/* Origin & Pulsing Controls */}
-            <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-              <span className="text-white/60 font-mono text-[11px] font-semibold">Origin:</span>
-              <button
-                type="button"
-                onClick={() => onChangeRayOrigin?.('top-center')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-medium transition-all cursor-pointer border ${
-                  rayOrigin === 'top-center'
-                    ? 'bg-white/20 border-white text-white shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                TOP CENTER
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayOrigin?.('top-left')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-medium transition-all cursor-pointer border ${
-                  rayOrigin === 'top-left'
-                    ? 'bg-white/20 border-white text-white shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                TOP LEFT
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayOrigin?.('top-right')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-medium transition-all cursor-pointer border ${
-                  rayOrigin === 'top-right'
-                    ? 'bg-white/20 border-white text-white shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                TOP RIGHT
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeRayOrigin?.('bottom-center')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-medium transition-all cursor-pointer border ${
-                  rayOrigin === 'bottom-center' || rayOrigin === 'bottom-left' || rayOrigin === 'bottom-right'
-                    ? 'bg-white/20 border-white text-white shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                BOTTOM
-              </button>
-              <button
-                type="button"
-                onClick={() => onTogglePulsating?.()}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-medium transition-all cursor-pointer border ${
-                  rayPulsating
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300'
-                    : 'bg-black/40 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                PULSING: {rayPulsating ? 'ON' : 'OFF'}
-              </button>
-            </div>
-
-            <p className="text-[11px] text-white/40 font-mono tracking-tight mt-1">
-              Holographic WebGL Light Rays • Click anywhere to shift neon spectrum
-            </p>
           </div>
         </div>
       </section>

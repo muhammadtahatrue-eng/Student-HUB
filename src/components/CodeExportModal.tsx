@@ -152,7 +152,7 @@ export const CodeExportModal: React.FC<CodeExportModalProps> = ({
         {/* Footer */}
         <footer className="px-6 py-3 border-t border-stone-200 bg-stone-50 flex items-center justify-between text-xs text-stone-500 shrink-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-stone-700">StudyVault Next.js Exporter</span>
+            <span className="font-medium text-stone-700">Xeusar Next.js Exporter</span>
             <span>·</span>
             <span>Next.js 15 App Router · Supabase PostgreSQL & Storage · Tailwind CSS</span>
           </div>

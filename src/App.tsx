@@ -143,6 +143,53 @@ export default function App() {
     }
   });
   const [rayPulsating, setRayPulsating] = useState<boolean>(true);
+  const [rayBrightness, setRayBrightness] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('studyvault_flare_brightness');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!Number.isNaN(parsed) && parsed >= 0.1 && parsed <= 2.5) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return 1.0;
+  });
+  const [homeScrollBlur, setHomeScrollBlur] = useState<number>(0);
+
+  // Scroll-driven blur effect on the Home (landing) page only:
+  // Blurs the background flare as the user scrolls down so all content stays legible,
+  // and smoothly restores to 0 (original sharp flare) when scrolling back up.
+  useEffect(() => {
+    if (currentTab !== 'landing') {
+      setHomeScrollBlur(0);
+      return;
+    }
+
+    let rafId: number | null = null;
+    const updateScrollBlur = () => {
+      const scrollY = Math.max(0, window.scrollY || document.documentElement.scrollTop || 0);
+      // Smoothstep easing from 0px to 560px scroll depth for feather-soft start and stop
+      const rawProgress = Math.min(1, scrollY / 560);
+      const easedProgress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+      setHomeScrollBlur(Number((easedProgress * 28).toFixed(2)));
+    };
+
+    const handleScroll = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(() => {
+        updateScrollBlur();
+        rafId = null;
+      });
+    };
+
+    updateScrollBlur();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+  }, [currentTab]);
 
   // Calculate LightRays origin dynamically from cursor click position
   const getOriginFromCursorPosition = (clientX: number, clientY: number): RaysOrigin => {
@@ -194,14 +241,24 @@ export default function App() {
     } catch {}
   };
 
+  const handleChangeRayBrightness = (brightness: number) => {
+    const clamped = Math.min(2.0, Math.max(0.1, Number(brightness.toFixed(2))));
+    setRayBrightness(clamped);
+    try {
+      localStorage.setItem('studyvault_flare_brightness', String(clamped));
+    } catch {}
+  };
+
   const handleResetFlare = () => {
     setRayColor(DEFAULT_FLARE_COLOR);
     setRayOrigin(DEFAULT_RAY_ORIGIN);
+    setRayBrightness(1.0);
     try {
       localStorage.setItem('studyvault_flare_color', DEFAULT_FLARE_COLOR);
       localStorage.setItem('studyvault_flare_origin', DEFAULT_RAY_ORIGIN);
+      localStorage.setItem('studyvault_flare_brightness', '1');
     } catch {}
-    triggerToast('Flare reset to default Cyber Cyan (Top Center)');
+    triggerToast('Flare reset to default Cyber Cyan (Top Center, 100% Brightness)');
   };
 
   // Cursor click interaction: shifts LightRays origin based on click position and cycles neon hue
@@ -418,13 +475,13 @@ export default function App() {
     );
 
     const content = `%PDF-1.4
-% StudyHub Academic Export
+% Xeusar Academic Export
 Course: ${note.courseCode} — ${note.courseName}
 Title: ${note.title}
 Professor: ${note.professor}
 Academic Year: ${note.academicYear} ${note.semester}
 Uploader: ${note.uploaderName} (${note.uploaderUniversity})
-Downloaded from: StudyHub Interactive Open Platform
+Downloaded from: Xeusar Interactive Open Platform
 
 Summary & Key Takeaways:
 ${note.description}
@@ -586,6 +643,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         mouseInfluence={0.18}
         noiseAmount={0.10}
         distortion={0.16}
+        brightness={rayBrightness}
+        scrollBlur={currentTab === 'landing' ? homeScrollBlur : 0}
       />
 
       {/* Toast Notification Banner */}
@@ -841,6 +900,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         onChangeRayColor={handleChangeRayColor}
         rayOrigin={rayOrigin}
         onChangeRayOrigin={handleChangeRayOrigin}
+        rayBrightness={rayBrightness}
+        onChangeRayBrightness={handleChangeRayBrightness}
         onResetFlare={handleResetFlare}
       />
 

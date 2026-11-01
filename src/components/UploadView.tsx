@@ -346,27 +346,6 @@ export const UploadView: React.FC<UploadViewProps> = ({
           <p className="text-xs text-white/60 mt-1">
             Contribute PDF lecture notes, exam papers, or cheat sheets. All uploads are free and accessible to students worldwide.
           </p>
-
-          {/* Connection Mode Indicator */}
-          <div className="mt-4 py-2.5 px-4 bg-white/5 border border-white/10 rounded-xl flex items-center justify-between text-xs text-white/70">
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-white/50" />
-              <span>
-                Storage Engine:{' '}
-                <strong className="text-white">
-                  {supabaseConfig.isConnected ? 'Live Supabase Bucket (`study-materials`)' : 'Demo Local Engine (Instant preview)'}
-                </strong>
-              </span>
-            </div>
-            {!supabaseConfig.isConnected && (
-              <button
-                onClick={onOpenSupabaseModal}
-                className="text-xs text-white underline font-medium hover:text-white/80 cursor-pointer"
-              >
-                Connect Supabase
-              </button>
-            )}
-          </div>
         </div>
 
         {/* Success Banner if uploaded */}

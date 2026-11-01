@@ -25,7 +25,7 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('StudyVault Application Error:', error, errorInfo);
+    console.error('Xeusar Application Error:', error, errorInfo);
     this.setState({ errorInfo });
   }
 

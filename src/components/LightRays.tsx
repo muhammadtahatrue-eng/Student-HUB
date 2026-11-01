@@ -32,6 +32,8 @@ export interface LightRaysProps {
   mouseInfluence?: number;
   noiseAmount?: number;
   distortion?: number;
+  brightness?: number;
+  scrollBlur?: number;
   className?: string;
 }
 
@@ -71,6 +73,7 @@ interface Uniforms {
   mouseInfluence: { value: number };
   noiseAmount: { value: number };
   distortion: { value: number };
+  brightness: { value: number };
 }
 
 /**
@@ -111,6 +114,8 @@ export function LightRays({
   mouseInfluence = 0.1,
   noiseAmount = 0.0,
   distortion = 0.0,
+  brightness = 1.0,
+  scrollBlur = 0,
   className = ''
 }: LightRaysProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -148,6 +153,7 @@ export function LightRays({
       uniformsRef.current.mouseInfluence.value = mouseInfluence;
       uniformsRef.current.noiseAmount.value = noiseAmount;
       uniformsRef.current.distortion.value = distortion;
+      uniformsRef.current.brightness.value = brightness;
 
       if (rendererRef.current && containerRef.current) {
         const { clientWidth, clientHeight } = containerRef.current;
@@ -168,7 +174,8 @@ export function LightRays({
     saturation,
     mouseInfluence,
     noiseAmount,
-    distortion
+    distortion,
+    brightness
   ]);
 
   useEffect(() => {
@@ -253,6 +260,7 @@ export function LightRays({
           uniform float mouseInfluence;
           uniform float noiseAmount;
           uniform float distortion;
+          uniform float brightness;
 
           varying vec2 vUv;
 
@@ -339,8 +347,8 @@ export function LightRays({
               totalIntensity *= (1.0 - noiseAmount * 0.5 + noiseAmount * n);
             }
 
-            // Rich mid-tone boost for vibrant visual presence
-            totalIntensity = pow(totalIntensity, 0.85) * 1.25;
+            // Rich mid-tone boost for vibrant visual presence scaled by brightness setting
+            totalIntensity = pow(totalIntensity, 0.85) * 1.25 * max(brightness, 0.0);
 
             // Color tinting
             vec3 col = raysColor * totalIntensity;
@@ -370,7 +378,8 @@ export function LightRays({
           mousePos: { value: [0.5, 0.5] },
           mouseInfluence: { value: mouseInfluence },
           noiseAmount: { value: noiseAmount },
-          distortion: { value: distortion }
+          distortion: { value: distortion },
+          brightness: { value: brightness }
         };
 
         uniformsRef.current = uniforms;
@@ -490,12 +499,32 @@ export function LightRays({
     }
   }, [followMouse]);
 
+  const clampedBlur = Math.max(0, scrollBlur);
+  const blurProgress = Math.min(1, clampedBlur / 28);
+
   return (
     <div
-      ref={containerRef}
       className={`fixed inset-0 w-full h-full pointer-events-none overflow-hidden z-0 ${className}`}
       aria-hidden="true"
-    />
+    >
+      <div
+        ref={containerRef}
+        className="w-full h-full will-change-[filter,transform]"
+        style={{
+          filter: `blur(${clampedBlur.toFixed(2)}px)`,
+          transform: `scale(${(1 + blurProgress * 0.06).toFixed(4)})`,
+          transition:
+            'filter 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 420ms cubic-bezier(0.22, 1, 0.36, 1)'
+        }}
+      />
+      <div
+        className="absolute inset-0 bg-[#050505] pointer-events-none will-change-[opacity]"
+        style={{
+          opacity: Number((blurProgress * 0.44).toFixed(4)),
+          transition: 'opacity 420ms cubic-bezier(0.22, 1, 0.36, 1)'
+        }}
+      />
+    </div>
   );
 }
 

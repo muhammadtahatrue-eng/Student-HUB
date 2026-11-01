@@ -40,14 +40,14 @@ export const DemoModal: React.FC<DemoModalProps> = ({
       highlight: 'Zero latency in-browser document preview.'
     },
     {
-      title: '3. Seamless PDF Upload to Supabase',
-      desc: 'Drag and drop PDF notes into the upload page. Files stream directly to the Supabase `study-materials` bucket with automatic metadata indexing.',
-      highlight: 'Real-time synchronization across devices.'
+      title: '3. Seamless PDF Note Sharing',
+      desc: 'Drag and drop PDF lecture notes, past papers, or cheat sheets into the upload workspace with course and semester tagging.',
+      highlight: 'Instant indexing across academic programs.'
     },
     {
-      title: '4. Next.js 15 & SQL Schema Export',
-      desc: 'Complete production-grade code export ready for deployment on Vercel with PostgreSQL Row Level Security (RLS) rules included.',
-      highlight: 'One-click copy and deployment.'
+      title: '4. Campus Programs & Peer Q&A',
+      desc: 'Explore degree programs, browse semester-by-semester course vaults, and collaborate with peers in academic discussion rooms.',
+      highlight: 'Built for university students worldwide.'
     }
   ];
 
@@ -66,7 +66,7 @@ export const DemoModal: React.FC<DemoModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-base tracking-tight">
-                StudyHub Platform Demo
+                Xeusar Platform Demo
               </h3>
               <p className="text-xs text-white/50">
                 Interactive walkthrough of core student capabilities

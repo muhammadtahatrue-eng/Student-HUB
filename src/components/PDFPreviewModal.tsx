@@ -256,7 +256,7 @@ export const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
 
               {/* Page Footer */}
               <div className="pt-4 sm:pt-6 border-t border-white/10 flex items-center justify-between text-[10px] sm:text-[11px] font-mono text-white/40">
-                <span>StudyVault Verified Document · {note.uploaderUniversity}</span>
+                <span>Xeusar Verified Document · {note.uploaderUniversity}</span>
                 <span>Page {currentPage} of {totalPages}</span>
               </div>
             </div>
