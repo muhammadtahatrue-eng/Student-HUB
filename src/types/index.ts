@@ -119,6 +119,8 @@ export interface StudentUser {
   email: string;
   name: string;
   username?: string;
+  emailConfirmed?: boolean;
+  emailConfirmedAt?: string | null;
   setupCompleted?: boolean;
   createdAt?: string;
   updatedAt?: string;

@@ -1705,13 +1705,37 @@ export const ProfilePages: React.FC<ProfilePagesProps> = ({
           </div>
           <input
             type="range"
-            min={0.1}
-            max={2.0}
+            min={0}
+            max={1.0}
             step={0.05}
             value={rayBrightness}
             onChange={(e) => onChangeRayBrightness(parseFloat(e.target.value))}
             className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-white/15 accent-[#00f0ff]"
           />
+          <div className="flex items-center justify-between gap-1.5 pt-0.5">
+            {[
+              { label: 'Subtle (25%)', value: 0.25 },
+              { label: 'Default (50%)', value: 0.5 },
+              { label: 'Balanced (75%)', value: 0.75 },
+              { label: 'Bright (100%)', value: 1.0 }
+            ].map((preset) => {
+              const isSelected = Math.abs(rayBrightness - preset.value) < 0.03;
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => onChangeRayBrightness(preset.value)}
+                  className={`flex-1 py-1 px-1.5 rounded-lg text-[10px] font-mono transition-all cursor-pointer border text-center truncate ${
+                    isSelected
+                      ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-300 font-bold'
+                      : 'bg-white/[0.03] border-white/10 text-white/50 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Origin / Position Selector */}

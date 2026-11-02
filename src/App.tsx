@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   FileText,
   Upload,
@@ -33,8 +33,15 @@ import { CodeExportModal } from './components/CodeExportModal.tsx';
 import { AuthModal, AuthModalMode } from './components/AuthModal.tsx';
 import { UserSettingsModal, UserSettingsTab } from './components/UserSettingsModal.tsx';
 import { AuthPages, AuthPageMode } from './components/AuthPages.tsx';
+import { VerificationBanner } from './components/VerificationBanner.tsx';
 import { ProfilePages, ProfileManagementSection } from './components/ProfilePages.tsx';
-import { fetchAuthenticatedUserProfile } from './lib/profileService.ts';
+import {
+  fetchAuthenticatedUserProfile,
+  loadUserAppearanceFromLocal,
+  saveUserAppearanceToLocal,
+  saveRegisteredUserAppearanceSettings,
+  DEFAULT_USER_SETTINGS
+} from './lib/profileService.ts';
 import { DemoModal } from './components/DemoModal.tsx';
 import { Footer } from './components/Footer.tsx';
 import { VerticalTaskbar } from './components/VerticalTaskbar.tsx';
@@ -182,7 +189,13 @@ export default function App() {
       const saved = localStorage.getItem('studyvault_active_user');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && parsed.id && parsed.id !== 'student-local' && !parsed.isGuest) {
+        if (
+          parsed &&
+          parsed.id &&
+          parsed.id !== 'student-local' &&
+          !parsed.isGuest &&
+          parsed.emailConfirmed === true
+        ) {
           if (parsed.programId || parsed.program || parsed.majorOrField) {
             const sysProg = ensureSystemProgramForRegisteredStudent({
               studentId: parsed.id,
@@ -202,6 +215,28 @@ export default function App() {
     return null;
   });
 
+  // Email verification & auth callback state
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(() => {
+    const cfg = getSavedSupabaseConfig();
+    if (cfg.isConnected && isValidHttpUrl(cfg.url)) return true;
+    if (typeof window !== 'undefined') {
+      const rawUrl = `${window.location.search}${window.location.hash}`;
+      if (
+        rawUrl.includes('access_token=') ||
+        rawUrl.includes('code=') ||
+        rawUrl.includes('token_hash=') ||
+        rawUrl.includes('error=') ||
+        rawUrl.includes('error_code=')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
+  const [authCallbackBanner, setAuthCallbackBanner] = useState<AuthCallbackBanner | null>(null);
+  const processedAuthCallbackRef = useRef<string | null>(null);
+
   // Modal visibility
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isCodeExportOpen, setIsCodeExportOpen] = useState(false);
@@ -213,43 +248,163 @@ export default function App() {
   const [previewNote, setPreviewNote] = useState<StudyNote | null>(null);
 
   // LightRays atmospheric background effect state
-  // Default is Ash Grey color, Top-Center position, and Locked
+  // Default is Ash Grey color (#9ca3af), Top-Center position ('top-center'), Locked (true), and 50% (0.5) on slider.
+  // For registered users, their personalized background settings are saved and restored from their profile.
   const [rayColor, setRayColor] = useState<string>(() => {
-    try {
-      return localStorage.getItem('xeusar_flare_color_v2') || DEFAULT_FLARE_COLOR;
-    } catch {
-      return DEFAULT_FLARE_COLOR;
+    if (user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)) {
+      const localApp = loadUserAppearanceFromLocal(user.id);
+      return user.settings?.rayColor || localApp?.rayColor || DEFAULT_FLARE_COLOR;
     }
+    return DEFAULT_FLARE_COLOR;
   });
   const [rayOrigin, setRayOrigin] = useState<RaysOrigin>(() => {
-    try {
-      return (localStorage.getItem('xeusar_flare_origin_v2') as RaysOrigin) || DEFAULT_RAY_ORIGIN;
-    } catch {
-      return DEFAULT_RAY_ORIGIN;
+    if (user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)) {
+      const localApp = loadUserAppearanceFromLocal(user.id);
+      return (
+        (user.settings?.rayOrigin as RaysOrigin) ||
+        (localApp?.rayOrigin as RaysOrigin) ||
+        DEFAULT_RAY_ORIGIN
+      );
     }
+    return DEFAULT_RAY_ORIGIN;
   });
   const [isFlareLocked, setIsFlareLocked] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('xeusar_flare_locked_v2');
-      return saved !== null ? JSON.parse(saved) : true;
-    } catch {
-      return true;
+    if (user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)) {
+      const localApp = loadUserAppearanceFromLocal(user.id);
+      if (typeof user.settings?.flareLocked === 'boolean') return user.settings.flareLocked;
+      if (typeof localApp?.flareLocked === 'boolean') return localApp.flareLocked;
     }
+    return true;
   });
   const [rayPulsating, setRayPulsating] = useState<boolean>(true);
   const [rayBrightness, setRayBrightness] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('xeusar_flare_brightness_v3');
-      if (saved !== null) {
-        const parsed = parseFloat(saved);
-        if (!Number.isNaN(parsed) && parsed >= 0.1 && parsed <= 2.5) {
-          return parsed;
-        }
+    if (user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)) {
+      const localApp = loadUserAppearanceFromLocal(user.id);
+      const savedBrightness =
+        typeof user.settings?.rayBrightness === 'number'
+          ? user.settings.rayBrightness
+          : localApp?.rayBrightness;
+      if (
+        typeof savedBrightness === 'number' &&
+        !Number.isNaN(savedBrightness) &&
+        savedBrightness >= 0.05 &&
+        savedBrightness <= 1.0
+      ) {
+        return savedBrightness;
       }
-    } catch {}
+    }
     return DEFAULT_FLARE_BRIGHTNESS;
   });
   const [homeScrollBlur, setHomeScrollBlur] = useState<number>(0);
+  const flareSaveTimeoutRef = useRef<number | null>(null);
+  const hydratedFlareUserIdRef = useRef<string | null>(
+    user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt) ? user.id : null
+  );
+
+  // Hydrate registered user's saved background settings on login/session restore,
+  // or revert to default (Locked, Top-Center, Ash Grey, 50%) when signed out
+  useEffect(() => {
+    const isVerifiedUser = Boolean(
+      user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)
+    );
+
+    if (isVerifiedUser && user) {
+      if (hydratedFlareUserIdRef.current !== user.id) {
+        hydratedFlareUserIdRef.current = user.id;
+        const localApp = loadUserAppearanceFromLocal(user.id);
+        const resolvedLocked =
+          typeof user.settings?.flareLocked === 'boolean'
+            ? user.settings.flareLocked
+            : typeof localApp?.flareLocked === 'boolean'
+            ? localApp.flareLocked
+            : true;
+        const resolvedColor =
+          user.settings?.rayColor || localApp?.rayColor || DEFAULT_FLARE_COLOR;
+        const resolvedOrigin =
+          (user.settings?.rayOrigin as RaysOrigin) ||
+          (localApp?.rayOrigin as RaysOrigin) ||
+          DEFAULT_RAY_ORIGIN;
+        const rawBrightness =
+          typeof user.settings?.rayBrightness === 'number'
+            ? user.settings.rayBrightness
+            : localApp?.rayBrightness;
+        const resolvedBrightness =
+          typeof rawBrightness === 'number' &&
+          !Number.isNaN(rawBrightness) &&
+          rawBrightness >= 0.05 &&
+          rawBrightness <= 1.0
+            ? rawBrightness
+            : DEFAULT_FLARE_BRIGHTNESS;
+
+        setIsFlareLocked(resolvedLocked);
+        setRayColor(resolvedColor);
+        setRayOrigin(resolvedOrigin);
+        setRayBrightness(resolvedBrightness);
+      }
+    } else if (hydratedFlareUserIdRef.current !== null) {
+      hydratedFlareUserIdRef.current = null;
+      setIsFlareLocked(true);
+      setRayColor(DEFAULT_FLARE_COLOR);
+      setRayOrigin(DEFAULT_RAY_ORIGIN);
+      setRayBrightness(DEFAULT_FLARE_BRIGHTNESS);
+    }
+  }, [user?.id, user?.emailConfirmed, user?.emailConfirmedAt, user?.isGuest]);
+
+  // Persist background settings for registered users (immediate local cache + debounced Supabase sync)
+  const persistRegisteredUserFlareSettings = (
+    overrides: Partial<{
+      flareLocked: boolean;
+      rayColor: string;
+      rayOrigin: RaysOrigin;
+      rayBrightness: number;
+    }>
+  ) => {
+    const isVerifiedUser = Boolean(
+      user && !user.isGuest && (user.emailConfirmed || user.emailConfirmedAt)
+    );
+    if (!isVerifiedUser || !user) return;
+
+    const nextAppearance = {
+      flareLocked: overrides.flareLocked ?? isFlareLocked,
+      rayColor: overrides.rayColor ?? rayColor,
+      rayOrigin: overrides.rayOrigin ?? rayOrigin,
+      rayBrightness: overrides.rayBrightness ?? rayBrightness
+    };
+
+    // 1. Save immediately to per-user localStorage
+    saveUserAppearanceToLocal(user.id, nextAppearance);
+
+    // 2. Update active user state and studyvault_active_user cache
+    setUser((prev) => {
+      if (!prev || prev.id !== user.id) return prev;
+      const updatedUser: StudentUser = {
+        ...prev,
+        settings: {
+          ...DEFAULT_USER_SETTINGS,
+          ...(prev.settings || {}),
+          flareLocked: nextAppearance.flareLocked,
+          rayColor: nextAppearance.rayColor,
+          rayOrigin: nextAppearance.rayOrigin,
+          rayBrightness: nextAppearance.rayBrightness
+        }
+      };
+      try {
+        localStorage.setItem('studyvault_active_user', JSON.stringify(updatedUser));
+      } catch {}
+      return updatedUser;
+    });
+
+    // 3. Debounced sync to Supabase (user_settings_preferences + auth.users metadata)
+    if (flareSaveTimeoutRef.current !== null) {
+      window.clearTimeout(flareSaveTimeoutRef.current);
+    }
+    const targetUserId = user.id;
+    flareSaveTimeoutRef.current = window.setTimeout(() => {
+      const supabase = supabaseConfig.isConnected ? getSupabaseInstance(supabaseConfig) : null;
+      saveRegisteredUserAppearanceSettings(supabase, targetUserId, nextAppearance).catch(() => {});
+      flareSaveTimeoutRef.current = null;
+    }, 350);
+  };
 
   // Scroll-driven blur effect on the Home (landing) page only:
   // Blurs the background flare as the user scrolls down so all content stays legible,
@@ -308,12 +463,10 @@ export default function App() {
     return 'bottom-center';
   };
 
-  // Flare setting handlers
+  // Flare setting handlers (automatically saved for registered users)
   const handleToggleFlareLock = (locked: boolean) => {
     setIsFlareLocked(locked);
-    try {
-      localStorage.setItem('xeusar_flare_locked_v2', JSON.stringify(locked));
-    } catch {}
+    persistRegisteredUserFlareSettings({ flareLocked: locked });
     triggerToast(
       locked
         ? 'Background flare locked: frozen at latest position & color'
@@ -323,24 +476,18 @@ export default function App() {
 
   const handleChangeRayColor = (color: string) => {
     setRayColor(color);
-    try {
-      localStorage.setItem('xeusar_flare_color_v2', color);
-    } catch {}
+    persistRegisteredUserFlareSettings({ rayColor: color });
   };
 
   const handleChangeRayOrigin = (origin: RaysOrigin) => {
     setRayOrigin(origin);
-    try {
-      localStorage.setItem('xeusar_flare_origin_v2', origin);
-    } catch {}
+    persistRegisteredUserFlareSettings({ rayOrigin: origin });
   };
 
   const handleChangeRayBrightness = (brightness: number) => {
-    const clamped = Math.min(2.0, Math.max(0.1, Number(brightness.toFixed(2))));
+    const clamped = Math.min(1.0, Math.max(0.05, Number(brightness.toFixed(2))));
     setRayBrightness(clamped);
-    try {
-      localStorage.setItem('xeusar_flare_brightness_v3', String(clamped));
-    } catch {}
+    persistRegisteredUserFlareSettings({ rayBrightness: clamped });
   };
 
   const handleResetFlare = () => {
@@ -348,12 +495,12 @@ export default function App() {
     setRayOrigin(DEFAULT_RAY_ORIGIN);
     setIsFlareLocked(true);
     setRayBrightness(DEFAULT_FLARE_BRIGHTNESS);
-    try {
-      localStorage.setItem('xeusar_flare_color_v2', DEFAULT_FLARE_COLOR);
-      localStorage.setItem('xeusar_flare_origin_v2', DEFAULT_RAY_ORIGIN);
-      localStorage.setItem('xeusar_flare_locked_v2', 'true');
-      localStorage.setItem('xeusar_flare_brightness_v3', String(DEFAULT_FLARE_BRIGHTNESS));
-    } catch {}
+    persistRegisteredUserFlareSettings({
+      flareLocked: true,
+      rayColor: DEFAULT_FLARE_COLOR,
+      rayOrigin: DEFAULT_RAY_ORIGIN,
+      rayBrightness: DEFAULT_FLARE_BRIGHTNESS
+    });
     triggerToast('Flare reset to default Ash Grey (Top Center, Locked, 50% Intensity)');
   };
 
@@ -374,26 +521,23 @@ export default function App() {
       // Dynamic origin shifting according to cursor click coordinates
       const dynamicOrigin = getOriginFromCursorPosition(e.clientX, e.clientY);
       setRayOrigin(dynamicOrigin);
-      try {
-        localStorage.setItem('xeusar_flare_origin_v2', dynamicOrigin);
-      } catch {}
 
       // Holographic neon color shifting
-      setRayColor(prev => {
-        const pool = HOLOGRAPHIC_NEON_COLORS.filter(
-          c => c.toLowerCase() !== prev.toLowerCase()
-        );
-        const nextColor = pool[Math.floor(Math.random() * pool.length)];
-        try {
-          localStorage.setItem('xeusar_flare_color_v2', nextColor);
-        } catch {}
-        return nextColor;
+      const pool = HOLOGRAPHIC_NEON_COLORS.filter(
+        c => c.toLowerCase() !== rayColor.toLowerCase()
+      );
+      const nextColor = pool[Math.floor(Math.random() * pool.length)];
+      setRayColor(nextColor);
+
+      persistRegisteredUserFlareSettings({
+        rayOrigin: dynamicOrigin,
+        rayColor: nextColor
       });
     };
 
     window.addEventListener('click', handleCursorClick);
     return () => window.removeEventListener('click', handleCursorClick);
-  }, [isFlareLocked]);
+  }, [isFlareLocked, rayColor, rayOrigin, rayBrightness, user]);
 
   // Notes data state
   const [notes, setNotes] = useState<StudyNote[]>([]);
@@ -418,7 +562,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Safe data loader
+  // Safe data loader & Supabase Auth / Email Verification Callback Handler
   useEffect(() => {
     async function loadData() {
       setIsLoading(true);
@@ -429,9 +573,10 @@ export default function App() {
     }
     loadData();
 
-    // Setup Supabase Realtime & Auth Session Management
     const supabase = getSupabaseInstance(supabaseConfig);
     if (supabase && supabaseConfig.isConnected && isValidHttpUrl(supabaseConfig.url)) {
+      let isMounted = true;
+
       try {
         const channel = supabase
           .channel('studyvault_public_notes')
@@ -444,46 +589,242 @@ export default function App() {
           )
           .subscribe();
 
-        // Check active Supabase Auth session and hydrate profile + setup status
-        supabase.auth
-          .getSession()
-          .then(async ({ data: { session }, error }) => {
-            if (!error && session?.user) {
-              const hydrated = await fetchAuthenticatedUserProfile(supabase, session.user);
-              setUser(hydrated);
-              try {
-                localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
-              } catch {}
+        const cleanUpAuthCallbackUrl = () => {
+          if (typeof window !== 'undefined') {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        };
 
-              if (!hydrated.setupCompleted) {
-                setCurrentTab((prev) =>
-                  prev === 'reset-password' ? 'reset-password' : 'profile-setup'
-                );
-              } else {
-                setCurrentTab((prev) =>
-                  prev === 'login' || prev === 'signup' || prev === 'profile-setup'
-                    ? 'landing'
-                    : prev
-                );
+        const initializeAuthAndProcessCallback = async () => {
+          if (typeof window === 'undefined') {
+            if (isMounted) setIsAuthInitializing(false);
+            return;
+          }
+
+          const rawSearch = window.location.search;
+          const rawHash = window.location.hash;
+          const callbackSignature = `${rawSearch}${rawHash}`;
+
+          const searchParams = new URLSearchParams(rawSearch);
+          // Handle potential double-# fragments gracefully if an old email link had #profile-setup#access_token=...
+          const normalizedHash = rawHash.replace(/^#/, '').replace(/#/g, '&');
+          const hashParams = new URLSearchParams(normalizedHash);
+
+          const errorParam = searchParams.get('error') || hashParams.get('error');
+          const errorCode = searchParams.get('error_code') || hashParams.get('error_code');
+          const errorDescription =
+            searchParams.get('error_description') || hashParams.get('error_description');
+
+          const codeParam = searchParams.get('code');
+          const tokenHashParam = searchParams.get('token_hash');
+          const typeParam = searchParams.get('type') || hashParams.get('type');
+          const hasImplicitToken =
+            hashParams.has('access_token') || hashParams.has('refresh_token');
+
+          const hasCallbackParams = Boolean(
+            errorParam ||
+              errorCode ||
+              errorDescription ||
+              codeParam ||
+              tokenHashParam ||
+              hasImplicitToken
+          );
+
+          // 1. Handle explicit callback errors (e.g. expired or invalid email confirmation link)
+          if (errorParam || errorCode || errorDescription) {
+            if (processedAuthCallbackRef.current !== callbackSignature) {
+              processedAuthCallbackRef.current = callbackSignature;
+              cleanUpAuthCallbackUrl();
+
+              const decodedDesc = (errorDescription || errorParam || '')
+                .replace(/\+/g, ' ')
+                .trim();
+              const lowerDesc = decodedDesc.toLowerCase();
+              const friendlyError =
+                errorCode === 'otp_expired' ||
+                lowerDesc.includes('expired') ||
+                lowerDesc.includes('invalid')
+                  ? 'This email verification link has expired or has already been used. Please log in if your account is already verified, or enter your email to request a new confirmation link.'
+                  : decodedDesc || 'Email verification could not be completed. Please try again.';
+
+              if (isMounted) {
+                setAuthCallbackBanner({ type: 'error', text: friendlyError });
+                setCurrentTab('login');
               }
-            } else if (!session) {
+            }
+          }
+
+          // 2. Process PKCE code or explicit token_hash callback once
+          let callbackError: string | null = null;
+          const isNewCallbackToProcess =
+            hasCallbackParams && processedAuthCallbackRef.current !== callbackSignature;
+
+          if (isNewCallbackToProcess) {
+            processedAuthCallbackRef.current = callbackSignature;
+
+            if (codeParam) {
+              const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(codeParam);
+              if (exchangeErr) {
+                callbackError = exchangeErr.message;
+              }
+            } else if (tokenHashParam && typeParam) {
+              const { error: otpErr } = await supabase.auth.verifyOtp({
+                token_hash: tokenHashParam,
+                type: typeParam as any
+              });
+              if (otpErr) {
+                callbackError = otpErr.message;
+              }
+            } else if (hasImplicitToken && rawHash.indexOf('#', 1) !== -1) {
+              // Recovery for legacy links with double hash (#profile-setup#access_token=...)
+              const accessToken = hashParams.get('access_token');
+              const refreshToken = hashParams.get('refresh_token');
+              if (accessToken && refreshToken) {
+                const { error: setSessionErr } = await supabase.auth.setSession({
+                  access_token: accessToken,
+                  refresh_token: refreshToken
+                });
+                if (setSessionErr) {
+                  callbackError = setSessionErr.message;
+                }
+              }
+            }
+          }
+
+          // 3. Retrieve current session and explicitly verify updated email_confirmed_at flag
+          const {
+            data: { session },
+            error: sessionError
+          } = await supabase.auth.getSession();
+
+          let sessionUser = session?.user ?? null;
+
+          // If a verification callback just occurred or email_confirmed_at is not yet reflected on cached session,
+          // fetch the fresh user object from Supabase Auth to check the updated email_confirmed_at flag
+          if (sessionUser && (!sessionUser.email_confirmed_at || hasCallbackParams)) {
+            const { data: freshUserData } = await supabase.auth.getUser();
+            if (freshUserData?.user) {
+              sessionUser = freshUserData.user;
+            }
+          }
+
+          if (hasCallbackParams) {
+            cleanUpAuthCallbackUrl();
+          }
+
+          if (!isMounted) return;
+
+          if (callbackError && !sessionUser) {
+            setAuthCallbackBanner({
+              type: 'error',
+              text:
+                callbackError.toLowerCase().includes('expired') ||
+                callbackError.toLowerCase().includes('invalid')
+                  ? 'This email confirmation link has expired or is invalid. Please request a new confirmation email.'
+                  : callbackError
+            });
+            setCurrentTab('login');
+            setIsAuthInitializing(false);
+            return;
+          }
+
+          if (typeParam === 'recovery' && sessionUser) {
+            setCurrentTab('reset-password');
+            setIsAuthInitializing(false);
+            return;
+          }
+
+          if (!sessionError && sessionUser) {
+            const isVerified = Boolean(sessionUser.email_confirmed_at);
+
+            if (!isVerified) {
+              // User is still unverified
+              setPendingVerificationEmail(sessionUser.email || null);
               setUser(null);
               try {
                 localStorage.removeItem('studyvault_active_user');
               } catch {}
+              await supabase.auth.signOut().catch(() => {});
+              setCurrentTab('login');
+              setIsAuthInitializing(false);
+              return;
             }
-          })
-          .catch(() => {});
 
-        // Listen for live Supabase Auth state transitions
+            // User's email_confirmed_at is verified
+            setPendingVerificationEmail(null);
+            const hydrated = await fetchAuthenticatedUserProfile(supabase, sessionUser);
+            if (!isMounted) return;
+
+            setUser(hydrated);
+            try {
+              localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
+            } catch {}
+
+            if (!hydrated.setupCompleted) {
+              setAuthCallbackBanner(null);
+              setCurrentTab('profile-setup');
+              if (isNewCallbackToProcess && typeParam !== 'recovery') {
+                triggerToast('Email verified! Welcome to Xeusar. Please complete your profile setup.');
+              }
+            } else if (isNewCallbackToProcess && typeParam !== 'recovery') {
+              setAuthCallbackBanner(null);
+              setCurrentTab('landing');
+              triggerToast(`Email verified! Welcome to Xeusar, ${hydrated.name}.`);
+            } else {
+              setCurrentTab((prev) =>
+                prev === 'login' || prev === 'signup' || prev === 'profile-setup'
+                  ? 'landing'
+                  : prev
+              );
+            }
+          } else if (!sessionUser) {
+            setUser(null);
+            try {
+              localStorage.removeItem('studyvault_active_user');
+            } catch {}
+          }
+
+          setIsAuthInitializing(false);
+        };
+
+        initializeAuthAndProcessCallback().catch(() => {
+          if (isMounted) setIsAuthInitializing(false);
+        });
+
+        // Listen for live Supabase Auth state transitions (including email verification completion)
         const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (!isMounted) return;
+
           if (event === 'PASSWORD_RECOVERY') {
             setCurrentTab('reset-password');
             return;
           }
 
           if (session?.user) {
-            const hydrated = await fetchAuthenticatedUserProfile(supabase, session.user);
+            let activeAuthUser = session.user;
+            if (!activeAuthUser.email_confirmed_at) {
+              const { data: freshUserData } = await supabase.auth.getUser();
+              if (freshUserData?.user) {
+                activeAuthUser = freshUserData.user;
+              }
+            }
+
+            const isVerified = Boolean(activeAuthUser.email_confirmed_at);
+
+            if (!isVerified) {
+              setPendingVerificationEmail(activeAuthUser.email || null);
+              setUser(null);
+              try {
+                localStorage.removeItem('studyvault_active_user');
+              } catch {}
+              setCurrentTab('login');
+              return;
+            }
+
+            setPendingVerificationEmail(null);
+            const hydrated = await fetchAuthenticatedUserProfile(supabase, activeAuthUser);
+            if (!isMounted) return;
+
             setUser(hydrated);
             try {
               localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
@@ -503,36 +844,183 @@ export default function App() {
         });
 
         return () => {
+          isMounted = false;
           supabase.removeChannel(channel);
           authListener?.subscription?.unsubscribe();
         };
       } catch {
-        // Ignore realtime subscription connection failures gracefully
+        setIsAuthInitializing(false);
       }
+    } else {
+      setIsAuthInitializing(false);
     }
   }, [supabaseConfig.isConnected, supabaseConfig.url, supabaseConfig.anonKey]);
 
-  // Enforce protected routes without redirect loops
+  // Enforce protected routes & email verification via Supabase Auth email_confirmed_at
+  // Unregistered users can only access 'landing', 'browse' (Study Library), and auth pages; all other pages require sign-in/registration.
   useEffect(() => {
-    const isAuthenticated = Boolean(user && !user.isGuest);
-    if (
-      (currentTab === 'profile-setup' || currentTab === 'profile-management') &&
-      !isAuthenticated
-    ) {
-      setPostLoginDestination(currentTab);
-      setCurrentTab('login');
-      return;
-    }
+    if (isAuthInitializing) return;
 
-    if (
-      isAuthenticated &&
-      user?.setupCompleted === false &&
-      currentTab !== 'profile-setup' &&
-      currentTab !== 'reset-password'
-    ) {
-      setCurrentTab('profile-setup');
-    }
-  }, [currentTab, user]);
+    // Ensure an in-flight auth callback in the URL is never interrupted by route guards
+    const searchParams = new URLSearchParams(window.location.search);
+    const rawHash = window.location.hash.startsWith('#')
+      ? window.location.hash.substring(1)
+      : window.location.hash;
+    const hashParams = new URLSearchParams(rawHash);
+    const hasActiveCallbackParams = Boolean(
+      searchParams.get('code') ||
+        searchParams.get('token_hash') ||
+        hashParams.get('access_token') ||
+        hashParams.get('refresh_token') ||
+        hashParams.get('token_hash')
+    );
+    if (hasActiveCallbackParams) return;
+
+    // Features restricted to registered & verified users only (unregistered users may only access 'landing' and 'browse' Library)
+    const isRegisteredOnlyTab =
+      currentTab === 'profile-setup' ||
+      currentTab === 'profile-management' ||
+      currentTab === 'upload' ||
+      currentTab === 'explore' ||
+      currentTab === 'program' ||
+      currentTab === 'university' ||
+      currentTab === 'forum';
+
+    const isDashboardOrProfileSetupView = isRegisteredOnlyTab || currentTab === 'browse';
+
+    let isCancelled = false;
+
+    const verifySessionAndEnforceGuard = async () => {
+      const supabase = supabaseConfig.isConnected
+        ? getSupabaseInstance(supabaseConfig)
+        : null;
+
+      if (supabase) {
+        const { data } = await supabase.auth.getSession();
+        if (isCancelled) return;
+
+        let sessionUser = data.session?.user ?? null;
+
+        if (sessionUser && !sessionUser.email_confirmed_at) {
+          const { data: freshUserData } = await supabase.auth.getUser();
+          if (isCancelled) return;
+          if (freshUserData?.user) {
+            sessionUser = freshUserData.user;
+          }
+        }
+
+        // Explicitly check email_confirmed_at on the Supabase Auth user
+        if (sessionUser && !sessionUser.email_confirmed_at) {
+          if (sessionUser.email && pendingVerificationEmail !== sessionUser.email) {
+            setPendingVerificationEmail(sessionUser.email);
+          }
+          if (user) {
+            setUser(null);
+            try {
+              localStorage.removeItem('studyvault_active_user');
+            } catch {}
+          }
+          if (isDashboardOrProfileSetupView) {
+            if (isRegisteredOnlyTab) {
+              setPostLoginDestination(currentTab);
+            }
+            setCurrentTab('login');
+          }
+          return;
+        }
+
+        // If user has a pending unverified email (e.g. after signup/login attempt where session is null or unconfirmed)
+        if (pendingVerificationEmail && (!sessionUser || !sessionUser.email_confirmed_at)) {
+          if (isDashboardOrProfileSetupView) {
+            if (isRegisteredOnlyTab) {
+              setPostLoginDestination(currentTab);
+            }
+            setCurrentTab('login');
+          }
+          return;
+        }
+
+        const hasConfirmedSupabaseEmail = Boolean(
+          sessionUser && sessionUser.email_confirmed_at
+        );
+        const hasConfirmedLocalUser = Boolean(
+          user && !user.isGuest && (user.emailConfirmedAt || user.emailConfirmed === true)
+        );
+        const isVerifiedAuthenticated = hasConfirmedSupabaseEmail || hasConfirmedLocalUser;
+
+        // Block unverified local user objects from accessing profile-setup or any dashboard view
+        if (user && !user.isGuest && !hasConfirmedSupabaseEmail && !hasConfirmedLocalUser) {
+          if (user.email && !pendingVerificationEmail) {
+            setPendingVerificationEmail(user.email);
+          }
+          if (isDashboardOrProfileSetupView) {
+            setCurrentTab('login');
+          }
+          return;
+        }
+
+        // Unregistered users can ONLY access 'landing' and 'browse' (Library).
+        // Any attempt to access other pages redirects to the sign-in/login window first.
+        if (isRegisteredOnlyTab && !isVerifiedAuthenticated) {
+          setPostLoginDestination(currentTab);
+          setCurrentTab('login');
+          return;
+        }
+
+        // Redirect verified users who haven't completed onboarding immediately to profile-setup
+        if (
+          isVerifiedAuthenticated &&
+          user &&
+          !user.isGuest &&
+          user.setupCompleted === false &&
+          currentTab !== 'profile-setup' &&
+          currentTab !== 'reset-password'
+        ) {
+          setCurrentTab('profile-setup');
+        }
+        return;
+      }
+
+      // Fallback guard when Supabase client is not connected
+      const isVerifiedLocal = Boolean(
+        user && !user.isGuest && (user.emailConfirmedAt || user.emailConfirmed === true)
+      );
+
+      if (pendingVerificationEmail && isDashboardOrProfileSetupView) {
+        setCurrentTab('login');
+        return;
+      }
+
+      if (isRegisteredOnlyTab && !isVerifiedLocal) {
+        setPostLoginDestination(currentTab);
+        setCurrentTab('login');
+        return;
+      }
+
+      if (
+        isVerifiedLocal &&
+        user?.setupCompleted === false &&
+        currentTab !== 'profile-setup' &&
+        currentTab !== 'reset-password'
+      ) {
+        setCurrentTab('profile-setup');
+      }
+    };
+
+    verifySessionAndEnforceGuard();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    currentTab,
+    user,
+    isAuthInitializing,
+    pendingVerificationEmail,
+    supabaseConfig.isConnected,
+    supabaseConfig.url,
+    supabaseConfig.anonKey,
+  ]);
 
   // Extract distinct courses (by course name / uploader's course) for quick navigation
   const availableCourses = useMemo(() => {
@@ -755,7 +1243,45 @@ export default function App() {
     setEditingNote(null);
   };
 
+  const isRegisteredUser = Boolean(
+    user && !user.isGuest && (user.emailConfirmed === true || Boolean(user.emailConfirmedAt))
+  );
+
+  const handleNavigateTab = (targetTab: AppTab) => {
+    const isPublicTab =
+      targetTab === 'landing' ||
+      targetTab === 'browse' ||
+      targetTab === 'login' ||
+      targetTab === 'signup' ||
+      targetTab === 'forgot-password' ||
+      targetTab === 'reset-password';
+
+    if (!isPublicTab && !isRegisteredUser) {
+      setPostLoginDestination(targetTab);
+      setCurrentTab('login');
+      triggerToast('Please sign in or register an account to access this page.');
+      return;
+    }
+
+    if (isRegisteredUser && user?.setupCompleted === false && targetTab !== 'profile-setup' && targetTab !== 'reset-password') {
+      setCurrentTab('profile-setup');
+      return;
+    }
+
+    setCurrentTab(targetTab);
+  };
+
   const handleOpenMyProgram = () => {
+    if (!isRegisteredUser) {
+      setPostLoginDestination('program');
+      setCurrentTab('login');
+      triggerToast('Please sign in or register an account to access My Program.');
+      return;
+    }
+    if (user?.setupCompleted === false) {
+      setCurrentTab('profile-setup');
+      return;
+    }
     if (user?.programId || user?.program || user?.majorOrField) {
       let targetProgramId = user.programId;
       if (!targetProgramId && (user.program || user.majorOrField)) {
@@ -779,6 +1305,12 @@ export default function App() {
   };
 
   const handleSelectProgram = (program: string | AcademicProgram) => {
+    if (!isRegisteredUser) {
+      setPostLoginDestination('program');
+      setCurrentTab('login');
+      triggerToast('Please sign in or register an account to view academic programs.');
+      return;
+    }
     const progId = typeof program === 'string' ? program : program.id;
     setSelectedProgramId(progId);
     setProgramSubTab('overview');
@@ -786,14 +1318,13 @@ export default function App() {
   };
 
   const handleSaveUserProgram = (program: AcademicProgram, semester?: string | number) => {
+    if (!isRegisteredUser || !user) {
+      setPostLoginDestination('program');
+      setCurrentTab('login');
+      return;
+    }
     const updatedUser: StudentUser = {
-      ...(user || {
-        id: `student-${Date.now()}`,
-        email: 'student@campus.edu',
-        name: 'Student Scholar',
-        university: 'National University of Sciences & Technology (NUST)',
-        isGuest: true
-      }),
+      ...user,
       degreeTier: program.degreeTier,
       program: program.name,
       programId: program.id,
@@ -814,23 +1345,34 @@ export default function App() {
   };
 
   const handleOpenExplore = () => {
+    if (!isRegisteredUser) {
+      setPostLoginDestination('explore');
+      setCurrentTab('login');
+      triggerToast('Please sign in or register an account to explore programs.');
+      return;
+    }
     setCurrentTab('explore');
   };
 
   const handleSelectUniversity = (uniId: string) => {
+    if (!isRegisteredUser) {
+      setPostLoginDestination('program');
+      setCurrentTab('login');
+      return;
+    }
     setSelectedProgramId(uniId);
     setProgramSubTab('overview');
     setCurrentTab('program');
   };
 
   const handleSaveUserUniversity = (universityName: string, universityId?: string) => {
+    if (!isRegisteredUser || !user) {
+      setPostLoginDestination('university');
+      setCurrentTab('login');
+      return;
+    }
     const updatedUser: StudentUser = {
-      ...(user || {
-        id: `student-${Date.now()}`,
-        email: 'student@campus.edu',
-        name: 'Student Scholar',
-        isGuest: true
-      }),
+      ...user,
       university: universityName,
       universityId: universityId
     };
@@ -847,6 +1389,12 @@ export default function App() {
   };
 
   const handleOpenUploadWithPrefill = (prefillUni?: string, prefillCourse?: string) => {
+    if (!isRegisteredUser) {
+      setPostLoginDestination('upload');
+      setCurrentTab('login');
+      triggerToast('Please sign in or register an account to upload study materials.');
+      return;
+    }
     setUploadPrefill({ university: prefillUni, courseCode: prefillCourse });
     setCurrentTab('upload');
   };
@@ -879,7 +1427,7 @@ export default function App() {
       setCurrentTab('signup');
       return;
     }
-    if (!user || user.isGuest) {
+    if (!user || user.isGuest || !user.emailConfirmed) {
       setPostLoginDestination('profile-management');
       setCurrentTab('login');
       return;
@@ -894,6 +1442,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col font-outfit relative overflow-x-hidden selection:bg-white selection:text-black">
+      {/* Top Verification Notification Banner for Unverified Users */}
+      {pendingVerificationEmail && (
+        <VerificationBanner
+          email={pendingVerificationEmail}
+          supabaseConfig={supabaseConfig}
+          currentTab={currentTab}
+          onNavigateToVerify={() => setCurrentTab('login')}
+        />
+      )}
+
       {/* WebGL Light Rays Atmospheric Background Effect - Intense Holographic Atmosphere */}
       <LightRays
         raysOrigin={rayOrigin}
@@ -928,7 +1486,7 @@ export default function App() {
             } else if (tab === 'explore') {
               handleOpenExplore();
             } else {
-              setCurrentTab(tab);
+              handleNavigateTab(tab);
             }
           }}
           supabaseConfig={supabaseConfig}
@@ -951,7 +1509,7 @@ export default function App() {
             currentTab={
               currentTab === 'profile-management' ? 'browse' : currentTab
             }
-            setCurrentTab={setCurrentTab}
+            setCurrentTab={handleNavigateTab}
             filters={filters}
             setFilters={setFilters}
             user={user}
@@ -974,7 +1532,18 @@ export default function App() {
           mode={currentTab as AuthPageMode}
           onChangeMode={(nextMode) => setCurrentTab(nextMode)}
           supabaseConfig={supabaseConfig}
+          initialVerificationPendingEmail={pendingVerificationEmail}
+          onVerificationPendingChange={setPendingVerificationEmail}
+          externalBannerMessage={authCallbackBanner}
+          onClearExternalBanner={() => setAuthCallbackBanner(null)}
           onAuthenticated={(authenticatedUser, isNewSignup) => {
+            if (!authenticatedUser.emailConfirmed) {
+              setPendingVerificationEmail(authenticatedUser.email);
+              setCurrentTab('login');
+              return;
+            }
+            setPendingVerificationEmail(null);
+            setAuthCallbackBanner(null);
             setUser(authenticatedUser);
             try {
               localStorage.setItem(
@@ -1003,8 +1572,8 @@ export default function App() {
         />
       )}
 
-      {/* Dedicated Profile Setup Page (Post-Signup Onboarding Page) */}
-      {currentTab === 'profile-setup' && user && (
+      {/* Dedicated Profile Setup Page (Post-Signup Onboarding Page — Verified Users Only) */}
+      {currentTab === 'profile-setup' && user && user.emailConfirmed && (
         <ProfilePages
           pageMode="setup"
           user={user}
@@ -1029,8 +1598,8 @@ export default function App() {
         />
       )}
 
-      {/* Dedicated Profile Management Page */}
-      {currentTab === 'profile-management' && user && (
+      {/* Dedicated Profile Management Page (Verified Users Only) */}
+      {currentTab === 'profile-management' && user && user.emailConfirmed && (
         <ProfilePages
           pageMode="management"
           user={user}
@@ -1064,8 +1633,8 @@ export default function App() {
           <LandingHero
             notes={notes}
             user={user}
-            onBrowseMaterials={() => setCurrentTab('browse')}
-            onUploadNotes={() => setCurrentTab('upload')}
+            onBrowseMaterials={() => handleNavigateTab('browse')}
+            onUploadNotes={() => handleNavigateTab('upload')}
             onWatchDemo={() => setIsDemoModalOpen(true)}
             onPreviewNote={handlePreviewNote}
             onDownloadNote={handleDownloadNote}
@@ -1184,7 +1753,7 @@ export default function App() {
                   Clear Filters
                 </button>
                 <button
-                  onClick={() => setCurrentTab('upload')}
+                  onClick={() => handleNavigateTab('upload')}
                   className="px-5 py-2.5 text-xs font-black uppercase text-black bg-white hover:bg-white/90 rounded-full transition-colors cursor-pointer"
                 >
                   Upload First Note

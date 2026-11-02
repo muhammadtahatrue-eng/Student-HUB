@@ -326,6 +326,8 @@ export async function fetchAuthenticatedUserProfile(
 ): Promise<StudentUser> {
   const userId = authUser.id;
   const email = authUser.email || '';
+  const emailConfirmedAt = authUser.email_confirmed_at || null;
+  const emailConfirmed = Boolean(emailConfirmedAt);
   const meta = authUser.user_metadata || {};
   const pendingDraft = loadPendingSignupDraft(email);
 
@@ -361,6 +363,34 @@ export async function fetchAuthenticatedUserProfile(
   let settings: UserSettingsData = { ...DEFAULT_USER_SETTINGS };
   let preferences: UserPreferencesData = { ...DEFAULT_USER_PREFERENCES };
 
+  // Hydrate from auth.users user_metadata appearance_settings if stored
+  if (meta.appearance_settings && typeof meta.appearance_settings === 'object') {
+    const metaApp = meta.appearance_settings;
+    settings = {
+      ...settings,
+      flareLocked:
+        typeof metaApp.flare_locked === 'boolean' ? metaApp.flare_locked : settings.flareLocked,
+      rayColor: typeof metaApp.ray_color === 'string' && metaApp.ray_color ? metaApp.ray_color : settings.rayColor,
+      rayOrigin:
+        typeof metaApp.ray_origin === 'string' && metaApp.ray_origin
+          ? metaApp.ray_origin
+          : settings.rayOrigin,
+      rayBrightness:
+        typeof metaApp.ray_brightness === 'number' && !Number.isNaN(metaApp.ray_brightness)
+          ? Math.min(1.0, Math.max(0.05, metaApp.ray_brightness))
+          : settings.rayBrightness
+    };
+  }
+
+  // Hydrate from per-user localStorage cache if available
+  const localAppearance = loadUserAppearanceFromLocal(userId);
+  if (localAppearance) {
+    settings = {
+      ...settings,
+      ...localAppearance
+    };
+  }
+
   try {
     // 1. Fetch from public.profiles if table is available
     if (profilesTableAvailable !== false) {
@@ -387,9 +417,9 @@ export async function fetchAuthenticatedUserProfile(
         if (typeof profileRow.setup_completed === 'boolean') {
           setupCompleted = profileRow.setup_completed;
         }
-      } else if (!profileRow && displayName && username) {
+      } else if (!profileRow && displayName && username && emailConfirmed) {
         profilesTableAvailable = true;
-        // Ensure initial profile row exists if database trigger hasn't run yet
+        // Ensure initial profile row exists only after email verification is confirmed
         await supabase
           .from('profiles')
           .upsert(
@@ -443,10 +473,16 @@ export async function fetchAuthenticatedUserProfile(
             typeof priv.public_badge_enabled === 'boolean' ? priv.public_badge_enabled : true,
           showUniOnNotes:
             typeof priv.show_uni_on_notes === 'boolean' ? priv.show_uni_on_notes : true,
-          flareLocked: typeof app.flare_locked === 'boolean' ? app.flare_locked : true,
-          rayColor: app.ray_color || '#9ca3af',
-          rayOrigin: app.ray_origin || 'top-center',
-          rayBrightness: typeof app.ray_brightness === 'number' ? app.ray_brightness : 0.5
+          flareLocked:
+            typeof app.flare_locked === 'boolean'
+              ? app.flare_locked
+              : settings.flareLocked ?? true,
+          rayColor: app.ray_color || settings.rayColor || '#9ca3af',
+          rayOrigin: app.ray_origin || settings.rayOrigin || 'top-center',
+          rayBrightness:
+            typeof app.ray_brightness === 'number' && !Number.isNaN(app.ray_brightness)
+              ? Math.min(1.0, Math.max(0.05, app.ray_brightness))
+              : settings.rayBrightness ?? 0.5
         };
 
         preferences = {
@@ -498,21 +534,32 @@ export async function fetchAuthenticatedUserProfile(
     }
   }
 
+  // Keep per-user local appearance cache synchronized with hydrated settings
+  saveUserAppearanceToLocal(userId, {
+    flareLocked: settings.flareLocked ?? true,
+    rayColor: settings.rayColor ?? '#9ca3af',
+    rayOrigin: settings.rayOrigin ?? 'top-center',
+    rayBrightness: settings.rayBrightness ?? 0.5
+  });
+
   const matchedUni = institution ? findUniversityByNameOrFuzzy(institution) : undefined;
   const degreeTier = mapEducationLevelToDegreeTier(educationLevel);
-  const systemProgram = majorOrField
-    ? ensureSystemProgramForRegisteredStudent({
-        studentId: userId,
-        programName: majorOrField,
-        degreeTier
-      })
-    : undefined;
+  const systemProgram =
+    majorOrField && emailConfirmed
+      ? ensureSystemProgramForRegisteredStudent({
+          studentId: userId,
+          programName: majorOrField,
+          degreeTier
+        })
+      : undefined;
 
   const studentUser: StudentUser = {
     id: userId,
     email,
     name: displayName || 'Student',
     username: username || undefined,
+    emailConfirmed,
+    emailConfirmedAt,
     avatarUrl: avatarUrl || undefined,
     bio: bio || undefined,
     setupCompleted,
@@ -546,6 +593,107 @@ export async function fetchAuthenticatedUserProfile(
 }
 
 // ============================================================================
+// PER-USER BACKGROUND APPEARANCE PERSISTENCE (REGISTERED USERS)
+// ============================================================================
+
+const USER_APPEARANCE_PREFIX = 'xeusar_user_appearance_v1_';
+
+export interface UserAppearanceSettings {
+  flareLocked: boolean;
+  rayColor: string;
+  rayOrigin: string;
+  rayBrightness: number;
+}
+
+export function loadUserAppearanceFromLocal(userId?: string | null): UserAppearanceSettings | null {
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(`${USER_APPEARANCE_PREFIX}${userId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      flareLocked: typeof parsed.flareLocked === 'boolean' ? parsed.flareLocked : true,
+      rayColor: typeof parsed.rayColor === 'string' && parsed.rayColor ? parsed.rayColor : '#9ca3af',
+      rayOrigin:
+        typeof parsed.rayOrigin === 'string' && parsed.rayOrigin ? parsed.rayOrigin : 'top-center',
+      rayBrightness:
+        typeof parsed.rayBrightness === 'number' && !Number.isNaN(parsed.rayBrightness)
+          ? Math.min(1.0, Math.max(0.05, parsed.rayBrightness))
+          : 0.5
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserAppearanceToLocal(
+  userId: string,
+  appearance: UserAppearanceSettings
+): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(`${USER_APPEARANCE_PREFIX}${userId}`, JSON.stringify(appearance));
+  } catch {}
+}
+
+export async function saveRegisteredUserAppearanceSettings(
+  supabase: SupabaseClient | null,
+  userId: string,
+  appearance: UserAppearanceSettings
+): Promise<void> {
+  if (!userId) return;
+
+  const cleanAppearance: UserAppearanceSettings = {
+    flareLocked: Boolean(appearance.flareLocked),
+    rayColor: appearance.rayColor || '#9ca3af',
+    rayOrigin: appearance.rayOrigin || 'top-center',
+    rayBrightness: Math.min(1.0, Math.max(0.05, Number((appearance.rayBrightness ?? 0.5).toFixed(2))))
+  };
+
+  // 1. Persist immediately in per-user localStorage
+  saveUserAppearanceToLocal(userId, cleanAppearance);
+
+  if (!supabase) return;
+
+  // 2. Persist in public.user_settings_preferences if table is available
+  if (profilesTableAvailable !== false) {
+    try {
+      await supabase.from('user_settings_preferences').upsert(
+        {
+          user_id: userId,
+          appearance_settings: {
+            flare_locked: cleanAppearance.flareLocked,
+            ray_color: cleanAppearance.rayColor,
+            ray_origin: cleanAppearance.rayOrigin,
+            ray_brightness: cleanAppearance.rayBrightness
+          }
+        },
+        { onConflict: 'user_id' }
+      );
+    } catch {
+      // Ignore if table not yet migrated
+    }
+  }
+
+  // 3. Persist in Supabase Auth user_metadata so settings follow the registered user across browsers/devices
+  try {
+    await supabase.auth.updateUser({
+      data: {
+        appearance_settings: {
+          flare_locked: cleanAppearance.flareLocked,
+          ray_color: cleanAppearance.rayColor,
+          ray_origin: cleanAppearance.rayOrigin,
+          ray_brightness: cleanAppearance.rayBrightness
+        }
+      }
+    });
+  } catch {
+    // Ignore transient network errors
+  }
+}
+
+// ============================================================================
 // SAVE / UPDATE USER PROFILE, ACADEMIC INFO & SETTINGS IN SUPABASE
 // ============================================================================
 
@@ -570,6 +718,13 @@ export async function saveUserProfileToSupabase(
   authUser: SupabaseAuthUser,
   payload: SaveProfilePayload
 ): Promise<{ success: boolean; user?: StudentUser; error?: string }> {
+  if (!authUser.email_confirmed_at) {
+    return {
+      success: false,
+      error: 'Please verify your email address before saving your profile.'
+    };
+  }
+
   const userId = authUser.id;
 
   // 1. Validate required fields (Display Name and Username are the ONLY mandatory profile fields)
@@ -686,6 +841,13 @@ export async function saveUserProfileToSupabase(
     ...(payload.preferences || {})
   };
 
+  saveUserAppearanceToLocal(userId, {
+    flareLocked: finalSettings.flareLocked ?? true,
+    rayColor: finalSettings.rayColor ?? '#9ca3af',
+    rayOrigin: finalSettings.rayOrigin ?? 'top-center',
+    rayBrightness: finalSettings.rayBrightness ?? 0.5
+  });
+
   if (profilesTableAvailable !== false) {
     const { error: prefsError } = await supabase.from('user_settings_preferences').upsert(
       {
@@ -722,7 +884,7 @@ export async function saveUserProfileToSupabase(
     }
   }
 
-  // 6. Sync core metadata to Supabase Auth user_metadata
+  // 6. Sync core metadata and appearance settings to Supabase Auth user_metadata
   await supabase.auth
     .updateUser({
       data: {
@@ -738,7 +900,13 @@ export async function saveUserProfileToSupabase(
         major: cleanMajor,
         institution_name: cleanInstitution,
         academic_year: cleanYear,
-        semester: cleanSemester
+        semester: cleanSemester,
+        appearance_settings: {
+          flare_locked: finalSettings.flareLocked ?? true,
+          ray_color: finalSettings.rayColor ?? '#9ca3af',
+          ray_origin: finalSettings.rayOrigin ?? 'top-center',
+          ray_brightness: finalSettings.rayBrightness ?? 0.5
+        }
       }
     })
     .catch(() => {});
@@ -769,6 +937,8 @@ export async function saveUserProfileToSupabase(
     email: authUser.email || '',
     name: cleanDisplayName,
     username: cleanUsername,
+    emailConfirmed: Boolean(authUser.email_confirmed_at),
+    emailConfirmedAt: authUser.email_confirmed_at || null,
     avatarUrl: cleanAvatar || undefined,
     bio: cleanBio || undefined,
     setupCompleted: payload.setupCompleted,

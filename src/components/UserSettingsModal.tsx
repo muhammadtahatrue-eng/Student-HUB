@@ -1579,8 +1579,8 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                     <div className="space-y-2">
                       <input
                         type="range"
-                        min={0.1}
-                        max={2.0}
+                        min={0}
+                        max={1.0}
                         step={0.05}
                         value={rayBrightness}
                         onChange={(e) => onChangeRayBrightness?.(parseFloat(e.target.value))}
@@ -1592,7 +1592,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                           { label: 'Default (50%)', value: 0.5 },
                           { label: 'Balanced (75%)', value: 0.75 },
                           { label: 'Bright (100%)', value: 1.0 },
-                          { label: 'Max (200%)', value: 2.0 },
                         ].map((preset) => {
                           const isSelected = Math.abs(rayBrightness - preset.value) < 0.03;
                           return (

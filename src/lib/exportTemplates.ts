@@ -386,7 +386,128 @@ create table if not exists public.forum_reports (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 8.7 Row-Level Security Policies for Forum Tables
+-- 8.7 Email Verification Helper & User Profile / Academic / Settings RLS Policies
+create or replace function public.is_email_verified()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  select coalesce(
+    (auth.jwt() ->> 'email_confirmed_at') is not null,
+    exists (
+      select 1 from auth.users
+      where id = auth.uid() and email_confirmed_at is not null
+    ),
+    false
+  );
+$$;
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  username text unique not null,
+  display_name text not null,
+  avatar_url text,
+  bio text,
+  setup_completed boolean not null default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create table if not exists public.academic_information (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  education_level text,
+  academic_stage text,
+  major text,
+  institution_name text,
+  academic_year text,
+  semester text,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create table if not exists public.user_settings_preferences (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  privacy_settings jsonb default '{}'::jsonb,
+  appearance_settings jsonb default '{}'::jsonb,
+  preferred_subjects text[] default array[]::text[],
+  study_preferences jsonb default '{}'::jsonb,
+  preferred_language text default 'en',
+  theme_preference text default 'dark',
+  content_discovery_preferences jsonb default '{}'::jsonb,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.profiles enable row level security;
+alter table public.academic_information enable row level security;
+alter table public.user_settings_preferences enable row level security;
+
+create policy "Anyone can view public student profiles"
+  on public.profiles for select using (true);
+
+create policy "Verified users can insert own profile"
+  on public.profiles for insert
+  with check (auth.uid() = id and public.is_email_verified());
+
+create policy "Verified users can update own profile"
+  on public.profiles for update
+  using (auth.uid() = id and public.is_email_verified())
+  with check (auth.uid() = id and public.is_email_verified());
+
+create policy "Verified users can read and manage own academic information"
+  on public.academic_information for all
+  using (auth.uid() = user_id and public.is_email_verified())
+  with check (auth.uid() = user_id and public.is_email_verified());
+
+create policy "Verified users can read and manage own settings and preferences"
+  on public.user_settings_preferences for all
+  using (auth.uid() = user_id and public.is_email_verified())
+  with check (auth.uid() = user_id and public.is_email_verified());
+
+-- Trigger: Create initial profile row ONLY after email_confirmed_at is populated (prevents unverified or duplicate profiles)
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_username text;
+  v_display_name text;
+begin
+  if new.email_confirmed_at is null then
+    return new;
+  end if;
+
+  v_display_name := coalesce(
+    nullif(trim(new.raw_user_meta_data ->> 'display_name'), ''),
+    nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),
+    nullif(trim(new.raw_user_meta_data ->> 'name'), ''),
+    split_part(new.email, '@', 1)
+  );
+
+  v_username := lower(regexp_replace(
+    coalesce(
+      nullif(trim(new.raw_user_meta_data ->> 'username'), ''),
+      split_part(new.email, '@', 1) || '_' || substr(new.id::text, 1, 6)
+    ),
+    '[^a-z0-9_.-]', '', 'g'
+  ));
+
+  insert into public.profiles (id, username, display_name, setup_completed)
+  values (new.id, v_username, v_display_name, false)
+  on conflict (id) do nothing;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert or update of email_confirmed_at on auth.users
+  for each row execute function public.handle_new_user();
+
+-- 8.8 Row-Level Security Policies for Forum Tables (Verified Email Required for Writes)
 alter table public.forum_topics enable row level security;
 alter table public.forum_posts enable row level security;
 alter table public.forum_comments enable row level security;
@@ -396,18 +517,18 @@ alter table public.forum_reports enable row level security;
 
 create policy "Anyone can read forum topics" on public.forum_topics for select using (true);
 create policy "Public can read published forum posts" on public.forum_posts for select using (status <> 'removed');
-create policy "Authenticated users create own forum posts" on public.forum_posts for insert with check (auth.uid() = author_id);
-create policy "Authors can update own forum posts" on public.forum_posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
-create policy "Authors can delete own forum posts" on public.forum_posts for delete using (auth.uid() = author_id);
+create policy "Verified users create own forum posts" on public.forum_posts for insert with check (auth.uid() = author_id and public.is_email_verified());
+create policy "Verified authors can update own forum posts" on public.forum_posts for update using (auth.uid() = author_id and public.is_email_verified()) with check (auth.uid() = author_id and public.is_email_verified());
+create policy "Verified authors can delete own forum posts" on public.forum_posts for delete using (auth.uid() = author_id and public.is_email_verified());
 
 create policy "Public can read published forum comments" on public.forum_comments for select using (status <> 'removed');
-create policy "Authenticated users create own forum comments" on public.forum_comments for insert with check (auth.uid() = author_id);
-create policy "Authors can update own forum comments" on public.forum_comments for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
-create policy "Authors can delete own forum comments" on public.forum_comments for delete using (auth.uid() = author_id);
+create policy "Verified users create own forum comments" on public.forum_comments for insert with check (auth.uid() = author_id and public.is_email_verified());
+create policy "Verified authors can update own forum comments" on public.forum_comments for update using (auth.uid() = author_id and public.is_email_verified()) with check (auth.uid() = author_id and public.is_email_verified());
+create policy "Verified authors can delete own forum comments" on public.forum_comments for delete using (auth.uid() = author_id and public.is_email_verified());
 
-create policy "Users manage own forum votes" on public.forum_votes for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "Users manage own forum bookmarks" on public.forum_bookmarks for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "Authenticated users submit forum reports" on public.forum_reports for insert with check (auth.uid() = reporter_id);
+create policy "Verified users manage own forum votes" on public.forum_votes for all using (auth.uid() = user_id and public.is_email_verified()) with check (auth.uid() = user_id and public.is_email_verified());
+create policy "Verified users manage own forum bookmarks" on public.forum_bookmarks for all using (auth.uid() = user_id and public.is_email_verified()) with check (auth.uid() = user_id and public.is_email_verified());
+create policy "Verified users submit forum reports" on public.forum_reports for insert with check (auth.uid() = reporter_id and public.is_email_verified());
 `
   },
   {

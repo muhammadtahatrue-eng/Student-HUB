@@ -13,7 +13,8 @@ import {
   AlertCircle,
   Loader2,
   KeyRound,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw
 } from 'lucide-react';
 import { StudentUser, SupabaseConfig } from '../types/index.ts';
 import { getSupabaseInstance } from '../lib/supabaseClient.ts';
@@ -30,6 +31,17 @@ import {
 
 export type AuthPageMode = 'login' | 'signup' | 'forgot-password' | 'reset-password';
 
+/**
+ * Production root URL for Supabase email confirmation redirects.
+ * Must NOT contain a #hash fragment so Supabase can cleanly append callback tokens/codes.
+ */
+export const EMAIL_REDIRECT_URL = 'https://xeusar-hub.vercel.app/';
+
+export interface AuthCallbackBanner {
+  type: 'success' | 'error' | 'info';
+  text: string;
+}
+
 interface AuthPagesProps {
   mode: AuthPageMode;
   onChangeMode: (mode: AuthPageMode) => void;
@@ -37,6 +49,10 @@ interface AuthPagesProps {
   onAuthenticated: (user: StudentUser, isNewSignup?: boolean) => void;
   onBackToHome: () => void;
   onOpenBackendConfig?: () => void;
+  initialVerificationPendingEmail?: string | null;
+  onVerificationPendingChange?: (email: string | null) => void;
+  externalBannerMessage?: AuthCallbackBanner | null;
+  onClearExternalBanner?: () => void;
 }
 
 export const AuthPages: React.FC<AuthPagesProps> = ({
@@ -45,7 +61,11 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   supabaseConfig,
   onAuthenticated,
   onBackToHome,
-  onOpenBackendConfig
+  onOpenBackendConfig,
+  initialVerificationPendingEmail,
+  onVerificationPendingChange,
+  externalBannerMessage,
+  onClearExternalBanner
 }) => {
   // Signup / Login form state
   const [displayName, setDisplayName] = useState('');
@@ -62,19 +82,47 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
-  const [verificationPendingEmail, setVerificationPendingEmail] = useState<string | null>(null);
+  const [verificationPendingEmail, setVerificationPendingEmail] = useState<string | null>(
+    initialVerificationPendingEmail || null
+  );
+
+  // Resend confirmation email state
+  const [isResending, setIsResending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [resendSuccessMsg, setResendSuccessMsg] = useState<string | null>(null);
+  const [resendErrorMsg, setResendErrorMsg] = useState<string | null>(null);
 
   // Live username availability state on signup
   const [checkingUsername, setCheckingUsername] = useState(false);
   const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
   const [usernameHint, setUsernameHint] = useState<string | null>(null);
 
+  // Sync external verification-pending email (e.g. when unverified session is detected)
+  useEffect(() => {
+    if (initialVerificationPendingEmail) {
+      setVerificationPendingEmail(initialVerificationPendingEmail);
+    }
+  }, [initialVerificationPendingEmail]);
+
+  // Countdown timer for resend email cooldown
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
   // Clear messages when switching modes
   useEffect(() => {
     setErrorMsg(null);
     setInfoMsg(null);
-    setVerificationPendingEmail(null);
-  }, [mode]);
+    setResendSuccessMsg(null);
+    setResendErrorMsg(null);
+    if (!initialVerificationPendingEmail) {
+      setVerificationPendingEmail(null);
+    }
+  }, [mode, initialVerificationPendingEmail]);
 
   // Debounced username format + availability check during signup
   useEffect(() => {
@@ -118,10 +166,65 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     };
   }, [username, mode, supabaseConfig]);
 
-  const getRedirectUrl = (hashTarget: string) => {
-    if (typeof window === 'undefined') return undefined;
-    const base = `${window.location.origin}${window.location.pathname}`;
-    return `${base}#${hashTarget}`;
+  const getPasswordResetRedirectUrl = () => {
+    return EMAIL_REDIRECT_URL;
+  };
+
+  // ============================================================================
+  // RESEND CONFIRMATION EMAIL HANDLER
+  // ============================================================================
+  const handleResendVerification = async () => {
+    const targetEmail = (verificationPendingEmail || email).trim().toLowerCase();
+    if (!targetEmail || isResending || resendCooldown > 0) return;
+
+    setResendErrorMsg(null);
+    setResendSuccessMsg(null);
+
+    const supabase = getSupabaseInstance(supabaseConfig);
+    if (!supabase) {
+      setResendErrorMsg('Authentication service is not configured yet.');
+      return;
+    }
+
+    setIsResending(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: targetEmail,
+        options: {
+          emailRedirectTo: EMAIL_REDIRECT_URL
+        }
+      });
+
+      if (error) {
+        const lower = error.message.toLowerCase();
+        if (
+          error.status === 429 ||
+          lower.includes('rate limit') ||
+          lower.includes('security purposes') ||
+          lower.includes('only request this once') ||
+          lower.includes('too many requests')
+        ) {
+          setResendErrorMsg(
+            'Please wait a moment before requesting another confirmation email (rate limit reached).'
+          );
+          setResendCooldown(60);
+        } else {
+          setResendErrorMsg(error.message);
+        }
+      } else {
+        setResendSuccessMsg(
+          `A fresh verification link has been sent to ${targetEmail}. Please check your inbox and spam folder.`
+        );
+        setResendCooldown(60);
+      }
+    } catch (err: any) {
+      setResendErrorMsg(
+        err?.message || 'Failed to resend confirmation email. Please check your connection.'
+      );
+    } finally {
+      setIsResending(false);
+    }
   };
 
   // ============================================================================
@@ -133,6 +236,9 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
     setErrorMsg(null);
     setInfoMsg(null);
+    setResendErrorMsg(null);
+    setResendSuccessMsg(null);
+    onClearExternalBanner?.();
 
     const formEl = e.currentTarget;
     const domDisplayName =
@@ -214,12 +320,12 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
         username: cleanUsername
       });
 
-      // 4. Create account with Supabase Auth (never store password in profile table)
+      // 4. Create account with Supabase Auth pointing to the production root URL (no hash fragment)
       let { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password: rawPassword,
         options: {
-          emailRedirectTo: getRedirectUrl('profile-setup'),
+          emailRedirectTo: EMAIL_REDIRECT_URL,
           data: {
             name: cleanName,
             display_name: cleanName,
@@ -236,7 +342,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
           email: cleanEmail,
           password: rawPassword,
           options: {
-            emailRedirectTo: getRedirectUrl('profile-setup')
+            emailRedirectTo: EMAIL_REDIRECT_URL
           }
         });
         data = retryRes.data;
@@ -267,14 +373,16 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
         return;
       }
 
-      // Save initial setup draft so Profile Setup is prefilled with Display Name & Username
+      // Save initial setup draft so Profile Setup is prefilled with Display Name & Username after verification
       saveSetupDraft(data.user.id, {
         displayName: cleanName,
         username: cleanUsername
       });
 
-      // If session is returned immediately (email verification disabled or auto-confirmed)
-      if (data.session) {
+      const isEmailConfirmed = Boolean(data.user.email_confirmed_at);
+
+      // Only authenticate immediately if the email is genuinely confirmed
+      if (data.session && isEmailConfirmed) {
         await supabase
           .from('profiles')
           .upsert(
@@ -291,14 +399,25 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
         const hydratedUser = await fetchAuthenticatedUserProfile(supabase, data.user);
         hydratedUser.name = cleanName;
         hydratedUser.username = cleanUsername;
+        hydratedUser.emailConfirmed = true;
+        hydratedUser.emailConfirmedAt = data.user.email_confirmed_at || null;
         hydratedUser.setupCompleted = false;
         setIsSubmitting(false);
         onAuthenticated(hydratedUser, true);
         return;
       }
 
-      // Email verification is enabled in project settings
+      // If Supabase returned a session even though email_confirmed_at is still null, sign out so unverified users cannot bypass verification
+      if (data.session && !isEmailConfirmed) {
+        await supabase.auth.signOut().catch(() => {});
+        try {
+          localStorage.removeItem('studyvault_active_user');
+        } catch {}
+      }
+
+      // Keep unverified user on the verification-pending screen
       setVerificationPendingEmail(cleanEmail);
+      onVerificationPendingChange?.(cleanEmail);
       setPassword('');
       setConfirmPassword('');
       setIsSubmitting(false);
@@ -317,8 +436,12 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
     setErrorMsg(null);
     setInfoMsg(null);
+    setResendErrorMsg(null);
+    setResendSuccessMsg(null);
+    onClearExternalBanner?.();
 
-    const emailCheck = validateEmailFormat(email);
+    const cleanEmail = email.trim().toLowerCase();
+    const emailCheck = validateEmailFormat(cleanEmail);
     if (!emailCheck.valid) {
       setErrorMsg(emailCheck.error || 'Please enter a valid email address.');
       return;
@@ -341,16 +464,23 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
+        email: cleanEmail,
         password
       });
 
       if (error) {
         const lower = error.message.toLowerCase();
         if (lower.includes('invalid login credentials')) {
-          setErrorMsg('Invalid email address or password. Please check your credentials and try again.');
-        } else if (lower.includes('email not confirmed')) {
-          setErrorMsg('Please verify your email address using the link sent to your inbox before logging in.');
+          setErrorMsg(
+            'Invalid email address or password. Please check your credentials and try again.'
+          );
+        } else if (lower.includes('email not confirmed') || lower.includes('email_not_confirmed')) {
+          setVerificationPendingEmail(cleanEmail);
+          onVerificationPendingChange?.(cleanEmail);
+          setResendErrorMsg(
+            'Your email address has not been verified yet. Please open the confirmation link sent to your email or resend a new link below.'
+          );
+          setPassword('');
         } else {
           setErrorMsg(error.message);
         }
@@ -364,11 +494,31 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
         return;
       }
 
+      // Strictly enforce email_confirmed_at check even if Supabase returned a session
+      if (!data.user.email_confirmed_at) {
+        await supabase.auth.signOut().catch(() => {});
+        try {
+          localStorage.removeItem('studyvault_active_user');
+        } catch {}
+        setVerificationPendingEmail(cleanEmail);
+        onVerificationPendingChange?.(cleanEmail);
+        setResendErrorMsg(
+          'Please verify your email address before signing in. Check your inbox for the confirmation link or resend it below.'
+        );
+        setPassword('');
+        setIsSubmitting(false);
+        return;
+      }
+
+      setVerificationPendingEmail(null);
+      onVerificationPendingChange?.(null);
       const hydratedUser = await fetchAuthenticatedUserProfile(supabase, data.user);
       setIsSubmitting(false);
       onAuthenticated(hydratedUser, false);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Network failure while signing in. Please check your connection.');
+      setErrorMsg(
+        err?.message || 'Network failure while signing in. Please check your connection.'
+      );
       setIsSubmitting(false);
     }
   };
@@ -399,7 +549,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo: getRedirectUrl('reset-password')
+        redirectTo: getPasswordResetRedirectUrl()
       });
 
       if (error) {
@@ -460,7 +610,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
       setConfirmPassword('');
       setInfoMsg('Your password has been updated. Redirecting...');
 
-      if (data.user) {
+      if (data.user && data.user.email_confirmed_at) {
         const hydratedUser = await fetchAuthenticatedUserProfile(supabase, data.user);
         setTimeout(() => {
           onAuthenticated(hydratedUser, false);
@@ -503,35 +653,107 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
         {/* Main Card */}
         <div className="bg-[#080a0f]/95 border border-white/15 rounded-3xl p-6 sm:p-8 shadow-[0_25px_80px_rgba(0,0,0,0.9)] backdrop-blur-2xl">
-          {/* Email Verification Sent View */}
+          {/* External Callback Feedback Banner (e.g. Expired / Invalid Verification Link or Confirmation Success) */}
+          {externalBannerMessage && (
+            <div
+              role={externalBannerMessage.type === 'error' ? 'alert' : 'status'}
+              className={`mb-5 p-3.5 rounded-xl text-xs flex items-start gap-2.5 border ${
+                externalBannerMessage.type === 'error'
+                  ? 'bg-rose-500/10 border-rose-500/30 text-rose-200'
+                  : externalBannerMessage.type === 'success'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                  : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-200'
+              }`}
+            >
+              {externalBannerMessage.type === 'error' ? (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1 leading-relaxed">{externalBannerMessage.text}</div>
+            </div>
+          )}
+
+          {/* Email Verification Pending View */}
           {verificationPendingEmail ? (
-            <div className="text-center space-y-5 py-4">
+            <div className="text-center space-y-5 py-3">
               <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-center mx-auto text-cyan-300">
                 <Mail className="w-7 h-7" />
               </div>
               <div className="space-y-2">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-400/10 border border-amber-400/25 text-amber-300 text-[10px] font-mono uppercase tracking-wider">
+                  <span>Email Verification Required</span>
+                </div>
                 <h1 className="text-xl font-bold text-white tracking-tight">
                   Verify Your Email Address
                 </h1>
                 <p className="text-xs text-white/65 leading-relaxed">
-                  We sent a verification link to{' '}
-                  <span className="text-cyan-300 font-mono font-semibold">
+                  We sent a confirmation link to{' '}
+                  <span className="text-cyan-300 font-mono font-semibold break-all">
                     {verificationPendingEmail}
                   </span>
-                  . Click the link in your email to activate your Xeusar account and continue to Profile Setup.
+                  . Click the confirmation link in your email to verify your account and continue to Profile Setup.
                 </p>
               </div>
-              <div className="pt-2 space-y-2.5">
+
+              {resendErrorMsg && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs flex items-start gap-2 text-left"
+                >
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{resendErrorMsg}</span>
+                </div>
+              )}
+
+              {resendSuccessMsg && (
+                <div
+                  role="status"
+                  className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs flex items-start gap-2 text-left"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{resendSuccessMsg}</span>
+                </div>
+              )}
+
+              <div className="pt-1 space-y-2.5">
+                <button
+                  type="button"
+                  onClick={handleResendVerification}
+                  disabled={isResending || resendCooldown > 0}
+                  className="w-full py-3 px-5 rounded-xl bg-[#00f0ff] hover:bg-[#00f0ff]/90 disabled:opacity-50 text-black font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(0,240,255,0.25)]"
+                >
+                  {isResending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Sending Confirmation Email...</span>
+                    </>
+                  ) : resendCooldown > 0 ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Resend Available in {resendCooldown}s</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Resend Confirmation Email</span>
+                    </>
+                  )}
+                </button>
+
                 <button
                   type="button"
                   onClick={() => {
                     setVerificationPendingEmail(null);
+                    onVerificationPendingChange?.(null);
+                    setResendErrorMsg(null);
+                    setResendSuccessMsg(null);
                     onChangeMode('login');
                   }}
-                  className="w-full py-3 px-5 rounded-xl bg-white text-black font-bold text-xs hover:bg-white/90 transition-all cursor-pointer flex items-center justify-center gap-2"
+                  className="w-full py-2.5 px-5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-semibold text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
                 >
-                  <span>Proceed to Log In</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <span>Back to Log In</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -563,9 +785,9 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                 </h1>
                 <p className="text-xs text-white/60 mt-1 leading-relaxed">
                   {mode === 'signup'
-                    ? 'Enter your credentials below. After creating your account, you will complete your student profile.'
+                    ? 'Enter your credentials below. After verifying your email address, you will complete your student profile.'
                     : mode === 'login'
-                    ? 'Sign in with your email and password to access your academic workspace.'
+                    ? 'Sign in with your verified email and password to access your academic workspace.'
                     : mode === 'forgot-password'
                     ? 'Enter the email address associated with your Xeusar account to receive a recovery link.'
                     : 'Enter and confirm your new password below.'}
