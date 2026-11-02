@@ -15,12 +15,13 @@ import {
   PanelLeftOpen,
   Database,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  MessageSquare
 } from 'lucide-react';
 import { StudentUser, FilterState, SupabaseConfig } from '../types/index.ts';
 
 interface VerticalTaskbarProps {
-  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'program' | 'university';
+  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'program' | 'university' | 'forum';
   setCurrentTab: (tab: any) => void;
   filters?: FilterState;
   setFilters?: React.Dispatch<React.SetStateAction<FilterState>>;
@@ -205,6 +206,23 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
           <Compass className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
             Explore Programs
+          </span>
+        </button>
+
+        {/* Task 5: Public Forum */}
+        <button
+          type="button"
+          onClick={() => setCurrentTab('forum')}
+          aria-label="Forum"
+          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
+            currentTab === 'forum'
+              ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
+              : 'text-white/60 hover:text-white hover:bg-white/10'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
+            Public Forum
           </span>
         </button>
 

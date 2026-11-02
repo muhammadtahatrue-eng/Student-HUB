@@ -59,6 +59,7 @@ import {
 } from './lib/resourceService.ts';
 import { MATERIAL_TYPE_LABELS, SUBJECT_OPTIONS } from './data/seedData.ts';
 import { resolveViewablePdfForNote } from './lib/pdfViewerService.ts';
+import { PublicForumView } from './components/forum/PublicForumView.tsx';
 
 const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
@@ -86,6 +87,7 @@ export type AppTab =
   | 'explore'
   | 'program'
   | 'university'
+  | 'forum'
   | 'login'
   | 'signup'
   | 'forgot-password'
@@ -103,11 +105,38 @@ export default function App() {
       if (hash === 'signup') return 'signup';
       if (hash === 'profile-setup') return 'profile-setup';
       if (hash === 'profile') return 'profile-management';
+      if (hash === 'forum' || hash.startsWith('forum/post/')) return 'forum';
     }
     return 'landing';
   });
+  const [initialForumPostId, setInitialForumPostId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace(/^#/, '');
+      if (hash.startsWith('forum/post/')) {
+        return hash.replace('forum/post/', '').trim() || null;
+      }
+    }
+    return null;
+  });
   const [postLoginDestination, setPostLoginDestination] = useState<AppTab>('landing');
   const [profileSection, setProfileSection] = useState<ProfileManagementSection>('profile');
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace(/^#/, '');
+      if (hash === 'forum') {
+        setCurrentTab('forum');
+      } else if (hash.startsWith('forum/post/')) {
+        const postId = hash.replace('forum/post/', '').trim();
+        if (postId) {
+          setInitialForumPostId(postId);
+          setCurrentTab('forum');
+        }
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   // Active program directory state
   const [selectedProgramId, setSelectedProgramId] = useState<string>(() => {
@@ -1061,6 +1090,21 @@ export default function App() {
             onSelectProgram={handleSelectProgram}
             onOpenMyProgram={handleOpenMyProgram}
             onOpenSetupModal={() => setIsProgramSetupOpen(true)}
+          />
+        </main>
+      )}
+
+      {currentTab === 'forum' && (
+        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto pl-16 sm:pl-20 md:pl-24 pr-4 sm:pr-6 lg:pr-8 pt-5 sm:pt-7 pb-20 md:pb-10">
+          <PublicForumView
+            user={user}
+            supabaseConfig={supabaseConfig}
+            notes={notes}
+            initialPostId={initialForumPostId}
+            onPreviewNote={handlePreviewNote}
+            onOpenProgram={(progId, subTab) => handleSelectProgram(progId, subTab)}
+            onOpenAuthModal={(mode) => handleOpenAuthOrProfileRoute(mode)}
+            onTriggerToast={triggerToast}
           />
         </main>
       )}

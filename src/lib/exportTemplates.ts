@@ -266,6 +266,148 @@ create policy "Students can post discussions" on public.university_discussions f
 create policy "Students can comment" on public.discussion_comments for insert with check (true);
 create policy "Students can ask doubts" on public.university_doubts for insert with check (true);
 create policy "Students can post answers" on public.doubt_answers for insert with check (true);
+
+-- ==============================================================================
+-- 8. TEXT-FIRST PUBLIC FORUM SCHEMA & ROW-LEVEL SECURITY (NO FILE STORAGE BUCKETS)
+-- ==============================================================================
+
+-- 8.1 Forum Topics Table
+create table if not exists public.forum_topics (
+  id text primary key,
+  name text not null,
+  slug text not null unique,
+  description text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+insert into public.forum_topics (id, name, slug, description) values
+  ('mathematics', 'Mathematics', 'mathematics', 'Calculus, linear algebra, discrete math, proofs, and problem solving.'),
+  ('physics', 'Physics', 'physics', 'Mechanics, electromagnetism, quantum physics, thermodynamics, and derivations.'),
+  ('computer-science', 'Computer Science', 'computer-science', 'Algorithms, data structures, systems programming, AI, and software design.'),
+  ('engineering', 'Engineering', 'engineering', 'Electrical, mechanical, civil, chemical, and biomedical engineering discussions.'),
+  ('business', 'Business', 'business', 'Economics, finance, accounting, management, and case study analysis.'),
+  ('english-languages', 'English & Languages', 'english-languages', 'Academic writing, literature, linguistics, rhetoric, and research citations.'),
+  ('study-tips', 'Study Tips', 'study-tips', 'Active recall, spaced repetition, note-taking workflows, and time management.'),
+  ('university-life', 'University Life', 'university-life', 'Course registration advice, research internships, and academic milestones.'),
+  ('exam-preparation', 'Exam Preparation', 'exam-preparation', 'Midterm and final exam review strategies, past paper walkthroughs, and formulas.'),
+  ('general-discussion', 'General Discussion', 'general-discussion', 'Cross-disciplinary academic conversations and open scholarly exchange.')
+on conflict (id) do nothing;
+
+-- 8.2 Forum Posts Table (Text-Only + Study Library Resource Reference)
+create table if not exists public.forum_posts (
+  id uuid primary key default gen_random_uuid(),
+  title text not null check (char_length(title) between 3 and 150),
+  body text not null check (char_length(body) between 1 and 10000),
+  post_type text not null check (
+    post_type in ('Discussion', 'Question', 'Study Tip', 'Resource Link', 'Announcement')
+  ),
+  topic_id text not null references public.forum_topics(id) on delete restrict,
+  topic_name text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null,
+  author_username text not null,
+  author_avatar text,
+  author_program text,
+  author_degree_tier text,
+  author_university text,
+  resource_id uuid references public.study_notes(id) on delete set null,
+  program_course_ref jsonb,
+  external_link text,
+  upvotes_count integer not null default 1,
+  downvotes_count integer not null default 0,
+  comments_count integer not null default 0,
+  accepted_comment_id uuid,
+  status text not null default 'published' check (status in ('published', 'flagged', 'removed')),
+  idempotency_key text unique,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index if not exists idx_forum_posts_topic_id on public.forum_posts(topic_id);
+create index if not exists idx_forum_posts_post_type on public.forum_posts(post_type);
+create index if not exists idx_forum_posts_created_at on public.forum_posts(created_at desc);
+create index if not exists idx_forum_posts_author_id on public.forum_posts(author_id);
+
+-- 8.3 Forum Comments & Nested Replies Table (Text-Only)
+create table if not exists public.forum_comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.forum_posts(id) on delete cascade,
+  parent_comment_id uuid references public.forum_comments(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 4000),
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null,
+  author_username text not null,
+  author_avatar text,
+  author_program text,
+  author_degree_tier text,
+  upvotes_count integer not null default 1,
+  downvotes_count integer not null default 0,
+  is_accepted boolean not null default false,
+  status text not null default 'published' check (status in ('published', 'flagged', 'removed')),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index if not exists idx_forum_comments_post_id on public.forum_comments(post_id, created_at asc);
+create index if not exists idx_forum_comments_parent_id on public.forum_comments(parent_comment_id);
+
+-- 8.4 Forum Votes Table (1 active vote per user per target)
+create table if not exists public.forum_votes (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  target_type text not null check (target_type in ('post', 'comment')),
+  target_id uuid not null,
+  vote_value smallint not null check (vote_value in (-1, 1)),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  primary key (user_id, target_type, target_id)
+);
+
+-- 8.5 Forum Bookmarks Table (Unique per user and post)
+create table if not exists public.forum_bookmarks (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  post_id uuid not null references public.forum_posts(id) on delete cascade,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  primary key (user_id, post_id)
+);
+
+-- 8.6 Forum Reports Table
+create table if not exists public.forum_reports (
+  id uuid primary key default gen_random_uuid(),
+  target_type text not null check (target_type in ('post', 'comment')),
+  target_id uuid not null,
+  post_id uuid not null references public.forum_posts(id) on delete cascade,
+  target_snippet text not null,
+  reporter_id uuid not null references auth.users(id) on delete cascade,
+  reporter_username text not null,
+  reason text not null,
+  details text,
+  status text not null default 'pending' check (status in ('pending', 'reviewed_kept', 'reviewed_removed')),
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamp with time zone,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 8.7 Row-Level Security Policies for Forum Tables
+alter table public.forum_topics enable row level security;
+alter table public.forum_posts enable row level security;
+alter table public.forum_comments enable row level security;
+alter table public.forum_votes enable row level security;
+alter table public.forum_bookmarks enable row level security;
+alter table public.forum_reports enable row level security;
+
+create policy "Anyone can read forum topics" on public.forum_topics for select using (true);
+create policy "Public can read published forum posts" on public.forum_posts for select using (status <> 'removed');
+create policy "Authenticated users create own forum posts" on public.forum_posts for insert with check (auth.uid() = author_id);
+create policy "Authors can update own forum posts" on public.forum_posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
+create policy "Authors can delete own forum posts" on public.forum_posts for delete using (auth.uid() = author_id);
+
+create policy "Public can read published forum comments" on public.forum_comments for select using (status <> 'removed');
+create policy "Authenticated users create own forum comments" on public.forum_comments for insert with check (auth.uid() = author_id);
+create policy "Authors can update own forum comments" on public.forum_comments for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
+create policy "Authors can delete own forum comments" on public.forum_comments for delete using (auth.uid() = author_id);
+
+create policy "Users manage own forum votes" on public.forum_votes for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users manage own forum bookmarks" on public.forum_bookmarks for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Authenticated users submit forum reports" on public.forum_reports for insert with check (auth.uid() = reporter_id);
 `
   },
   {

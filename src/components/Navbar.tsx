@@ -12,7 +12,7 @@ import {
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
 interface NavbarProps {
-  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university' | 'program';
+  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university' | 'program' | 'forum';
   setCurrentTab: (tab: any) => void;
   supabaseConfig?: SupabaseConfig;
   onOpenSupabaseModal?: () => void;
@@ -122,6 +122,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 }`}
               >
                 My Program
+              </button>
+              <button
+                onClick={() => setCurrentTab('forum')}
+                className={`hover:text-white transition-colors cursor-pointer ${
+                  currentTab === 'forum' ? 'text-white font-semibold' : ''
+                }`}
+              >
+                Forum
               </button>
               <button
                 onClick={() => setCurrentTab('upload')}

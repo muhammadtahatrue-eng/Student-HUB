@@ -423,3 +423,121 @@ export interface DoubtQuestion {
   attachments?: DoubtAttachment[];
   answers: DoubtAnswer[];
 }
+
+// ============================================================================
+// TEXT-FIRST PUBLIC FORUM DATA MODELS
+// ============================================================================
+
+export type ForumPostType =
+  | 'Discussion'
+  | 'Question'
+  | 'Study Tip'
+  | 'Resource Link'
+  | 'Announcement';
+
+export type ForumTopicId =
+  | 'mathematics'
+  | 'physics'
+  | 'computer-science'
+  | 'engineering'
+  | 'business'
+  | 'english-languages'
+  | 'study-tips'
+  | 'university-life'
+  | 'exam-preparation'
+  | 'general-discussion';
+
+export interface ForumTopic {
+  id: ForumTopicId;
+  name: string;
+  slug: string;
+  description: string;
+  postCount?: number;
+}
+
+export type ForumContentStatus = 'published' | 'flagged' | 'removed';
+
+export interface ForumProgramCourseRef {
+  programId: string;
+  programName: string;
+  courseName?: string;
+  semesterNumber?: number;
+}
+
+export interface ForumPost {
+  id: string;
+  title: string;
+  body: string;
+  postType: ForumPostType;
+  topicId: ForumTopicId;
+  topicName: string;
+  authorId: string;
+  authorName: string;
+  authorUsername: string;
+  authorAvatar?: string;
+  authorProgram?: string;
+  authorDegreeTier?: DegreeTier;
+  authorUniversity?: string;
+  authorBio?: string;
+  // Optional Study Library or My Program reference (NO file upload)
+  resourceId?: string | null;
+  programCourseRef?: ForumProgramCourseRef | null;
+  externalLink?: string | null;
+  upvotesCount: number;
+  downvotesCount: number;
+  score: number;
+  userVote?: 1 | -1 | 0;
+  commentsCount: number;
+  isBookmarked?: boolean;
+  acceptedCommentId?: string | null;
+  status: ForumContentStatus;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ForumComment {
+  id: string;
+  postId: string;
+  parentCommentId: string | null;
+  body: string;
+  authorId: string;
+  authorName: string;
+  authorUsername: string;
+  authorAvatar?: string;
+  authorProgram?: string;
+  authorDegreeTier?: DegreeTier;
+  upvotesCount: number;
+  downvotesCount: number;
+  score: number;
+  userVote?: 1 | -1 | 0;
+  isAccepted?: boolean;
+  status: ForumContentStatus;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type ForumReportReason =
+  | 'Spam or self-promotion'
+  | 'Harassment or disrespect'
+  | 'Academic dishonesty / active exam leak'
+  | 'Off-topic or low-effort'
+  | 'Unsafe or misleading link'
+  | 'Other';
+
+export interface ForumReport {
+  id: string;
+  targetType: 'post' | 'comment';
+  targetId: string;
+  postId: string;
+  targetTitleOrSnippet: string;
+  reporterId: string;
+  reporterUsername: string;
+  reason: ForumReportReason;
+  details?: string;
+  status: 'pending' | 'reviewed_kept' | 'reviewed_removed';
+  createdAt: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+}
+
