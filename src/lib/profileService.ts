@@ -9,6 +9,10 @@ import {
   UserPreferencesData
 } from '../types/index.ts';
 import { findUniversityByNameOrFuzzy } from './universityStore.ts';
+import {
+  ensureSystemProgramForRegisteredStudent,
+  unenrollStudentFromProgram
+} from './programStore.ts';
 
 const SETUP_DRAFT_PREFIX = 'xeusar_profile_setup_draft_';
 
@@ -496,6 +500,13 @@ export async function fetchAuthenticatedUserProfile(
 
   const matchedUni = institution ? findUniversityByNameOrFuzzy(institution) : undefined;
   const degreeTier = mapEducationLevelToDegreeTier(educationLevel);
+  const systemProgram = majorOrField
+    ? ensureSystemProgramForRegisteredStudent({
+        studentId: userId,
+        programName: majorOrField,
+        degreeTier
+      })
+    : undefined;
 
   const studentUser: StudentUser = {
     id: userId,
@@ -512,8 +523,9 @@ export async function fetchAuthenticatedUserProfile(
     universityId: matchedUni?.id,
     academicYear: academicYear || undefined,
     semester: semester || undefined,
-    degreeTier,
-    program: majorOrField || undefined,
+    degreeTier: systemProgram?.degreeTier || degreeTier,
+    program: systemProgram?.name || majorOrField || undefined,
+    programId: systemProgram?.id,
     currentSemester: semester === 'semester_2' ? 2 : semester === 'semester_1' ? 1 : undefined,
     academicProfile: educationLevel
       ? {
@@ -741,6 +753,17 @@ export async function saveUserProfileToSupabase(
   const matchedUni = cleanInstitution ? findUniversityByNameOrFuzzy(cleanInstitution) : undefined;
   const degreeTier = mapEducationLevelToDegreeTier((eduLevel as EducationLevel) || undefined);
 
+  let systemProgram = undefined;
+  if (cleanMajor) {
+    systemProgram = ensureSystemProgramForRegisteredStudent({
+      studentId: userId,
+      programName: cleanMajor,
+      degreeTier
+    });
+  } else {
+    unenrollStudentFromProgram(userId);
+  }
+
   const updatedUser: StudentUser = {
     id: userId,
     email: authUser.email || '',
@@ -756,8 +779,9 @@ export async function saveUserProfileToSupabase(
     universityId: matchedUni?.id,
     academicYear: cleanYear || undefined,
     semester: (cleanSemester as AcademicSemester) || undefined,
-    degreeTier,
-    program: cleanMajor || undefined,
+    degreeTier: systemProgram?.degreeTier || degreeTier,
+    program: systemProgram?.name || cleanMajor || undefined,
+    programId: systemProgram?.id,
     currentSemester:
       cleanSemester === 'semester_2' ? 2 : cleanSemester === 'semester_1' ? 1 : undefined,
     academicProfile: eduLevel

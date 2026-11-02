@@ -4,16 +4,11 @@ import {
   Search,
   Check,
   ChevronDown,
-  Sparkles,
-  Plus,
-  X,
-  AlertCircle,
-  Layers,
   BookOpen,
   Users
 } from 'lucide-react';
 import { AcademicProgram, DegreeTier } from '../../types/index.ts';
-import { getAllPrograms, registerCustomProgram } from '../../lib/programStore.ts';
+import { getAllPrograms } from '../../lib/programStore.ts';
 
 interface ProgramSelectProps {
   value?: string; // program name or id
@@ -39,18 +34,11 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [tierFilter, setTierFilter] = useState<'All' | DegreeTier>(selectedDegreeTier || 'All');
-  const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
-
-  // Custom Program input state
-  const [customName, setCustomName] = useState('');
-  const [customTier, setCustomTier] = useState<DegreeTier>('Undergraduate');
-  const [customDiscipline, setCustomDiscipline] = useState('');
-  const [customDuration, setCustomDuration] = useState('4');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const programs = useMemo(() => getAllPrograms(), [isOpen, isCustomModalOpen]);
+  const programs = useMemo(() => getAllPrograms(), [isOpen]);
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -104,24 +92,6 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
     (onSelectProgram || onChange)?.(program);
     setIsOpen(false);
     setSearchQuery('');
-  };
-
-  const handleCreateCustom = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customName.trim()) return;
-
-    const newProg = registerCustomProgram({
-      name: customName.trim(),
-      degreeTier: customTier,
-      discipline: customDiscipline.trim() || 'Interdisciplinary Studies',
-      durationYears: parseInt(customDuration, 10) || 4
-    });
-
-    (onSelectProgram || onChange)?.(newProg);
-    setIsCustomModalOpen(false);
-    setIsOpen(false);
-    setCustomName('');
-    setCustomDiscipline('');
   };
 
   const getTierColor = (tier: DegreeTier) => {
@@ -302,143 +272,11 @@ export const ProgramSelect: React.FC<ProgramSelectProps> = ({
               })
             ) : (
               <div className="p-4 text-center">
-                <p className="text-xs text-white/50 mb-2">No degree programs matched "{searchQuery}"</p>
-                <button
-                  type="button"
-                  onClick={() => setIsCustomModalOpen(true)}
-                  className="px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-xs font-medium hover:bg-cyan-500/30 transition-colors cursor-pointer inline-flex items-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Register Custom Program
-                </button>
+                <p className="text-xs text-white/50">
+                  No degree programs matched "{searchQuery}"
+                </p>
               </div>
             )}
-          </div>
-
-          {/* Footer with "Custom / Other Program" Fallback Action */}
-          <div className="pt-2.5 mt-2 border-t border-white/10 flex items-center justify-between text-xs">
-            <span className="text-[11px] text-white/40">Can't find your specific major?</span>
-            <button
-              type="button"
-              onClick={() => setIsCustomModalOpen(true)}
-              className="text-cyan-400 hover:text-cyan-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Custom / Other Program
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Custom Program Registration Modal */}
-      {isCustomModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-zinc-950 border border-cyan-500/40 rounded-2xl w-full max-w-md p-5 shadow-2xl relative animate-in fade-in zoom-in-95">
-            <button
-              type="button"
-              onClick={() => setIsCustomModalOpen(false)}
-              className="absolute right-4 top-4 p-1 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
-
-            <div className="flex items-center gap-2.5 mb-3">
-              <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                <Sparkles className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-white">Register Custom Academic Program</h3>
-                <p className="text-xs text-white/50">Instantly unlocks your cohort in the global Explore directory</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleCreateCustom} className="space-y-3.5 mt-4">
-              <div>
-                <label className="block text-xs font-semibold text-white/80 mb-1">
-                  Program Title / Degree Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={customName}
-                  onChange={e => setCustomName(e.target.value)}
-                  placeholder="e.g. BS Artificial Intelligence & Robotics, MS Bioinformatics"
-                  className="w-full px-3 py-2 bg-zinc-900 border border-white/15 rounded-xl text-sm text-white placeholder-white/35 focus:outline-none focus:border-cyan-400"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-white/80 mb-1">
-                    Degree Tier *
-                  </label>
-                  <select
-                    value={customTier}
-                    onChange={e => setCustomTier(e.target.value as DegreeTier)}
-                    className="w-full px-3 py-2 bg-zinc-900 border border-white/15 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-400 cursor-pointer"
-                  >
-                    <option value="Undergraduate">Undergraduate / Bachelor's</option>
-                    <option value="Master's">Master's</option>
-                    <option value="PhD">PhD / Doctorate</option>
-                    <option value="Associate">Associate / Diploma</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-white/80 mb-1">
-                    Standard Duration (Years)
-                  </label>
-                  <select
-                    value={customDuration}
-                    onChange={e => setCustomDuration(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-900 border border-white/15 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-400 cursor-pointer"
-                  >
-                    <option value="1">1 Year</option>
-                    <option value="2">2 Years</option>
-                    <option value="3">3 Years</option>
-                    <option value="4">4 Years</option>
-                    <option value="5">5 Years</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-white/80 mb-1">
-                  Academic Discipline / Field
-                </label>
-                <input
-                  type="text"
-                  value={customDiscipline}
-                  onChange={e => setCustomDiscipline(e.target.value)}
-                  placeholder="e.g. Computing, Engineering, Health Sciences, Business"
-                  className="w-full px-3 py-2 bg-zinc-900 border border-white/15 rounded-xl text-sm text-white placeholder-white/35 focus:outline-none focus:border-cyan-400"
-                />
-              </div>
-
-              <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/20 text-[11px] text-cyan-300/80 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                <span>
-                  Adding this custom program maps your profile to it and automatically unlocks its directory card in Explore with 1 active student peer.
-                </span>
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsCustomModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={!customName.trim()}
-                  className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors cursor-pointer shadow-lg shadow-cyan-400/20 disabled:opacity-50"
-                >
-                  Save &amp; Unlock Program
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

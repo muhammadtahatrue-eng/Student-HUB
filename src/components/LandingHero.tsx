@@ -81,10 +81,10 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
       .slice(0, 3);
   }, [notes]);
 
-  // Spotlight active academic programs
+  // Spotlight active academic programs (only those with at least 1 student)
   const spotlightPrograms = useMemo(() => {
     return getAllPrograms()
-      .filter(p => p.activeStudents > 0)
+      .filter(p => (p.activeStudents || 0) >= 1)
       .slice(0, 4);
   }, [notes, user]);
 
@@ -360,14 +360,14 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
               <GraduationCap className="w-8 h-8 text-white/25 mx-auto mb-2.5" />
               <p className="text-sm font-semibold text-white/80">No active degree programs unlocked yet</p>
               <p className="text-xs text-white/50 mt-1 mb-4">
-                Degree programs automatically unlock as soon as the first student enrolls or creates a custom cohort.
+                Degree programs are automatically created and unlocked by the system when at least 1 student registers with that specific program.
               </p>
               {onOpenExplorePrograms && (
                 <button
                   onClick={onOpenExplorePrograms}
                   className="px-5 py-2 rounded-full bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 border border-cyan-400/30 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
                 >
-                  Unlock a Program
+                  View Explore Programs
                 </button>
               )}
             </div>

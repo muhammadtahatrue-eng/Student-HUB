@@ -46,6 +46,7 @@ import { AcademicProgram, MaterialType } from './types/index.ts';
 import { ExploreProgramsView } from './components/program/ExploreProgramsView.tsx';
 import { ProgramDirectoryView, ProgramTabKey } from './components/program/ProgramDirectoryView.tsx';
 import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
+import { ensureSystemProgramForRegisteredStudent } from './lib/programStore.ts';
 import {
   noteBelongsToProgram,
   updateSharedResource,
@@ -153,6 +154,18 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && parsed.id && parsed.id !== 'student-local' && !parsed.isGuest) {
+          if (parsed.programId || parsed.program || parsed.majorOrField) {
+            const sysProg = ensureSystemProgramForRegisteredStudent({
+              studentId: parsed.id,
+              programId: parsed.programId,
+              programName: parsed.program || parsed.majorOrField,
+              degreeTier: parsed.degreeTier
+            });
+            if (sysProg) {
+              parsed.programId = sysProg.id;
+              parsed.program = sysProg.name;
+            }
+          }
           return parsed;
         }
       }
@@ -714,9 +727,20 @@ export default function App() {
   };
 
   const handleOpenMyProgram = () => {
-    if (user?.program || user?.programId) {
-      if (user.programId) {
-        setSelectedProgramId(user.programId);
+    if (user?.programId || user?.program || user?.majorOrField) {
+      let targetProgramId = user.programId;
+      if (!targetProgramId && (user.program || user.majorOrField)) {
+        const sysProg = ensureSystemProgramForRegisteredStudent({
+          studentId: user.id,
+          programName: user.program || user.majorOrField,
+          degreeTier: user.degreeTier
+        });
+        if (sysProg) {
+          targetProgramId = sysProg.id;
+        }
+      }
+      if (targetProgramId) {
+        setSelectedProgramId(targetProgramId);
       }
       setProgramSubTab('overview');
       setCurrentTab('program');

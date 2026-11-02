@@ -20,15 +20,16 @@ import {
 // Local storage keys
 const STORAGE_KEY_PROGRAMS = 'xeusar_academic_programs_v2';
 const STORAGE_KEY_ENROLLMENTS = 'xeusar_program_enrollments_v2';
+const STORAGE_KEY_STUDENT_PROGRAM_MAP = 'xeusar_student_program_map_v2';
 const STORAGE_KEY_FOLLOWED_PROGRAMS = 'xeusar_followed_programs_v2';
 const STORAGE_KEY_DISCUSSIONS = 'xeusar_program_discussions_v2';
 const STORAGE_KEY_DOUBTS = 'xeusar_program_doubts_v2';
 
-// Zero hardcoded enrollments — counts increment only when real students enroll
+// Zero hardcoded enrollments — counts increment only when real students register
 const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
 
 // ----------------------------------------------------------------------------
-// ENROLLMENT & DYNAMIC UNLOCK SYSTEM
+// ENROLLMENT & SYSTEM-DRIVEN DYNAMIC UNLOCK
 // ----------------------------------------------------------------------------
 
 export function getProgramEnrollmentMap(): Record<string, number> {
@@ -47,34 +48,140 @@ export function saveProgramEnrollmentMap(map: Record<string, number>): void {
   } catch {}
 }
 
-export function enrollStudentInProgram(programId: string): void {
+function getStudentProgramMap(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_STUDENT_PROGRAM_MAP);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch {}
+  return {};
+}
+
+function saveStudentProgramMap(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_STUDENT_PROGRAM_MAP, JSON.stringify(map));
+  } catch {}
+}
+
+export function enrollStudentInProgram(programId: string, studentId?: string): void {
+  if (!programId) return;
   const map = getProgramEnrollmentMap();
+
+  let effectiveStudentId = studentId;
+  if (!effectiveStudentId) {
+    try {
+      const rawUser = localStorage.getItem('studyvault_active_user');
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        if (parsed?.id) effectiveStudentId = parsed.id;
+      }
+    } catch {}
+  }
+
+  if (effectiveStudentId) {
+    const studentMap = getStudentProgramMap();
+    const previousProgramId = studentMap[effectiveStudentId];
+    if (previousProgramId === programId) {
+      map[programId] = Math.max(1, map[programId] || 1);
+      saveProgramEnrollmentMap(map);
+      return;
+    }
+    if (previousProgramId && previousProgramId !== programId) {
+      const prevCount = map[previousProgramId] || 0;
+      map[previousProgramId] = Math.max(0, prevCount - 1);
+    }
+    studentMap[effectiveStudentId] = programId;
+    saveStudentProgramMap(studentMap);
+  }
+
   const current = map[programId] || 0;
   map[programId] = current + 1;
   saveProgramEnrollmentMap(map);
+}
+
+export function unenrollStudentFromProgram(studentId?: string): void {
+  if (!studentId) return;
+  const studentMap = getStudentProgramMap();
+  const prevProgramId = studentMap[studentId];
+  if (!prevProgramId) return;
+
+  const map = getProgramEnrollmentMap();
+  if (map[prevProgramId]) {
+    map[prevProgramId] = Math.max(0, map[prevProgramId] - 1);
+    saveProgramEnrollmentMap(map);
+  }
+  delete studentMap[studentId];
+  saveStudentProgramMap(studentMap);
 }
 
 // ----------------------------------------------------------------------------
 // PROGRAM RETRIEVAL & DYNAMIC COUNTS
 // ----------------------------------------------------------------------------
 
-export function getAllPrograms(): AcademicProgram[] {
-  let customPrograms: AcademicProgram[] = [];
+function getStoredSystemPrograms(): AcademicProgram[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_PROGRAMS);
     if (raw) {
-      customPrograms = JSON.parse(raw);
+      return JSON.parse(raw);
     }
   } catch {}
+  return [];
+}
 
+function saveStoredSystemPrograms(list: AcademicProgram[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_PROGRAMS, JSON.stringify(list));
+  } catch {}
+}
+
+export function getAllPrograms(): AcademicProgram[] {
+  const customPrograms = getStoredSystemPrograms();
   const enrollments = getProgramEnrollmentMap();
   const notesCountMap = getRealResourceCountsByProgram();
 
-  // Combine master and custom programs
-  const combined = [...MASTER_ACADEMIC_PROGRAMS, ...customPrograms];
+  // Combine master and system-created programs (deduplicated by id)
+  const seenIds = new Set<string>();
+  const combined: AcademicProgram[] = [];
+  [...MASTER_ACADEMIC_PROGRAMS, ...customPrograms].forEach(prog => {
+    if (!seenIds.has(prog.id)) {
+      seenIds.add(prog.id);
+      combined.push(prog);
+    }
+  });
+
+  // Also ensure active registered student in localStorage is reflected
+  let activeUserProgramId: string | undefined;
+  try {
+    const rawUser = localStorage.getItem('studyvault_active_user');
+    if (rawUser) {
+      const parsed = JSON.parse(rawUser);
+      if (parsed && !parsed.isGuest) {
+        if (parsed.programId) {
+          activeUserProgramId = parsed.programId;
+        } else if (parsed.program || parsed.majorOrField) {
+          const q = (parsed.program || parsed.majorOrField || '').trim().toLowerCase();
+          const matched = combined.find(
+            p =>
+              p.id.toLowerCase() === q ||
+              p.name.toLowerCase() === q ||
+              p.shortCode.toLowerCase() === q ||
+              p.name.toLowerCase().includes(q) ||
+              q.includes(p.name.toLowerCase())
+          );
+          if (matched) {
+            activeUserProgramId = matched.id;
+          }
+        }
+      }
+    }
+  } catch {}
 
   return combined.map(prog => {
-    const realStudents = enrollments[prog.id] ?? prog.activeStudents ?? 0;
+    let realStudents = enrollments[prog.id] ?? prog.activeStudents ?? 0;
+    if (activeUserProgramId && prog.id === activeUserProgramId) {
+      realStudents = Math.max(realStudents, 1);
+    }
     const realResources = notesCountMap[prog.id] ?? prog.resourceCount ?? 0;
     return {
       ...prog,
@@ -87,17 +194,17 @@ export function getAllPrograms(): AcademicProgram[] {
 /**
  * Dynamic Unlock Rule:
  * A degree program card MUST ONLY appear in the global Explore grid if AT LEAST 1 student
- * has registered and mapped themselves to that specific program (activeStudents >= 1).
- * If 0 students, it remains hidden until unlocked.
+ * has registered with that specific program (activeStudents >= 1).
+ * If 0 students, it remains hidden until a student registers with that program.
  */
 export function getUnlockedPrograms(): AcademicProgram[] {
   const all = getAllPrograms();
-  return all.filter(prog => prog.activeStudents > 0);
+  return all.filter(prog => (prog.activeStudents || 0) >= 1);
 }
 
 export function isProgramUnlocked(programId: string): boolean {
   const prog = getProgramById(programId);
-  return prog ? prog.activeStudents > 0 : false;
+  return prog ? (prog.activeStudents || 0) >= 1 : false;
 }
 
 export function getProgramById(programId: string): AcademicProgram | undefined {
@@ -105,22 +212,198 @@ export function getProgramById(programId: string): AcademicProgram | undefined {
   return all.find(p => p.id === programId || p.id.toLowerCase() === programId.toLowerCase());
 }
 
-export function findProgramByNameOrFuzzy(query: string): AcademicProgram | undefined {
+export function findProgramByNameOrFuzzy(query: string, degreeTier?: DegreeTier): AcademicProgram | undefined {
   if (!query) return undefined;
   const clean = query.trim().toLowerCase();
   const all = getAllPrograms();
+
+  // 1. Exact ID, Name, or ShortCode match
+  const exact = all.find(
+    p =>
+      p.id.toLowerCase() === clean ||
+      p.name.toLowerCase() === clean ||
+      p.shortCode.toLowerCase() === clean
+  );
+  if (exact) return exact;
+
+  // 2. Match considering degreeTier if provided
+  const tierPrefix =
+    degreeTier === "Master's"
+      ? 'ms '
+      : degreeTier === 'PhD'
+      ? 'phd '
+      : degreeTier === 'Associate'
+      ? 'adp '
+      : 'bs ';
+
+  const withPrefixMatch = all.find(
+    p =>
+      p.name.toLowerCase() === `${tierPrefix}${clean}` ||
+      (degreeTier && p.degreeTier === degreeTier && p.name.toLowerCase().includes(clean))
+  );
+  if (withPrefixMatch) return withPrefixMatch;
+
+  // 3. Fuzzy match by name or discipline
   return all.find(
     p =>
-      p.name.toLowerCase() === clean ||
-      p.shortCode.toLowerCase() === clean ||
       p.name.toLowerCase().includes(clean) ||
       clean.includes(p.name.toLowerCase())
   );
 }
 
 // ----------------------------------------------------------------------------
-// CUSTOM PROGRAM REGISTRATION
+// SYSTEM AUTOMATIC PROGRAM CREATION ON STUDENT REGISTRATION
 // ----------------------------------------------------------------------------
+
+function deriveProgramFormatFromRegistration(name: string, degreeTier: DegreeTier = 'Undergraduate'): {
+  formattedName: string;
+  shortCode: string;
+  discipline: string;
+} {
+  const raw = name.trim();
+  const lower = raw.toLowerCase();
+
+  let discipline = 'Interdisciplinary Studies';
+  if (lower.includes('engineer') || lower.includes('robotics') || lower.includes('aerospace')) {
+    discipline = 'Engineering';
+  } else if (lower.includes('computer') || lower.includes('software') || lower.includes('cyber') || lower.includes('information tech')) {
+    discipline = 'Computing & Information Sciences';
+  } else if (lower.includes('artificial intelligence') || lower.includes('data science')) {
+    discipline = 'Data Science & AI';
+  } else if (lower.includes('business') || lower.includes('finance') || lower.includes('accounting') || lower.includes('marketing') || lower.includes('economics')) {
+    discipline = 'Business & Management';
+  } else if (lower.includes('math') || lower.includes('physics') || lower.includes('chemistry')) {
+    discipline = 'Natural & Physical Sciences';
+  } else if (lower.includes('medicine') || lower.includes('nursing') || lower.includes('pharmacy') || lower.includes('biology') || lower.includes('neuro')) {
+    discipline = 'Medical & Life Sciences';
+  } else if (lower.includes('law') || lower.includes('psychology') || lower.includes('political') || lower.includes('sociology') || lower.includes('philosophy') || lower.includes('history') || lower.includes('literature')) {
+    discipline = 'Humanities & Social Sciences';
+  } else if (lower.includes('architecture') || lower.includes('design') || lower.includes('media')) {
+    discipline = 'Design, Architecture & Media';
+  }
+
+  const hasDegreePrefix = /^(bs|b\.s\.|ba|b\.a\.|be|b\.e\.|bba|ms|m\.s\.|ma|m\.a\.|mba|phd|ph\.d\.|adp|associate)\b/i.test(raw);
+  let formattedName = raw;
+  if (!hasDegreePrefix) {
+    if (degreeTier === "Master's") {
+      formattedName = `MS ${raw}`;
+    } else if (degreeTier === 'PhD') {
+      formattedName = `PhD ${raw}`;
+    } else if (degreeTier === 'Associate') {
+      formattedName = `ADP ${raw}`;
+    } else {
+      formattedName = `BS ${raw}`;
+    }
+  }
+
+  const words = formattedName.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+  const shortCode =
+    words
+      .map(w => w[0]?.toUpperCase() || '')
+      .join('')
+      .slice(0, 6) || 'PROG';
+
+  return { formattedName, shortCode, discipline };
+}
+
+/**
+ * Automatically called by the system when a student registers or saves their profile
+ * with a specific degree program / major.
+ * - If the program exists in the master catalog, enrolls the student and unlocks it.
+ * - If the program does not exist yet, the system creates it automatically and unlocks it with activeStudents >= 1.
+ */
+export function ensureSystemProgramForRegisteredStudent(params: {
+  studentId?: string;
+  programId?: string;
+  programName?: string;
+  degreeTier?: DegreeTier;
+  discipline?: string;
+}): AcademicProgram | undefined {
+  const tier: DegreeTier = params.degreeTier || 'Undergraduate';
+
+  if (params.programId) {
+    const byId = getProgramById(params.programId);
+    if (byId) {
+      enrollStudentInProgram(byId.id, params.studentId);
+      return getProgramById(byId.id) || byId;
+    }
+  }
+
+  const rawName = (params.programName || '').trim();
+  if (!rawName) return undefined;
+
+  const existing = findProgramByNameOrFuzzy(rawName, tier);
+  if (existing) {
+    enrollStudentInProgram(existing.id, params.studentId);
+    return getProgramById(existing.id) || existing;
+  }
+
+  // System automatically creates this program when a student registers with it
+  const { formattedName, shortCode, discipline } = deriveProgramFormatFromRegistration(rawName, tier);
+  const slug = formattedName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+  const id = `sys-${slug}`;
+
+  const customList = getStoredSystemPrograms();
+  const alreadyStored = customList.find(
+    p => p.id === id || p.name.toLowerCase() === formattedName.toLowerCase()
+  );
+  if (alreadyStored) {
+    enrollStudentInProgram(alreadyStored.id, params.studentId);
+    return getProgramById(alreadyStored.id) || alreadyStored;
+  }
+
+  const durationYears = tier === "Master's" ? 2 : tier === 'PhD' ? 3 : tier === 'Associate' ? 2 : 4;
+  const totalSemesters = durationYears * 2;
+  const defaultSemesters: ProgramSemester[] = Array.from({ length: totalSemesters }, (_, i) => ({
+    semesterNumber: i + 1,
+    title: `Semester ${i + 1}`,
+    courses: [
+      {
+        code: `${shortCode}-${(i + 1) * 100 + 1}`,
+        name: `${rawName} Core I (Sem ${i + 1})`,
+        credits: 3,
+        category: 'Core',
+        description: `Core curriculum module for ${formattedName} in Semester ${i + 1}.`
+      },
+      {
+        code: `${shortCode}-${(i + 1) * 100 + 2}`,
+        name: `${rawName} Applied Lab & Seminar (Sem ${i + 1})`,
+        credits: 3,
+        category: i < 4 ? 'Core' : 'Major Elective',
+        description: `Applied coursework and research methods for ${formattedName}.`
+      }
+    ]
+  }));
+
+  const newSystemProgram: AcademicProgram = {
+    id,
+    name: formattedName,
+    shortCode,
+    degreeTier: tier,
+    discipline: params.discipline || discipline,
+    description: `Official ${tier} degree cohort for ${formattedName}, unlocked by registered students in ${params.discipline || discipline}.`,
+    badge: `${tier} Cohort`,
+    durationYears,
+    totalSemesters,
+    totalCredits: tier === "Master's" ? 33 : tier === 'PhD' ? 48 : tier === 'Associate' ? 66 : 130,
+    activeStudents: 1,
+    resourceCount: 0,
+    isCustom: false,
+    status: 'verified',
+    createdByStudentId: params.studentId,
+    bannerGradient: 'from-cyan-950/40 via-indigo-950/60 to-black',
+    semesters: defaultSemesters
+  };
+
+  customList.unshift(newSystemProgram);
+  saveStoredSystemPrograms(customList);
+
+  enrollStudentInProgram(id, params.studentId);
+  return getProgramById(id) || newSystemProgram;
+}
 
 export function registerCustomProgram(params: {
   name: string;
@@ -130,47 +413,13 @@ export function registerCustomProgram(params: {
   description?: string;
   studentId?: string;
 }): AcademicProgram {
-  const slug = params.name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-  const id = `custom-${slug}-${Date.now().toString(36)}`;
-
-  const newProgram: AcademicProgram = {
-    id,
-    name: params.name.trim(),
-    shortCode: params.name
-      .split(' ')
-      .map(w => w[0]?.toUpperCase() || '')
-      .join('')
-      .slice(0, 6) || 'CUSTOM',
+  const prog = ensureSystemProgramForRegisteredStudent({
+    studentId: params.studentId,
+    programName: params.name,
     degreeTier: params.degreeTier,
-    discipline: params.discipline || 'Interdisciplinary Studies',
-    description: params.description || `Specialized ${params.degreeTier} academic curriculum initiated by student community peers.`,
-    badge: 'Community Verified Program',
-    durationYears: params.durationYears || (params.degreeTier === "Master's" ? 2 : params.degreeTier === 'PhD' ? 3 : 4),
-    totalSemesters: (params.durationYears || (params.degreeTier === "Master's" ? 2 : params.degreeTier === 'PhD' ? 3 : 4)) * 2,
-    totalCredits: params.degreeTier === "Master's" ? 33 : params.degreeTier === 'PhD' ? 48 : 130,
-    activeStudents: 1, // Instantly unlocks for this registered student!
-    resourceCount: 0,
-    isCustom: true,
-    status: 'verified',
-    createdByStudentId: params.studentId,
-    bannerGradient: 'from-cyan-950/40 via-indigo-950/60 to-black',
-    semesters: []
-  };
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_PROGRAMS);
-    const customList: AcademicProgram[] = raw ? JSON.parse(raw) : [];
-    customList.unshift(newProgram);
-    localStorage.setItem(STORAGE_KEY_PROGRAMS, JSON.stringify(customList));
-  } catch {}
-
-  // Enroll student to unlock it
-  enrollStudentInProgram(id);
-
-  return newProgram;
+    discipline: params.discipline
+  });
+  return prog!;
 }
 
 // ----------------------------------------------------------------------------

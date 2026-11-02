@@ -9,7 +9,6 @@ import {
   ArrowRight,
   Bookmark,
   BookmarkCheck,
-  Plus,
   ShieldCheck,
   X
 } from 'lucide-react';
@@ -19,7 +18,6 @@ import {
   getFollowedProgramIds,
   toggleFollowProgram
 } from '../../lib/programStore.ts';
-import { ProgramSelect } from './ProgramSelect.tsx';
 
 interface ExploreProgramsViewProps {
   onSelectProgram: (program: string | AcademicProgram) => void;
@@ -45,14 +43,17 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'popular' | 'resources' | 'name'>('popular');
   const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds());
-  const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
 
-  // Dynamic Unlock: Pull only unlocked programs (activeStudents >= 1)
-  const [unlockedPrograms, setUnlockedPrograms] = useState<AcademicProgram[]>(() => getUnlockedPrograms());
+  // Dynamic Unlock: Show ONLY programs that have at least 1 registered student (activeStudents >= 1)
+  const [unlockedPrograms, setUnlockedPrograms] = useState<AcademicProgram[]>(() =>
+    getUnlockedPrograms().filter(prog => (prog.activeStudents || 0) >= 1)
+  );
 
   useEffect(() => {
-    setUnlockedPrograms(getUnlockedPrograms());
-  }, [isRegisterModalOpen, notes]);
+    setUnlockedPrograms(
+      getUnlockedPrograms().filter(prog => (prog.activeStudents || 0) >= 1)
+    );
+  }, [notes, activeUser?.programId, activeUser?.program, activeUser?.majorOrField]);
 
   const handleToggleFollow = (e: React.MouseEvent, progId: string) => {
     e.stopPropagation();
@@ -83,6 +84,9 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   const filteredPrograms = useMemo(() => {
     return unlockedPrograms
       .filter(prog => {
+        if ((prog.activeStudents || 0) < 1) {
+          return false;
+        }
         if (selectedTier !== 'All' && prog.degreeTier !== selectedTier) {
           return false;
         }
@@ -167,12 +171,12 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
             <div className="mt-2.5 inline-flex items-center gap-2 text-[11px] text-cyan-300/85 bg-cyan-950/25 border border-cyan-500/20 px-3 py-1.5 rounded-xl">
               <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
               <span>
-                <strong>Dynamic Unlock Active:</strong> Degree programs unlock automatically when at least 1 student enrolls or registers a cohort.
+                <strong>System Program Unlock:</strong> Only degree programs with at least 1 registered student are displayed. Programs are created automatically by the system when a student registers with that specific program.
               </span>
             </div>
           </div>
 
-          {/* Compact Summary Statistics & Quick Action */}
+          {/* Compact Summary Statistics */}
           <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
             <div className="grid grid-cols-2 gap-2.5 sm:flex sm:items-center">
               <div className="px-3.5 py-2.5 rounded-xl bg-zinc-900/80 border border-white/10 min-w-[136px]">
@@ -184,7 +188,7 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
                   {unlockedPrograms.length}
                 </div>
                 <div className="text-[10px] text-cyan-400/90 font-medium">
-                  Unlocked across tiers
+                  ≥ 1 student enrolled
                 </div>
               </div>
 
@@ -201,15 +205,6 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
                 </div>
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setIsRegisterModalOpen(true)}
-              className="px-3.5 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-sm"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Register Program</span>
-            </button>
           </div>
         </div>
       </header>
@@ -429,12 +424,18 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
           <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-2.5 text-white/40">
             <GraduationCap className="w-5 h-5" />
           </div>
-          <h3 className="text-base font-bold text-white">No unlocked programs match these filters</h3>
+          <h3 className="text-base font-bold text-white">
+            {hasActiveFilters
+              ? 'No active programs match these filters'
+              : 'No active degree programs with enrolled students yet'}
+          </h3>
           <p className="text-xs text-white/55 mt-1 mb-4 leading-relaxed">
-            Try clearing your current search or tier filter, or register a custom academic program to unlock its cohort directory immediately.
+            {hasActiveFilters
+              ? 'Try clearing your current search or tier filter to view programs with enrolled students.'
+              : 'Only programs with at least 1 student are shown here. Programs are automatically created and unlocked by the system when a student registers with that specific program.'}
           </p>
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
-            {hasActiveFilters && (
+          {hasActiveFilters && (
+            <div className="flex flex-wrap items-center justify-center gap-2.5">
               <button
                 type="button"
                 onClick={handleClearFilters}
@@ -442,20 +443,12 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
               >
                 Clear Filters
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setIsRegisterModalOpen(true)}
-              className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Register Custom Degree Program</span>
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Compact Unlisted Degree Program Callout Bar */}
+      {/* System Automatic Program Creation Info Bar */}
       <div className="p-4 rounded-2xl border border-white/10 bg-zinc-950/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
@@ -463,16 +456,16 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
           </div>
           <div className="min-w-0">
             <h4 className="text-xs sm:text-sm font-bold text-white">
-              Enrolled in an unlisted degree program?
+              System-Managed Degree Cohorts
             </h4>
             <p className="text-xs text-white/50 truncate sm:whitespace-normal">
-              Create your program cohort in one click or update your enrolled program.
+              Programs appear automatically when at least 1 student registers with that specific program in their academic profile.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
-          {onOpenSetupModal && (
+        {onOpenSetupModal && (
+          <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
             <button
               type="button"
               onClick={onOpenSetupModal}
@@ -480,55 +473,9 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
             >
               Set My Program
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setIsRegisterModalOpen(true)}
-            className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold border border-white/10 transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5"
-          >
-            <Plus className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Create / Custom Program</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Register Custom Program Modal */}
-      {isRegisterModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-zinc-950 border border-cyan-500/40 rounded-3xl w-full max-w-lg p-6 shadow-2xl relative">
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-lg font-bold text-white">Select or Create Degree Program</h3>
-              <button
-                type="button"
-                onClick={() => setIsRegisterModalOpen(false)}
-                className="p-1 text-white/50 hover:text-white rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-xs text-white/50 mb-4">
-              Select an existing program or register a custom program to unlock it immediately.
-            </p>
-
-            <ProgramSelect
-              onChange={prog => {
-                setIsRegisterModalOpen(false);
-                onSelectProgram(prog.id);
-              }}
-            />
-
-            <div className="mt-5 pt-3 border-t border-white/10 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setIsRegisterModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

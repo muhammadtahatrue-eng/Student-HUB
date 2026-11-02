@@ -39,7 +39,7 @@ export const ProgramSetupModal: React.FC<ProgramSetupModalProps> = ({
 
   const handleSave = () => {
     if (!selectedProgram) return;
-    enrollStudentInProgram(selectedProgram.id);
+    enrollStudentInProgram(selectedProgram.id, activeUser?.id);
     onSaveProgram(selectedProgram, semester);
     onClose();
   };
