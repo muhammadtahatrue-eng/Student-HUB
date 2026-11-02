@@ -1,6 +1,8 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { Search, X, BookOpen } from 'lucide-react';
 import { FilterState, StudentUser } from '../types/index.ts';
+import { MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
+import { getAvailableProgramsForFilter } from '../lib/resourceService.ts';
 
 interface SearchHeaderProps {
   filters: FilterState;
@@ -16,10 +18,12 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
   filters,
   setFilters,
   totalCount,
+  availableCourses = [],
   availableYears = [],
   availableSubjects = [],
 }) => {
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const availablePrograms = useMemo(() => getAvailableProgramsForFilter(), []);
 
   // Keyboard shortcut '/' to focus search
   useEffect(() => {
@@ -44,6 +48,8 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       subject: 'all',
       courseCode: 'all',
       academicYear: 'all',
+      programId: 'all',
+      semesterNumber: 'all',
       sortBy: 'latest'
     });
   };
@@ -53,7 +59,9 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
     filters.materialType !== 'all' ||
     filters.subject !== 'all' ||
     filters.courseCode !== 'all' ||
-    filters.academicYear !== 'all';
+    filters.academicYear !== 'all' ||
+    (Boolean(filters.programId) && filters.programId !== 'all') ||
+    (Boolean(filters.semesterNumber) && filters.semesterNumber !== 'all');
 
   return (
     <section className="mb-6 font-outfit">
@@ -66,7 +74,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             type="text"
             value={filters.searchQuery}
             onChange={(e) => setFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
-            placeholder="Search by course (e.g. CS 106B), title, subject, or professor..."
+            placeholder="Search by course (e.g. Engineering, Thermodynamics), title, degree program, or uploader..."
             className="w-full pl-9 sm:pl-11 pr-14 sm:pr-24 py-3 sm:py-3.5 text-xs sm:text-sm bg-white/5 border border-white/15 rounded-2xl shadow-lg text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#00f0ff]/50 focus:border-[#00f0ff] transition-all backdrop-blur-md"
           />
           {filters.searchQuery ? (
@@ -91,26 +99,92 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
           {/* Dynamic Select Dropdowns & Sort */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-            {/* Subject Selector (Populated dynamically from active database items) */}
+            {/* Degree Program & Major Selector */}
+            <select
+              value={filters.programId || 'all'}
+              onChange={(e) => setFilters(prev => ({ ...prev, programId: e.target.value }))}
+              aria-label="Filter by Degree Program"
+              className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
+            >
+              <option value="all" className="bg-stone-900 text-white">All Degree Programs</option>
+              {availablePrograms.map(prog => (
+                <option key={prog.id} value={prog.id} className="bg-stone-900 text-white">
+                  {prog.name}
+                </option>
+              ))}
+            </select>
+
+            {/* Semester Selector */}
+            <select
+              value={filters.semesterNumber || 'all'}
+              onChange={(e) => setFilters(prev => ({ ...prev, semesterNumber: e.target.value }))}
+              aria-label="Filter by Semester"
+              className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
+            >
+              <option value="all" className="bg-stone-900 text-white">All Semesters</option>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
+                <option key={s} value={String(s)} className="bg-stone-900 text-white">
+                  Semester {s}
+                </option>
+              ))}
+            </select>
+
+            {/* Course Category / Discipline Selector (e.g. Engineering, Computer Science, etc.) */}
             {availableSubjects.length > 0 && (
               <select
                 value={filters.subject === 'all' ? 'All Subjects' : filters.subject}
                 onChange={(e) => handleSubjectSelect(e.target.value)}
+                aria-label="Filter by Course Category"
                 className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
               >
                 {availableSubjects.map(subj => (
                   <option key={subj} value={subj} className="bg-stone-900 text-white">
-                    {subj}
+                    {subj === 'All Subjects' ? 'All Course Categories' : subj}
                   </option>
                 ))}
               </select>
             )}
 
-            {/* Dynamic Academic Year Selector (Populated dynamically from active database items) */}
+            {/* Course Name Selector (Categorized by Uploader's Course) */}
+            {availableCourses.length > 0 && (
+              <select
+                value={filters.courseCode}
+                onChange={(e) => setFilters(prev => ({ ...prev, courseCode: e.target.value }))}
+                aria-label="Filter by Course"
+                className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
+              >
+                <option value="all" className="bg-stone-900 text-white">All Courses</option>
+                {availableCourses.map(course => (
+                  <option key={course} value={course} className="bg-stone-900 text-white">
+                    {course}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* Resource Type Selector */}
+            <select
+              value={filters.materialType}
+              onChange={(e) => setFilters(prev => ({ ...prev, materialType: e.target.value }))}
+              aria-label="Filter by Resource Type"
+              className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
+            >
+              <option value="all" className="bg-stone-900 text-white">All Types</option>
+              {Object.entries(MATERIAL_TYPE_LABELS)
+                .filter(([k]) => k !== 'all')
+                .map(([key, info]) => (
+                  <option key={key} value={key} className="bg-stone-900 text-white">
+                    {info.label}
+                  </option>
+                ))}
+            </select>
+
+            {/* Dynamic Academic Year Selector */}
             {availableYears.length > 0 && (
               <select
                 value={filters.academicYear}
                 onChange={(e) => setFilters(prev => ({ ...prev, academicYear: e.target.value }))}
+                aria-label="Filter by Academic Year"
                 className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
               >
                 <option value="all" className="bg-stone-900 text-white">All Years</option>
@@ -126,6 +200,7 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
             <select
               value={filters.sortBy}
               onChange={(e) => setFilters(prev => ({ ...prev, sortBy: e.target.value as any }))}
+              aria-label="Sort Materials"
               className="text-xs font-medium text-white/80 bg-white/5 border border-white/15 rounded-xl px-2.5 sm:px-3 py-2 sm:py-1.5 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] cursor-pointer"
             >
               <option value="latest" className="bg-stone-900 text-white">Newest First</option>

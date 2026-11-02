@@ -2,27 +2,22 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   Compass,
   Search,
-  Filter,
   GraduationCap,
   Users,
   BookOpen,
   Sparkles,
-  Layers,
   ArrowRight,
   Bookmark,
   BookmarkCheck,
   Plus,
   ShieldCheck,
-  ChevronRight,
-  TrendingUp,
-  Award
+  X
 } from 'lucide-react';
 import { AcademicProgram, DegreeTier, StudentUser } from '../../types/index.ts';
 import {
   getUnlockedPrograms,
   getFollowedProgramIds,
-  toggleFollowProgram,
-  getAllPrograms
+  toggleFollowProgram
 } from '../../lib/programStore.ts';
 import { ProgramSelect } from './ProgramSelect.tsx';
 
@@ -40,7 +35,7 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   onSelectProgram,
   currentUser,
   user,
-  onOpenAuthModal,
+  notes,
   onOpenMyProgram,
   onOpenSetupModal
 }) => {
@@ -57,12 +52,23 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
 
   useEffect(() => {
     setUnlockedPrograms(getUnlockedPrograms());
-  }, [isRegisterModalOpen]);
+  }, [isRegisterModalOpen, notes]);
 
   const handleToggleFollow = (e: React.MouseEvent, progId: string) => {
     e.stopPropagation();
     toggleFollowProgram(progId);
     setFollowedIds(getFollowedProgramIds());
+  };
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    selectedTier !== 'All' ||
+    selectedDiscipline !== 'All';
+
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setSelectedTier('All');
+    setSelectedDiscipline('All');
   };
 
   // Get distinct disciplines from unlocked programs
@@ -77,15 +83,12 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   const filteredPrograms = useMemo(() => {
     return unlockedPrograms
       .filter(prog => {
-        // Degree Tier filter
         if (selectedTier !== 'All' && prog.degreeTier !== selectedTier) {
           return false;
         }
-        // Discipline filter
         if (selectedDiscipline !== 'All' && prog.discipline !== selectedDiscipline) {
           return false;
         }
-        // Search query
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase().trim();
           const matchName = prog.name.toLowerCase().includes(q);
@@ -113,102 +116,139 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
     return unlockedPrograms.reduce((acc, p) => acc + (p.activeStudents || 0), 0);
   }, [unlockedPrograms]);
 
-  const getTierBadgeStyle = (tier: DegreeTier) => {
+  const getTierAccentText = (tier: DegreeTier) => {
     switch (tier) {
       case 'Undergraduate':
-        return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
+        return 'text-cyan-400';
       case "Master's":
-        return 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+        return 'text-purple-400';
       case 'PhD':
-        return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
+        return 'text-amber-400';
       case 'Associate':
-        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+        return 'text-emerald-400';
     }
   };
 
   return (
-    <div className="min-w-0 font-outfit pb-24">
-      {/* Hero Header */}
-      <div className="relative mb-8 rounded-3xl border border-white/10 bg-gradient-to-b from-zinc-900/90 via-zinc-950/90 to-black p-6 sm:p-8 backdrop-blur-xl shadow-2xl overflow-hidden">
-        {/* Subtle decorative glow */}
-        <div className="absolute top-0 right-1/4 w-96 h-48 bg-cyan-500/10 blur-[100px] pointer-events-none rounded-full" />
-        <div className="absolute bottom-0 left-10 w-72 h-36 bg-indigo-500/10 blur-[80px] pointer-events-none rounded-full" />
-
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="max-w-2xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-semibold mb-3">
-              <Compass className="w-3.5 h-3.5 text-cyan-400" />
+    <div className="min-w-0 font-outfit space-y-4">
+      {/* Compact Page Header & Summary Statistics */}
+      <header className="rounded-2xl border border-white/10 bg-zinc-950/85 backdrop-blur-xl p-4 sm:p-5 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-xs text-cyan-400 font-medium mb-1">
+              <Compass className="w-3.5 h-3.5 shrink-0" />
               <span>Explore Programs Directory</span>
+              {activeUser?.program && (
+                <>
+                  <span aria-hidden="true" className="text-white/25">·</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onOpenMyProgram) onOpenMyProgram();
+                      else if (activeUser.programId) onSelectProgram(activeUser.programId);
+                    }}
+                    className="text-white/70 hover:text-cyan-300 underline cursor-pointer truncate"
+                  >
+                    My Cohort: {activeUser.program}
+                  </button>
+                </>
+              )}
             </div>
 
-            <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-white tracking-tight">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
               Academic Degree Programs &amp; Cohorts
             </h1>
-            <p className="mt-2 text-sm sm:text-base text-white/60 leading-relaxed">
+            <p className="mt-1 text-xs sm:text-sm text-white/60 leading-relaxed max-w-2xl">
               Discover active degree cohorts across Undergraduate, Master's, PhD, and Associate tiers.
               Browse shared lecture notes, past exam solutions, and peer doubt resolution centers.
             </p>
 
-            {/* Dynamic Unlock Rule Notice */}
-            <div className="mt-4 flex items-center gap-2 text-xs text-cyan-300/80 bg-cyan-950/30 border border-cyan-500/20 px-3.5 py-2 rounded-xl">
-              <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+            {/* Compact Dynamic Unlock Notice */}
+            <div className="mt-2.5 inline-flex items-center gap-2 text-[11px] text-cyan-300/85 bg-cyan-950/25 border border-cyan-500/20 px-3 py-1.5 rounded-xl">
+              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
               <span>
-                <strong>Dynamic Unlock Active:</strong> Degree programs automatically unlock the instant at least 1 student enrolls or creates a custom cohort. Zero mock directories.
+                <strong>Dynamic Unlock Active:</strong> Degree programs unlock automatically when at least 1 student enrolls or registers a cohort.
               </span>
             </div>
           </div>
 
-          {/* Quick Metrics */}
-          <div className="flex flex-row md:flex-col gap-3 shrink-0">
-            <div className="flex-1 md:w-56 p-3.5 rounded-2xl bg-zinc-900/70 border border-white/10 backdrop-blur-md">
-              <div className="flex items-center justify-between text-xs text-white/50 mb-1">
-                <span>Active Cohorts</span>
-                <GraduationCap className="w-4 h-4 text-cyan-400" />
+          {/* Compact Summary Statistics & Quick Action */}
+          <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+            <div className="grid grid-cols-2 gap-2.5 sm:flex sm:items-center">
+              <div className="px-3.5 py-2.5 rounded-xl bg-zinc-900/80 border border-white/10 min-w-[136px]">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-white/50">
+                  <span>Active Cohorts</span>
+                  <GraduationCap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                </div>
+                <div className="text-lg font-extrabold text-white tabular-nums mt-0.5">
+                  {unlockedPrograms.length}
+                </div>
+                <div className="text-[10px] text-cyan-400/90 font-medium">
+                  Unlocked across tiers
+                </div>
               </div>
-              <div className="text-2xl font-black text-white">{unlockedPrograms.length}</div>
-              <div className="text-[11px] text-cyan-400 font-medium">Unlocked across all tiers</div>
+
+              <div className="px-3.5 py-2.5 rounded-xl bg-zinc-900/80 border border-white/10 min-w-[136px]">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-white/50">
+                  <span>Vault Materials</span>
+                  <BookOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                </div>
+                <div className="text-lg font-extrabold text-white tabular-nums mt-0.5">
+                  {totalVaultMaterials}
+                </div>
+                <div className="text-[10px] text-white/45 tabular-nums">
+                  {totalStudentPeers.toLocaleString()} active peers
+                </div>
+              </div>
             </div>
 
-            <div className="flex-1 md:w-56 p-3.5 rounded-2xl bg-zinc-900/70 border border-white/10 backdrop-blur-md">
-              <div className="flex items-center justify-between text-xs text-white/50 mb-1">
-                <span>Vault Materials</span>
-                <BookOpen className="w-4 h-4 text-indigo-400" />
-              </div>
-              <div className="text-2xl font-black text-white">{totalVaultMaterials}+</div>
-              <div className="text-[11px] text-white/40">{totalStudentPeers.toLocaleString()} active student peers</div>
-            </div>
+            <button
+              type="button"
+              onClick={() => setIsRegisterModalOpen(true)}
+              className="px-3.5 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-sm"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Register Program</span>
+            </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Search & Filter Bar */}
-      <div className="sticky top-20 z-30 mb-6 bg-black/80 backdrop-blur-xl p-3 sm:p-4 rounded-2xl border border-white/10 shadow-xl space-y-3">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+      {/* Cohesive Search & Degree-Tier Filter Toolbar */}
+      <section
+        aria-label="Program search and filters"
+        className="rounded-2xl border border-white/10 bg-zinc-950/85 backdrop-blur-xl p-3 sm:p-4 shadow-lg space-y-3"
+      >
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
           {/* Search Input */}
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-white/40 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <div className="relative flex-1 min-w-0">
+            <Search className="w-4 h-4 text-white/40 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Search programs by name, code, or discipline (e.g. BSCS, Data Science, BBA)..."
-              className="w-full pl-10 pr-4 py-2.5 bg-zinc-900/90 border border-white/10 rounded-xl text-sm text-white placeholder-white/35 focus:outline-none focus:border-cyan-400 transition-colors"
+              className="w-full pl-9 pr-9 py-2 bg-zinc-900/90 border border-white/10 rounded-xl text-xs sm:text-sm text-white placeholder-white/35 focus:outline-none focus:border-cyan-400 transition-colors"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-white/40 hover:text-white cursor-pointer"
+                title="Clear search"
               >
-                Clear
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
           {/* Sort dropdown */}
           <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-white/50 whitespace-nowrap">Sort by:</span>
+            <label htmlFor="explore-sort-select" className="text-xs text-white/50 whitespace-nowrap">
+              Sort by:
+            </label>
             <select
+              id="explore-sort-select"
               value={sortBy}
               onChange={e => setSortBy(e.target.value as any)}
               className="bg-zinc-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-cyan-400 cursor-pointer"
@@ -220,20 +260,19 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
           </div>
         </div>
 
-        {/* Tier & Discipline Filter Pills */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-white/5">
-          {/* Degree Tier Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-1">
+        {/* Degree Tier Filter Buttons & Discipline Selector */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2.5 border-t border-white/5">
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
             <span className="text-xs text-white/40 mr-1 shrink-0">Tier:</span>
             {(['All', 'Undergraduate', "Master's", 'PhD', 'Associate'] as const).map(tier => (
               <button
                 key={tier}
                 type="button"
                 onClick={() => setSelectedTier(tier)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all shrink-0 cursor-pointer ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 cursor-pointer ${
                   selectedTier === tier
-                    ? 'bg-cyan-400 text-black font-bold shadow-[0_0_10px_rgba(0,240,255,0.3)]'
-                    : 'bg-zinc-900/80 text-white/60 hover:text-white hover:bg-zinc-800 border border-white/5'
+                    ? 'bg-cyan-400 text-black font-bold shadow-sm'
+                    : 'bg-zinc-900/80 text-white/65 hover:text-white hover:bg-zinc-800 border border-white/5'
                 }`}
               >
                 {tier === 'All' ? 'All Tiers' : tier}
@@ -241,182 +280,232 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
             ))}
           </div>
 
-          {/* Discipline Selector if available */}
-          {availableDisciplines.length > 0 && (
-            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-1">
-              <span className="text-xs text-white/40 mr-1 shrink-0">Discipline:</span>
-              <select
-                value={selectedDiscipline}
-                onChange={e => setSelectedDiscipline(e.target.value)}
-                className="bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-white/80 focus:outline-none focus:border-cyan-400 cursor-pointer"
-              >
-                <option value="All">All Disciplines ({availableDisciplines.length})</option>
-                {availableDisciplines.map(d => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-      </div>
+          <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+            {availableDisciplines.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="explore-discipline-select" className="text-xs text-white/40 shrink-0">
+                  Discipline:
+                </label>
+                <select
+                  id="explore-discipline-select"
+                  value={selectedDiscipline}
+                  onChange={e => setSelectedDiscipline(e.target.value)}
+                  className="bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white/85 focus:outline-none focus:border-cyan-400 cursor-pointer max-w-[200px] truncate"
+                >
+                  <option value="All">All Disciplines ({availableDisciplines.length})</option>
+                  {availableDisciplines.map(d => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-      {/* Program Cards Grid */}
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 underline cursor-pointer whitespace-nowrap"
+              >
+                Reset filters
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Program Cards Grid or Compact Empty State */}
       {filteredPrograms.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredPrograms.map(prog => {
             const isFollowed = followedIds.includes(prog.id);
-            const isUserProgram = currentUser?.programId === prog.id || currentUser?.program === prog.name;
+            const isUserProgram =
+              activeUser?.programId === prog.id || activeUser?.program === prog.name;
 
             return (
-              <div
+              <article
                 key={prog.id}
                 onClick={() => onSelectProgram(prog.id)}
-                className={`group relative rounded-2xl border transition-all duration-300 cursor-pointer overflow-hidden flex flex-col justify-between ${
+                className={`group relative rounded-2xl border transition-all duration-200 cursor-pointer flex flex-col justify-between p-4 sm:p-5 ${
                   isUserProgram
-                    ? 'bg-gradient-to-b from-cyan-950/40 via-zinc-900/90 to-black border-cyan-500/50 shadow-[0_0_25px_rgba(0,240,255,0.15)] ring-1 ring-cyan-500/30'
-                    : 'bg-zinc-900/60 hover:bg-zinc-900/90 border-white/10 hover:border-cyan-500/40 hover:shadow-xl hover:shadow-black/60'
+                    ? 'bg-zinc-900/90 border-cyan-500/50 ring-1 ring-cyan-500/25'
+                    : 'bg-zinc-950/80 hover:bg-zinc-900/90 border-white/10 hover:border-cyan-500/40'
                 }`}
               >
-                {/* Top Banner Gradient & Badges */}
-                <div className="p-5 pb-3">
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border uppercase font-bold ${getTierBadgeStyle(prog.degreeTier)}`}>
+                <div>
+                  {/* Top Metadata Line & Follow Action */}
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex items-center flex-wrap gap-1.5 text-[11px] font-jetbrains">
+                      <span className={`font-bold uppercase ${getTierAccentText(prog.degreeTier)}`}>
                         {prog.degreeTier}
                       </span>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/60">
-                        {prog.shortCode}
-                      </span>
+                      <span aria-hidden="true" className="text-white/25">·</span>
+                      <span className="text-white/75 font-semibold">{prog.shortCode}</span>
                       {isUserProgram && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-400 text-black font-bold">
-                          My Enrolled Program
-                        </span>
+                        <>
+                          <span aria-hidden="true" className="text-white/25">·</span>
+                          <span className="text-cyan-300 font-bold">Enrolled</span>
+                        </>
                       )}
                     </div>
 
-                    {/* Bookmark / Follow button */}
                     <button
                       type="button"
                       onClick={e => handleToggleFollow(e, prog.id)}
                       title={isFollowed ? 'Unfollow program' : 'Follow program'}
-                      className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                      aria-label={isFollowed ? `Unfollow ${prog.name}` : `Follow ${prog.name}`}
+                      className={`p-1.5 rounded-lg border transition-colors cursor-pointer shrink-0 ${
                         isFollowed
-                          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-sm'
-                          : 'bg-black/40 text-white/40 hover:text-white border-white/10 hover:bg-white/10'
+                          ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/40'
+                          : 'bg-white/5 text-white/45 hover:text-white border-white/10 hover:bg-white/10'
                       }`}
                     >
                       {isFollowed ? (
-                        <BookmarkCheck className="w-4 h-4 text-cyan-400" />
+                        <BookmarkCheck className="w-3.5 h-3.5 text-cyan-400" />
                       ) : (
-                        <Bookmark className="w-4 h-4" />
+                        <Bookmark className="w-3.5 h-3.5" />
                       )}
                     </button>
                   </div>
 
-                  <h3 className="text-lg font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-1">
+                  {/* Program Title & Discipline */}
+                  <h2 className="text-base sm:text-lg font-bold text-white group-hover:text-cyan-300 transition-colors leading-snug line-clamp-2">
                     {prog.name}
-                  </h3>
-                  <div className="text-xs text-white/50 mt-1 mb-2">
+                  </h2>
+                  <div className="text-xs text-white/50 mt-0.5 mb-2">
                     {prog.discipline}
                   </div>
 
-                  <p className="text-xs text-white/65 line-clamp-2 leading-relaxed">
+                  <p className="text-xs text-white/65 line-clamp-2 leading-relaxed mb-4">
                     {prog.description}
                   </p>
                 </div>
 
-                {/* Middle Info Chips */}
-                <div className="px-5 py-2.5 bg-black/40 border-y border-white/5 grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <div className="text-[10px] text-white/40 uppercase">Peers</div>
-                    <div className="text-xs font-bold text-white flex items-center justify-center gap-1 mt-0.5">
-                      <Users className="w-3 h-3 text-cyan-400" />
-                      {prog.activeStudents}
+                <div>
+                  {/* Aligned Program Metrics Bar */}
+                  <div className="py-2.5 px-3 rounded-xl bg-black/40 border border-white/5 grid grid-cols-3 gap-2 text-center mb-3">
+                    <div>
+                      <div className="text-[10px] text-white/40 uppercase">Peers</div>
+                      <div className="text-xs font-bold text-white flex items-center justify-center gap-1 mt-0.5 tabular-nums">
+                        <Users className="w-3 h-3 text-cyan-400 shrink-0" />
+                        <span>{prog.activeStudents}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-white/40 uppercase">Materials</div>
+                      <div className="text-xs font-bold text-white flex items-center justify-center gap-1 mt-0.5 tabular-nums">
+                        <BookOpen className="w-3 h-3 text-indigo-400 shrink-0" />
+                        <span>{prog.resourceCount}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-white/40 uppercase">Duration</div>
+                      <div className="text-xs font-bold text-white mt-0.5 tabular-nums">
+                        {prog.totalSemesters} Sem
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <div className="text-[10px] text-white/40 uppercase">Materials</div>
-                    <div className="text-xs font-bold text-white flex items-center justify-center gap-1 mt-0.5">
-                      <BookOpen className="w-3 h-3 text-indigo-400" />
-                      {prog.resourceCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-white/40 uppercase">Semesters</div>
-                    <div className="text-xs font-bold text-white mt-0.5">
-                      {prog.totalSemesters} Sem
-                    </div>
+
+                  {/* Card Footer */}
+                  <div className="flex items-center justify-between text-xs pt-1">
+                    <span className="text-[11px] text-white/50 truncate max-w-[180px]">
+                      {prog.badge ? `★ ${prog.badge}` : `${prog.totalCredits} Credit Hours`}
+                    </span>
+
+                    <span className="text-cyan-400 group-hover:text-cyan-300 font-semibold inline-flex items-center gap-1 transition-transform group-hover:translate-x-0.5">
+                      <span>Open Vault</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </span>
                   </div>
                 </div>
-
-                {/* Footer Action */}
-                <div className="p-4 pt-3 flex items-center justify-between text-xs">
-                  <span className="text-[11px] text-white/45 flex items-center gap-1">
-                    {prog.badge && (
-                      <span className="text-cyan-400/90 font-medium truncate max-w-[170px]">
-                        ★ {prog.badge}
-                      </span>
-                    )}
-                  </span>
-
-                  <span className="text-cyan-400 group-hover:text-cyan-300 font-semibold flex items-center gap-1 transition-transform group-hover:translate-x-1">
-                    Open Vault
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </span>
-                </div>
-              </div>
+              </article>
             );
           })}
         </div>
       ) : (
-        <div className="text-center py-16 px-4 rounded-3xl border border-white/10 bg-zinc-950/60 p-8">
-          <GraduationCap className="w-12 h-12 text-white/20 mx-auto mb-3" />
-          <h3 className="text-lg font-bold text-white">No unlocked programs found</h3>
-          <p className="text-xs text-white/50 max-w-md mx-auto mt-1 mb-5">
-            No active degree program matched your current search filters. You can register your custom academic program to immediately unlock it in this directory!
+        /* Compact Contextual Empty State */
+        <div className="max-w-lg mx-auto my-2 py-7 px-5 rounded-2xl border border-white/10 bg-zinc-950/80 text-center shadow-lg">
+          <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-2.5 text-white/40">
+            <GraduationCap className="w-5 h-5" />
+          </div>
+          <h3 className="text-base font-bold text-white">No unlocked programs match these filters</h3>
+          <p className="text-xs text-white/55 mt-1 mb-4 leading-relaxed">
+            Try clearing your current search or tier filter, or register a custom academic program to unlock its cohort directory immediately.
           </p>
-          <button
-            type="button"
-            onClick={() => setIsRegisterModalOpen(true)}
-            className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors inline-flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-400/20"
-          >
-            <Plus className="w-4 h-4" />
-            Register Custom Degree Program
-          </button>
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Clear Filters
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsRegisterModalOpen(true)}
+              className="px-4 py-2 rounded-xl bg-cyan-400 text-black text-xs font-bold hover:bg-cyan-300 transition-colors inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Register Custom Degree Program</span>
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Floating Register Program Banner */}
-      <div className="mt-12 p-6 rounded-3xl border border-white/10 bg-gradient-to-r from-zinc-950 via-zinc-900 to-black flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
-            <Sparkles className="w-6 h-6" />
+      {/* Compact Unlisted Degree Program Callout Bar */}
+      <div className="p-4 rounded-2xl border border-white/10 bg-zinc-950/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
+            <Sparkles className="w-4 h-4" />
           </div>
-          <div>
-            <h4 className="text-base font-bold text-white">Enrolled in an unlisted degree program?</h4>
-            <p className="text-xs text-white/50 mt-0.5">
-              Create your program cohort with 1-click. It instantly unlocks in Explore for other students from your field.
+          <div className="min-w-0">
+            <h4 className="text-xs sm:text-sm font-bold text-white">
+              Enrolled in an unlisted degree program?
+            </h4>
+            <p className="text-xs text-white/50 truncate sm:whitespace-normal">
+              Create your program cohort in one click or update your enrolled program.
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsRegisterModalOpen(true)}
-          className="px-5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold border border-white/10 transition-colors whitespace-nowrap cursor-pointer flex items-center gap-2 shrink-0"
-        >
-          <Plus className="w-4 h-4 text-cyan-400" />
-          Create / Custom Program
-        </button>
+        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+          {onOpenSetupModal && (
+            <button
+              type="button"
+              onClick={onOpenSetupModal}
+              className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-xs font-semibold border border-white/10 transition-colors cursor-pointer"
+            >
+              Set My Program
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsRegisterModalOpen(true)}
+            className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold border border-white/10 transition-colors whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Create / Custom Program</span>
+          </button>
+        </div>
       </div>
 
-      {/* Register Custom Program Modal wrapper using ProgramSelect's logic */}
+      {/* Register Custom Program Modal */}
       {isRegisterModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-zinc-950 border border-cyan-500/40 rounded-3xl w-full max-w-lg p-6 shadow-2xl relative">
-            <h3 className="text-lg font-bold text-white mb-1">Select or Create Degree Program</h3>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-lg font-bold text-white">Select or Create Degree Program</h3>
+              <button
+                type="button"
+                onClick={() => setIsRegisterModalOpen(false)}
+                className="p-1 text-white/50 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
             <p className="text-xs text-white/50 mb-4">
               Select an existing program or register a custom program to unlock it immediately.
             </p>
@@ -432,7 +521,7 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsRegisterModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white/60 hover:text-white cursor-pointer"
               >
                 Close
               </button>

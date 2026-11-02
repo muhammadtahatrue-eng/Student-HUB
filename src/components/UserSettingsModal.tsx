@@ -215,9 +215,9 @@ const FieldSlidingSelector: React.FC<FieldSlidingSelectorProps> = ({
   };
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <label className="text-[11px] font-semibold text-white/80 flex items-center gap-1.5">
+    <div className="space-y-2 min-w-0 w-full">
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <label className="text-[11px] font-semibold text-white/80 flex items-center gap-1.5 flex-wrap min-w-0">
           <span>{label}</span>
           {levelBadge && (
             <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-400/10 text-cyan-300 font-mono border border-cyan-400/20">
@@ -226,13 +226,13 @@ const FieldSlidingSelector: React.FC<FieldSlidingSelectorProps> = ({
           )}
         </label>
         {fieldValue && (
-          <span className="text-[10px] text-cyan-300/80 font-mono truncate max-w-[200px]">
+          <span className="text-[10px] text-cyan-300/80 font-mono truncate max-w-[200px] shrink-0">
             {isPredefined ? 'Selected' : 'Other'}: {fieldValue}
           </span>
         )}
       </div>
 
-      <div className="relative flex items-center gap-1 bg-white/[0.02] p-1 rounded-xl border border-white/10">
+      <div className="relative flex items-center gap-1 bg-white/[0.02] p-1 rounded-xl border border-white/10 min-w-0 w-full overflow-hidden">
         <button
           type="button"
           onClick={slideLeft}
@@ -244,7 +244,7 @@ const FieldSlidingSelector: React.FC<FieldSlidingSelectorProps> = ({
 
         <div
           ref={sliderRef}
-          className="flex-1 overflow-x-auto flex items-center gap-1.5 py-0.5 scroll-smooth no-scrollbar [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+          className="flex-1 min-w-0 w-0 overflow-x-auto flex items-center gap-1.5 py-0.5 scroll-smooth no-scrollbar [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           <button
@@ -385,66 +385,79 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const activeUser: StudentUser = user || {
+    id: 'student-local',
+    email: '',
+    name: 'Student',
+    username: 'student',
+    university: 'National University of Sciences & Technology (NUST)',
+    universityId: 'nust',
+    degreeTier: 'Undergraduate',
+    program: 'BS Computer Science',
+    programId: 'bs-cs',
+    currentSemester: 1,
+    educationLevel: 'undergraduate',
+    undergraduateStage: 'college',
+    academicYear: 'Freshman (1st Year)',
+    semester: 'semester_1',
+    majorOrField: 'Computer Science',
+    isGuest: false
+  };
+
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
       setErrorMsg(null);
       setSuccessMsg(null);
-      setNewPassword('');
-      setConfirmPassword('');
 
-      if (user) {
-        setEditName(user.name || '');
-        setEditUsername(user.username || '');
-        setEditBio(user.bio || '');
-        setEditAvatarUrl(user.avatarUrl || '');
+      setEditName(activeUser.name || 'Student');
+      setEditUsername(activeUser.username || 'student');
+      setEditBio(activeUser.bio || '');
+      setEditAvatarUrl(activeUser.avatarUrl || '');
 
-        const prof = user.academicProfile;
-        const currentEduLevel: EducationLevel =
-          prof?.educationLevel ||
-          user.educationLevel ||
-          (user.academicLevel === 'graduate' ? 'masters' : 'undergraduate');
-        setEducationLevel(currentEduLevel);
+      const prof = activeUser.academicProfile;
+      const currentEduLevel: EducationLevel =
+        prof?.educationLevel ||
+        activeUser.educationLevel ||
+        (activeUser.academicLevel === 'graduate' ? 'masters' : 'undergraduate');
+      setEducationLevel(currentEduLevel);
 
-        setUndergraduateStage(
-          prof?.undergraduateStage ||
-            user.undergraduateStage ||
-            (user.academicLevel === 'high_school' ? 'high_school' : 'college')
+      setUndergraduateStage(
+        prof?.undergraduateStage ||
+          activeUser.undergraduateStage ||
+          (activeUser.academicLevel === 'high_school' ? 'high_school' : 'college')
+      );
+
+      const currentInst =
+        prof?.institution ||
+        activeUser.university ||
+        'National University of Sciences & Technology (NUST)';
+      setInstitution(currentInst);
+      const resolvedId = activeUser.universityId || findUniversityByNameOrFuzzy(currentInst)?.id;
+      setInstitutionId(resolvedId);
+      setIsCustomUni(Boolean(activeUser.isCustomUniversity));
+      setCustomUniDetails(activeUser.customUniversityDetails);
+
+      const storedYear =
+        prof?.academicYear || activeUser.academicYear || activeUser.undergraduateYear || '';
+      if (currentEduLevel === 'masters') {
+        setAcademicYear(MASTERS_YEARS.includes(storedYear) ? storedYear : MASTERS_YEARS[0]);
+      } else if (currentEduLevel === 'phd') {
+        setAcademicYear(PHD_YEARS.includes(storedYear) ? storedYear : PHD_YEARS[0]);
+      } else {
+        setAcademicYear(
+          UNDERGRAD_BACHELORS_YEARS.includes(storedYear)
+            ? storedYear
+            : UNDERGRAD_BACHELORS_YEARS[0]
         );
-
-        const currentInst =
-          prof?.institution ||
-          user.university ||
-          'National University of Sciences & Technology (NUST)';
-        setInstitution(currentInst);
-        const resolvedId = user.universityId || findUniversityByNameOrFuzzy(currentInst)?.id;
-        setInstitutionId(resolvedId);
-        setIsCustomUni(Boolean(user.isCustomUniversity));
-        setCustomUniDetails(user.customUniversityDetails);
-
-        const storedYear =
-          prof?.academicYear || user.academicYear || user.undergraduateYear || '';
-        if (currentEduLevel === 'masters') {
-          setAcademicYear(MASTERS_YEARS.includes(storedYear) ? storedYear : MASTERS_YEARS[0]);
-        } else if (currentEduLevel === 'phd') {
-          setAcademicYear(PHD_YEARS.includes(storedYear) ? storedYear : PHD_YEARS[0]);
-        } else {
-          setAcademicYear(
-            UNDERGRAD_BACHELORS_YEARS.includes(storedYear)
-              ? storedYear
-              : UNDERGRAD_BACHELORS_YEARS[0]
-          );
-        }
-
-        setSemester(prof?.semester || user.semester || 'semester_1');
-        setMajorOrField(prof?.majorOrField || user.majorOrField || user.fieldOfStudy || '');
       }
+
+      setSemester(prof?.semester || activeUser.semester || 'semester_1');
+      setMajorOrField(prof?.majorOrField || activeUser.majorOrField || activeUser.fieldOfStudy || '');
     }
   }, [isOpen, user, initialTab]);
 
   if (!isOpen) return null;
-
-  const isRegisteredUser = Boolean(user && !user.isGuest);
 
   const handleEducationLevelChange = (newLevel: EducationLevel) => {
     setEducationLevel(newLevel);
@@ -485,7 +498,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) return;
 
     setIsSaving(true);
     setErrorMsg(null);
@@ -493,8 +505,8 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
     const cleanUsername = editUsername.trim().replace(/^@/, '');
     const updatedUser: StudentUser = {
-      ...user,
-      name: editName.trim() || user.name,
+      ...activeUser,
+      name: editName.trim() || activeUser.name || 'Student',
       username: cleanUsername || undefined,
       bio: editBio.trim() || undefined,
       avatarUrl: editAvatarUrl.trim() || undefined,
@@ -502,18 +514,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     };
 
     try {
-      const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase && supabaseConfig.isConnected) {
-        await supabase.auth.updateUser({
-          data: {
-            full_name: updatedUser.name,
-            username: updatedUser.username,
-            bio: updatedUser.bio,
-            avatar_url: updatedUser.avatarUrl,
-          }
-        });
-      }
-
       localStorage.setItem('studyvault_active_user', JSON.stringify(updatedUser));
       onUserChange(updatedUser);
       setSuccessMsg('Student profile updated successfully!');
@@ -527,7 +527,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
   const handleSaveAcademicInfo = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) return;
 
     setIsSaving(true);
     setErrorMsg(null);
@@ -535,7 +534,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
     const cleanInstitution = institution.trim();
     const resolvedInstId =
-      institutionId || findUniversityByNameOrFuzzy(cleanInstitution)?.id || user.universityId;
+      institutionId || findUniversityByNameOrFuzzy(cleanInstitution)?.id || activeUser.universityId;
     const isUndergraduate = educationLevel === 'undergraduate';
     const computedYear = isUndergraduate
       ? semester === 'semester_1'
@@ -557,8 +556,8 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     };
 
     const updatedUser: StudentUser = {
-      ...user,
-      university: cleanInstitution || user.university || '',
+      ...activeUser,
+      university: cleanInstitution || activeUser.university || '',
       universityId: resolvedInstId,
       isCustomUniversity: isCustomUni,
       customUniversityDetails: customUniDetails,
@@ -579,25 +578,10 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     };
 
     if (resolvedInstId) {
-      registerStudentToUniversity(user.id, resolvedInstId);
+      registerStudentToUniversity(activeUser.id, resolvedInstId);
     }
 
     try {
-      const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase && supabaseConfig.isConnected) {
-        await supabase.auth.updateUser({
-          data: {
-            university: updatedUser.university,
-            academic_profile: structuredProfile,
-            education_level: educationLevel,
-            undergraduate_stage: structuredProfile.undergraduateStage,
-            academic_year: computedYear,
-            semester: semester,
-            major_or_field: structuredProfile.majorOrField,
-          }
-        });
-      }
-
       localStorage.setItem('studyvault_active_user', JSON.stringify(updatedUser));
       onUserChange(updatedUser);
       setSuccessMsg('Academic settings saved successfully!');
@@ -609,50 +593,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     }
   };
 
-  const handleUpdatePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    if (newPassword.trim().length < 6) {
-      setErrorMsg('New password must be at least 6 characters.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setErrorMsg('Passwords do not match.');
-      return;
-    }
-
-    setIsSaving(true);
-    try {
-      const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase && supabaseConfig.isConnected) {
-        const { error } = await supabase.auth.updateUser({
-          password: newPassword.trim()
-        });
-        if (error) throw error;
-      } else {
-        await new Promise((r) => setTimeout(r, 300));
-      }
-
-      setNewPassword('');
-      setConfirmPassword('');
-      setSuccessMsg('Account password updated successfully!');
-      setTimeout(() => setSuccessMsg(null), 2500);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to update password.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    try {
-      const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase) {
-        await supabase.auth.signOut();
-      }
-    } catch {}
+  const handleSignOut = () => {
     localStorage.removeItem('studyvault_active_user');
     onUserChange(null);
     onClose();
@@ -698,9 +639,9 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     },
     {
       id: 'account',
-      label: 'Account & Security',
-      subtitle: 'Password, privacy & session',
-      icon: KeyRound
+      label: 'Preferences',
+      subtitle: 'Privacy & contributor options',
+      icon: ShieldCheck
     }
   ];
 
@@ -729,15 +670,9 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                 <h2 className="text-sm sm:text-base font-bold text-white tracking-tight truncate">
                   User Settings
                 </h2>
-                {isRegisteredUser && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                    <span>Registered Account</span>
-                  </span>
-                )}
               </div>
               <p className="text-[11px] text-white/50 truncate">
-                Configure your student profile, academic hierarchy, background flare, and account security
+                Configure your student profile, academic hierarchy, background flare, and preferences
               </p>
             </div>
           </div>
@@ -752,222 +687,181 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
           </button>
         </header>
 
-        {!isRegisteredUser ? (
-          /* Registered Account Required Gate */
-          <div className="p-8 sm:p-12 text-center space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-center text-cyan-300 mx-auto shadow-[0_0_25px_rgba(0,240,255,0.2)]">
-              <Lock className="w-6 h-6" />
-            </div>
-            <div className="space-y-1.5 max-w-md mx-auto">
-              <h3 className="text-base sm:text-lg font-bold text-white">
-                Registered Account Required
-              </h3>
-              <p className="text-xs text-white/60 leading-relaxed">
-                The dedicated User Settings window is unlocked after registering your free student account on Xeusar.
-              </p>
-            </div>
-            <div className="flex items-center justify-center gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenAuthModal?.('signup');
-                }}
-                className="px-5 py-2.5 rounded-xl bg-[#00f0ff] hover:bg-[#00f0ff]/90 text-black font-bold text-xs cursor-pointer shadow-[0_0_20px_rgba(0,240,255,0.3)] transition-all"
-              >
-                Register Student Account
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenAuthModal?.('signin');
-                }}
-                className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 text-white text-xs font-semibold cursor-pointer transition-all"
-              >
-                Sign In
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* Two-Pane Dedicated User Settings Layout */
-          <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
-            {/* Left Sidebar Navigation (Desktop) & Top Tab Strip (Mobile) */}
-            <aside className="w-full md:w-64 border-b md:border-b-0 md:border-r border-white/10 bg-black/40 p-2.5 sm:p-4 flex md:flex-col justify-between shrink-0 gap-2 overflow-x-auto no-scrollbar">
-              <div className="flex md:flex-col gap-1.5 w-full">
-                {/* Compact User Summary Card (Desktop) */}
-                <div className="hidden md:flex items-center gap-3 p-3 mb-2 rounded-2xl bg-white/[0.03] border border-white/10">
-                  <div className="w-10 h-10 rounded-xl overflow-hidden border border-cyan-400/50 shrink-0 flex items-center justify-center bg-cyan-500/10">
-                    {user!.avatarUrl ? (
-                      <img
-                        src={user!.avatarUrl}
-                        alt={user!.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-sm font-bold text-cyan-300">
-                        {user!.name.charAt(0).toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-bold text-white truncate">{user!.name}</p>
-                    <p className="text-[11px] font-mono text-cyan-300 truncate">
-                      {user!.username ? `@${user!.username}` : user!.email}
-                    </p>
-                  </div>
+        {/* Two-Pane Dedicated User Settings Layout */}
+        <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+          {/* Left Sidebar Navigation (Desktop) & Top Tab Strip (Mobile) */}
+          <aside className="w-full md:w-64 border-b md:border-b-0 md:border-r border-white/10 bg-black/40 p-2.5 sm:p-4 flex md:flex-col justify-between shrink-0 gap-2 overflow-x-auto no-scrollbar">
+            <div className="flex md:flex-col gap-1.5 w-full">
+              {/* Compact User Summary Card (Desktop) */}
+              <div className="hidden md:flex items-center gap-3 p-3 mb-2 rounded-2xl bg-white/[0.03] border border-white/10">
+                <div className="w-10 h-10 rounded-xl overflow-hidden border border-cyan-400/50 shrink-0 flex items-center justify-center bg-cyan-500/10">
+                  {activeUser.avatarUrl ? (
+                    <img
+                      src={activeUser.avatarUrl}
+                      alt={activeUser.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-sm font-bold text-cyan-300">
+                      {activeUser.name.charAt(0).toUpperCase()}
+                    </span>
+                  )}
                 </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-white truncate">{activeUser.name}</p>
+                  <p className="text-[11px] font-mono text-cyan-300 truncate">
+                    @{activeUser.username || 'student'}
+                  </p>
+                </div>
+              </div>
 
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveTab(item.id);
-                        setErrorMsg(null);
-                        setSuccessMsg(null);
-                      }}
-                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer shrink-0 md:w-full ${
-                        isActive
-                          ? 'bg-cyan-400 text-black font-bold shadow-[0_0_20px_rgba(0,240,255,0.3)]'
-                          : 'text-white/65 hover:text-white hover:bg-white/[0.05]'
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setErrorMsg(null);
+                      setSuccessMsg(null);
+                    }}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer shrink-0 md:w-full ${
+                      isActive
+                        ? 'bg-cyan-400 text-black font-bold shadow-[0_0_20px_rgba(0,240,255,0.3)]'
+                        : 'text-white/65 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <Icon
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? 'text-black' : 'text-cyan-400'
                       }`}
-                    >
-                      <Icon
-                        className={`w-4 h-4 shrink-0 ${
-                          isActive ? 'text-black' : 'text-cyan-400'
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs leading-tight whitespace-nowrap">
+                        {item.label}
+                      </div>
+                      <div
+                        className={`hidden md:block text-[10px] truncate mt-0.5 ${
+                          isActive ? 'text-black/75 font-medium' : 'text-white/40'
                         }`}
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs leading-tight whitespace-nowrap">
-                          {item.label}
-                        </div>
-                        <div
-                          className={`hidden md:block text-[10px] truncate mt-0.5 ${
-                            isActive ? 'text-black/75 font-medium' : 'text-white/40'
-                          }`}
-                        >
-                          {item.subtitle}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Bottom Sign Out Button (Desktop Sidebar) */}
-              <div className="hidden md:block pt-3 border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-rose-300 hover:text-rose-200 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/25 transition-all cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4 shrink-0" />
-                  <span>Sign Out of Session</span>
-                </button>
-              </div>
-            </aside>
-
-            {/* Right Content Pane */}
-            <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 text-xs text-white no-scrollbar [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-              {errorMsg && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-center gap-2.5 animate-in fade-in">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                  <span className="text-[11px] leading-relaxed">{errorMsg}</span>
-                </div>
-              )}
-
-              {successMsg && (
-                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl flex items-center gap-2.5 animate-in fade-in">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                  <span className="text-[11px] leading-relaxed">{successMsg}</span>
-                </div>
-              )}
-
-              {/* ========================================================
-                  TAB 1: STUDENT PROFILE (Identity, Photo & Bio)
-                  ======================================================== */}
-              {activeTab === 'profile' && (
-                <div className="space-y-4">
-                  {/* Live Student Identity Card Preview */}
-                  <div className="p-5 bg-white/[0.03] rounded-2xl border border-white/10 space-y-4 relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-36 h-36 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none" />
-
-                    <div className="flex items-start gap-4">
-                      <div className="relative">
-                        {editAvatarUrl || user!.avatarUrl ? (
-                          <img
-                            src={editAvatarUrl || user!.avatarUrl}
-                            alt={editName || user!.name}
-                            className="w-16 h-16 rounded-2xl object-cover border-2 border-cyan-400 shadow-[0_0_20px_rgba(0,240,255,0.25)]"
-                          />
-                        ) : (
-                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-500/20 to-blue-500/20 border-2 border-cyan-400/40 text-cyan-300 flex items-center justify-center font-bold text-2xl shadow-[0_0_20px_rgba(0,240,255,0.25)]">
-                            {(editName || user!.name).charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <span
-                          className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-400 border-2 border-[#0d0f14]"
-                          title="Active student session"
-                        />
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-bold text-white text-base tracking-tight truncate">
-                            {editName || user!.name}
-                          </h3>
-                          {(editUsername || user!.username) && (
-                            <span className="text-cyan-300 font-mono text-xs">
-                              @{(editUsername || user!.username || '').replace(/^@/, '')}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-white/60 text-xs font-mono truncate">{user!.email}</p>
-
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md border border-emerald-400/20">
-                            <ShieldCheck className="w-3 h-3" />
-                            <span>Verified Student</span>
-                          </span>
-
-                          <span className="text-[11px] font-mono text-cyan-300 bg-cyan-400/10 px-2 py-0.5 rounded-md border border-cyan-400/20">
-                            {getLevelLabel(
-                              user!.educationLevel || user!.academicProfile?.educationLevel
-                            )}
-                          </span>
-                        </div>
+                      >
+                        {item.subtitle}
                       </div>
                     </div>
+                  </button>
+                );
+              })}
+            </div>
 
-                    <div className="pt-3 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-white/70 text-xs">
-                      <div className="bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
-                        <span className="text-[10px] text-white/40 block mb-0.5 font-jetbrains uppercase tracking-wider">
-                          Institution / University
-                        </span>
-                        <span className="font-semibold text-white truncate block">
-                          {user!.academicProfile?.institution || user!.university}
+            {/* Bottom Logout / Reset Button (Desktop Sidebar) */}
+            <div className="hidden md:block pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-rose-300 hover:text-rose-200 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/25 transition-all cursor-pointer"
+              >
+                <LogOut className="w-4 h-4 shrink-0" />
+                <span>Logout</span>
+              </button>
+            </div>
+          </aside>
+
+          {/* Right Content Pane */}
+          <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 text-xs text-white no-scrollbar [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+            {errorMsg && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-center gap-2.5 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span className="text-[11px] leading-relaxed">{errorMsg}</span>
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl flex items-center gap-2.5 animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span className="text-[11px] leading-relaxed">{successMsg}</span>
+              </div>
+            )}
+
+            {/* ========================================================
+                TAB 1: STUDENT PROFILE (Identity, Photo & Bio)
+                ======================================================== */}
+            {activeTab === 'profile' && (
+              <div className="space-y-4">
+                {/* Live Student Identity Card Preview */}
+                <div className="p-5 bg-white/[0.03] rounded-2xl border border-white/10 space-y-4 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-36 h-36 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none" />
+
+                  <div className="flex items-start gap-4">
+                    <div className="relative">
+                      {editAvatarUrl || activeUser.avatarUrl ? (
+                        <img
+                          src={editAvatarUrl || activeUser.avatarUrl}
+                          alt={editName || activeUser.name}
+                          className="w-16 h-16 rounded-2xl object-cover border-2 border-cyan-400 shadow-[0_0_20px_rgba(0,240,255,0.25)]"
+                        />
+                      ) : (
+                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-500/20 to-blue-500/20 border-2 border-cyan-400/40 text-cyan-300 flex items-center justify-center font-bold text-2xl shadow-[0_0_20px_rgba(0,240,255,0.25)]">
+                          {(editName || activeUser.name).charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <span
+                        className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-400 border-2 border-[#0d0f14]"
+                        title="Active student profile"
+                      />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-bold text-white text-base tracking-tight truncate">
+                          {editName || activeUser.name}
+                        </h3>
+                        <span className="text-cyan-300 font-mono text-xs">
+                          @{(editUsername || activeUser.username || 'student').replace(/^@/, '')}
                         </span>
                       </div>
-                      <div className="bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
-                        <span className="text-[10px] text-white/40 block mb-0.5 font-jetbrains uppercase tracking-wider">
-                          Academic Year & Term
+
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md border border-emerald-400/20">
+                          <ShieldCheck className="w-3 h-3" />
+                          <span>Verified Student</span>
                         </span>
-                        <span className="font-semibold text-white truncate block">
-                          {user!.academicProfile?.academicYear ||
-                            user!.academicYear ||
-                            'Freshman (1st Year)'}{' '}
-                          •{' '}
-                          {(user!.academicProfile?.semester || user!.semester) === 'semester_2'
-                            ? 'Semester 2'
-                            : 'Semester 1'}
+
+                        <span className="text-[11px] font-mono text-cyan-300 bg-cyan-400/10 px-2 py-0.5 rounded-md border border-cyan-400/20">
+                          {getLevelLabel(
+                            activeUser.educationLevel || activeUser.academicProfile?.educationLevel
+                          )}
                         </span>
                       </div>
                     </div>
                   </div>
+
+                  <div className="pt-3 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-white/70 text-xs">
+                    <div className="bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
+                      <span className="text-[10px] text-white/40 block mb-0.5 font-jetbrains uppercase tracking-wider">
+                        Institution / University
+                      </span>
+                      <span className="font-semibold text-white truncate block">
+                        {activeUser.academicProfile?.institution || activeUser.university}
+                      </span>
+                    </div>
+                    <div className="bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
+                      <span className="text-[10px] text-white/40 block mb-0.5 font-jetbrains uppercase tracking-wider">
+                        Academic Year & Term
+                      </span>
+                      <span className="font-semibold text-white truncate block">
+                        {activeUser.academicProfile?.academicYear ||
+                          activeUser.academicYear ||
+                          'Freshman (1st Year)'}{' '}
+                        •{' '}
+                        {(activeUser.academicProfile?.semester || activeUser.semester) === 'semester_2'
+                          ? 'Semester 2'
+                          : 'Semester 1'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
                   {/* Profile Edit Form */}
                   <form onSubmit={handleSaveProfile} className="space-y-4">
@@ -1272,7 +1166,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                             setCustomUniDetails(details);
                           }}
                           placeholder="Select HEC university or college..."
-                          studentId={user!.id}
+                          studentId={activeUser.id}
                           required
                         />
 
@@ -1360,7 +1254,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                             setCustomUniDetails(details);
                           }}
                           placeholder="Select HEC university or institution..."
-                          studentId={user!.id}
+                          studentId={activeUser.id}
                           required
                         />
 
@@ -1435,7 +1329,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                             setCustomUniDetails(details);
                           }}
                           placeholder="Select HEC university or institution..."
-                          studentId={user!.id}
+                          studentId={activeUser.id}
                           required
                         />
 
@@ -1515,7 +1409,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                             setCustomUniDetails(details);
                           }}
                           placeholder="Select HEC doctoral university or institution..."
-                          studentId={user!.id}
+                          studentId={activeUser.id}
                           required
                         />
 
@@ -1850,108 +1744,10 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
               )}
 
               {/* ========================================================
-                  TAB 4: ACCOUNT & SECURITY (Password, Privacy & Session)
+                  TAB 4: PRIVACY & PREFERENCES
                   ======================================================== */}
               {activeTab === 'account' && (
                 <div className="space-y-4">
-                  {/* Registered Email & Account Status */}
-                  <div className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl space-y-3">
-                    <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-                      <label className="text-xs font-bold text-white tracking-wide uppercase font-jetbrains flex items-center gap-2">
-                        <Mail className="w-4 h-4 text-cyan-400" />
-                        <span>Registered Account Credentials</span>
-                      </label>
-                      <span className="text-[10px] font-mono text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
-                        Active
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="p-3 rounded-xl bg-black/40 border border-white/10">
-                        <span className="text-[10px] text-white/40 uppercase font-jetbrains block mb-0.5">
-                          Registered Email
-                        </span>
-                        <span className="text-xs font-mono text-white font-semibold truncate block">
-                          {user!.email}
-                        </span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-black/40 border border-white/10">
-                        <span className="text-[10px] text-white/40 uppercase font-jetbrains block mb-0.5">
-                          Student Account ID
-                        </span>
-                        <span className="text-xs font-mono text-cyan-300 truncate block">
-                          {user!.id}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Change Password Form */}
-                  <form
-                    onSubmit={handleUpdatePassword}
-                    className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl space-y-3"
-                  >
-                    <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-                      <label className="text-xs font-bold text-white tracking-wide uppercase font-jetbrains flex items-center gap-2">
-                        <KeyRound className="w-4 h-4 text-cyan-400" />
-                        <span>Change Password</span>
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                          New Password
-                        </label>
-                        <div className="relative">
-                          <input
-                            type={showNewPassword ? 'text' : 'password'}
-                            minLength={6}
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="Min 6 characters"
-                            className="w-full pl-3 pr-9 py-2 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-white/30 text-xs font-mono focus:outline-none focus:border-[#00f0ff]"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowNewPassword(!showNewPassword)}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white cursor-pointer"
-                          >
-                            {showNewPassword ? (
-                              <EyeOff className="w-3.5 h-3.5" />
-                            ) : (
-                              <Eye className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-white/80 mb-1">
-                          Confirm New Password
-                        </label>
-                        <input
-                          type={showNewPassword ? 'text' : 'password'}
-                          minLength={6}
-                          value={confirmPassword}
-                          onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="Repeat new password"
-                          className="w-full px-3 py-2 bg-white/[0.04] border border-white/10 rounded-xl text-white placeholder-white/30 text-xs font-mono focus:outline-none focus:border-[#00f0ff]"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex justify-end pt-1">
-                      <button
-                        type="submit"
-                        disabled={isSaving || !newPassword}
-                        className="py-2 px-4 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white font-semibold text-xs transition-all cursor-pointer"
-                      >
-                        Update Password
-                      </button>
-                    </div>
-                  </form>
-
                   {/* Privacy & Study Preferences */}
                   <div className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl space-y-3">
                     <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
@@ -2042,7 +1838,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
               )}
             </div>
           </div>
-        )}
       </div>
     </div>
   );

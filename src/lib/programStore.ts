@@ -216,9 +216,19 @@ export function getRealResourceCountsByProgram(): Record<string, number> {
     if (localNotesRaw) {
       const localNotes: StudyNote[] = JSON.parse(localNotesRaw);
       localNotes.forEach(note => {
-        if (note.programId) {
-          counts[note.programId] = (counts[note.programId] || 0) + 1;
+        const associatedIds = new Set<string>();
+        if (note.programId) associatedIds.add(note.programId);
+        if (Array.isArray(note.programIds)) {
+          note.programIds.forEach(pid => {
+            if (pid) associatedIds.add(pid);
+          });
         }
+        if (associatedIds.size === 0 && note.subject === 'Computer Science') {
+          associatedIds.add('bs-cs');
+        }
+        associatedIds.forEach(pid => {
+          counts[pid] = (counts[pid] || 0) + 1;
+        });
       });
     }
   } catch {}

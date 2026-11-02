@@ -208,96 +208,14 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
           </span>
         </button>
 
-        {/* Task 5: Upload Resource */}
-        <button
-          type="button"
-          onClick={() => setCurrentTab('upload')}
-          aria-label="Upload Notes"
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
-            currentTab === 'upload'
-              ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
-              : 'text-white/60 hover:text-white hover:bg-white/10'
-          }`}
-        >
-          <PlusCircle className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Upload Notes
-          </span>
-        </button>
-
         {/* Gutter separator */}
         <div className="w-5 h-px bg-white/10 my-0.5" />
 
-        {/* Quick Type Filters */}
+        {/* Student Profile & Settings */}
         <button
           type="button"
-          onClick={() => handleQuickTypeFilter('lecture_notes')}
-          aria-label="Lecture Notes Filter"
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
-            currentTab === 'browse' && filters?.materialType === 'lecture_notes'
-              ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
-              : 'text-white/60 hover:text-white hover:bg-white/10'
-          }`}
-        >
-          <FileText className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Lecture Notes
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleQuickTypeFilter('cheat_sheet')}
-          aria-label="Cheat Sheets Filter"
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
-            currentTab === 'browse' && filters?.materialType === 'cheat_sheet'
-              ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
-              : 'text-white/60 hover:text-white hover:bg-white/10'
-          }`}
-        >
-          <Zap className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Cheat Sheets
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleQuickTypeFilter('past_exam')}
-          aria-label="Past Exams Filter"
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 ${
-            currentTab === 'browse' && filters?.materialType === 'past_exam'
-              ? 'bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,240,255,0.4)] font-bold'
-              : 'text-white/60 hover:text-white hover:bg-white/10'
-          }`}
-        >
-          <Award className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Past Exams
-          </span>
-        </button>
-
-        {/* Gutter separator */}
-        <div className="w-5 h-px bg-white/10 my-0.5" />
-
-        {/* Flare Background Settings */}
-        <button
-          type="button"
-          onClick={() => onOpenAuthModal('settings')}
-          aria-label="Background Setting"
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 text-cyan-300 hover:text-white hover:bg-white/10"
-        >
-          <Sparkles className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            Background Flare
-          </span>
-        </button>
-
-        {/* Student Profile */}
-        <button
-          type="button"
-          onClick={() => onOpenAuthModal(user ? 'profile' : 'signin')}
-          aria-label="Student Profile"
+          onClick={() => onOpenAuthModal(user && !user.isGuest ? 'profile' : 'signin')}
+          aria-label="User Profile & Settings"
           className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer relative group active:scale-95 text-white/60 hover:text-white hover:bg-white/10"
         >
           {user?.avatarUrl ? (
@@ -310,7 +228,11 @@ export const VerticalTaskbar: React.FC<VerticalTaskbarProps> = ({
             <UserIcon className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
           )}
           <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-black/90 backdrop-blur-md text-white text-[11px] font-medium font-outfit rounded-lg border border-white/15 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
-            {user ? (user.username ? `@${user.username}` : user.name) : 'Student Sign In'}
+            {user && !user.isGuest
+              ? user.username
+                ? `@${user.username}`
+                : user.name
+              : 'Log In / Sign Up'}
           </span>
         </button>
       </div>

@@ -76,6 +76,12 @@ create policy "Allow students to update upvotes and download counts"
   using (true)
   with check (true);
 
+-- Policy D: Only the user who uploaded a study note can delete it
+create policy "Only uploader can delete their study notes"
+  on public.study_notes
+  for delete
+  using (auth.uid() = uploader_id);
+
 -- 4. Enable Supabase Realtime for instant synchronization
 alter publication supabase_realtime add table public.study_notes;
 

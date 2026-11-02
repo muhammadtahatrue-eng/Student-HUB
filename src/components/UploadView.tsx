@@ -1,18 +1,30 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Upload,
   FileText,
   CheckCircle2,
   AlertCircle,
   ArrowLeft,
-  Sparkles,
-  Database
+  HardDrive,
+  Layers
 } from 'lucide-react';
 import { StudyNote, MaterialType, SupabaseConfig, StudentUser, DegreeTier } from '../types/index.ts';
 import { SUBJECT_OPTIONS, MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
-import { getSupabaseInstance, addLocalNote, isValidHttpUrl } from '../lib/supabaseClient.ts';
+import { getSupabaseInstance } from '../lib/supabaseClient.ts';
 import { HecUniversitySelect } from './university/HecUniversitySelect.tsx';
 import { ProgramSelect } from './program/ProgramSelect.tsx';
+import { getProgramById, getAllPrograms } from '../lib/programStore.ts';
+import {
+  MAX_UPLOAD_SIZE_BYTES,
+  OVERSIZED_FILE_ERROR_MESSAGE,
+  prepareAndValidateUploadFile,
+  uploadSharedResource,
+  getStorageQuotaSummary,
+  formatBytesReadable,
+  getProgramCoursesList,
+  deriveCourseCategoryFromUploaderProgram,
+  generateInternalCourseCode
+} from '../lib/resourceService.ts';
 
 interface UploadViewProps {
   onBack: () => void;
@@ -23,6 +35,7 @@ interface UploadViewProps {
   initialUniversity?: string;
   initialCourseCode?: string;
   initialProgramId?: string;
+  initialSemesterNumber?: number;
 }
 
 export const UploadView: React.FC<UploadViewProps> = ({
@@ -30,20 +43,31 @@ export const UploadView: React.FC<UploadViewProps> = ({
   onSuccess,
   supabaseConfig,
   user,
-  onOpenSupabaseModal,
   initialUniversity,
   initialCourseCode,
   initialProgramId,
+  initialSemesterNumber
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [originalFileSize, setOriginalFileSize] = useState<number>(0);
+  const [wasCompressed, setWasCompressed] = useState<boolean>(false);
+  const [isCompressingFile, setIsCompressingFile] = useState<boolean>(false);
   const [dragActive, setDragActive] = useState(false);
+
+  const initialTargetProgramId = initialProgramId || user?.programId || 'bs-ee';
+  const initialMatchedProgram = getProgramById(initialTargetProgramId);
 
   // Form Fields
   const [title, setTitle] = useState('');
   const [courseCode, setCourseCode] = useState(initialCourseCode || '');
   const [courseName, setCourseName] = useState('');
-  const [subject, setSubject] = useState('Computer Science');
+  const [selectedCourseId, setSelectedCourseId] = useState<string>('');
+  const [subject, setSubject] = useState(() =>
+    deriveCourseCategoryFromUploaderProgram(
+      initialMatchedProgram || user?.program || initialTargetProgramId
+    )
+  );
   const [materialType, setMaterialType] = useState<MaterialType>('lecture_notes');
   const [academicYear, setAcademicYear] = useState(2025);
   const [semester, setSemester] = useState('Fall Semester');
@@ -57,22 +81,33 @@ export const UploadView: React.FC<UploadViewProps> = ({
   const [uploaderUniversityId, setUploaderUniversityId] = useState<string | undefined>(
     user?.universityId || 'nust'
   );
-  const [uploaderProgramId, setUploaderProgramId] = useState<string>(
-    initialProgramId || user?.programId || 'bs-cs'
-  );
+  const [uploaderProgramId, setUploaderProgramId] = useState<string>(initialTargetProgramId);
+  const [additionalProgramIds, setAdditionalProgramIds] = useState<string[]>([]);
   const [uploaderProgramName, setUploaderProgramName] = useState<string>(
-    user?.program || 'BS Computer Science'
+    initialMatchedProgram?.name || user?.program || 'BS Electrical Engineering'
   );
   const [uploaderDegreeTier, setUploaderDegreeTier] = useState<DegreeTier>(
-    user?.degreeTier || 'Undergraduate'
+    initialMatchedProgram?.degreeTier || user?.degreeTier || 'Undergraduate'
   );
   const [semesterNumber, setSemesterNumber] = useState<number>(() => {
+    if (typeof initialSemesterNumber === 'number' && initialSemesterNumber >= 1) {
+      return initialSemesterNumber;
+    }
     if (typeof user?.currentSemester === 'number') return user.currentSemester;
     const parsed = parseInt(String(user?.currentSemester || '').replace(/\D/g, ''), 10);
-    return isNaN(parsed) ? 3 : parsed;
+    return isNaN(parsed) ? 1 : parsed;
   });
 
-  // Sync profile when user signs in or changes
+  // Available curriculum courses for the selected program
+  const programCourses = useMemo(
+    () => getProgramCoursesList(uploaderProgramId),
+    [uploaderProgramId]
+  );
+
+  const allProgramsList = useMemo(() => getAllPrograms(), []);
+  const storageQuota = useMemo(() => getStorageQuotaSummary(), [file]);
+
+  // Sync profile & course category automatically in accordance with the uploader's course/program
   React.useEffect(() => {
     if (user?.name) {
       setUploaderName(user.name);
@@ -84,26 +119,61 @@ export const UploadView: React.FC<UploadViewProps> = ({
       setUploaderUniversityId(user.universityId);
     }
     if (initialCourseCode) {
-      setCourseCode(initialCourseCode);
+      const matchedCourse = programCourses.find(
+        c =>
+          c.code.replace(/[\s-_]+/g, '').toUpperCase() ===
+            initialCourseCode.replace(/[\s-_]+/g, '').toUpperCase() ||
+          c.name.trim().toLowerCase() === initialCourseCode.trim().toLowerCase()
+      );
+      if (matchedCourse) {
+        setSelectedCourseId(matchedCourse.id);
+        setCourseCode(matchedCourse.code);
+        setCourseName(matchedCourse.name);
+        setSemesterNumber(matchedCourse.semesterNumber);
+        if (matchedCourse.instructor && !professor) {
+          setProfessor(matchedCourse.instructor);
+        }
+      } else {
+        setCourseName(initialCourseCode);
+      }
     }
     if (initialProgramId) {
       setUploaderProgramId(initialProgramId);
-    } else if (user?.programId) {
-      setUploaderProgramId(user.programId);
+      const prog = getProgramById(initialProgramId);
+      if (prog) {
+        setUploaderProgramName(prog.name);
+        setUploaderDegreeTier(prog.degreeTier);
+        setSubject(deriveCourseCategoryFromUploaderProgram(prog));
+      }
+    } else if (user?.programId || user?.program) {
+      if (user.programId) setUploaderProgramId(user.programId);
       if (user.program) setUploaderProgramName(user.program);
       if (user.degreeTier) setUploaderDegreeTier(user.degreeTier);
-      if (user.currentSemester) {
-        const s = typeof user.currentSemester === 'number' ? user.currentSemester : parseInt(String(user.currentSemester).replace(/\D/g, ''), 10);
+      const prog = user.programId ? getProgramById(user.programId) : undefined;
+      setSubject(deriveCourseCategoryFromUploaderProgram(prog || user.program));
+      if (user.currentSemester && !initialSemesterNumber) {
+        const s =
+          typeof user.currentSemester === 'number'
+            ? user.currentSemester
+            : parseInt(String(user.currentSemester).replace(/\D/g, ''), 10);
         if (!isNaN(s)) setSemesterNumber(s);
       }
     }
-  }, [user, initialUniversity, initialCourseCode, initialProgramId]);
+    if (typeof initialSemesterNumber === 'number' && initialSemesterNumber >= 1) {
+      setSemesterNumber(initialSemesterNumber);
+    }
+  }, [user, initialUniversity, initialCourseCode, initialProgramId, initialSemesterNumber, programCourses]);
 
   // State
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successNote, setSuccessNote] = useState<StudyNote | null>(null);
+  const [lastUploadMeta, setLastUploadMeta] = useState<{
+    deduplicated: boolean;
+    wasCompressed: boolean;
+    savedBytes: number;
+  } | null>(null);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -115,26 +185,48 @@ export const UploadView: React.FC<UploadViewProps> = ({
     }
   };
 
-  const validateAndSetFile = (selectedFile: File) => {
-    if (selectedFile.type !== 'application/pdf' && !selectedFile.name.toLowerCase().endsWith('.pdf')) {
-      setErrorMessage('Please select a valid PDF document (.pdf).');
+  const validateAndSetFile = async (selectedFile: File) => {
+    const lowerName = selectedFile.name.toLowerCase();
+    const isSupported =
+      selectedFile.type === 'application/pdf' ||
+      lowerName.endsWith('.pdf') ||
+      selectedFile.type.startsWith('image/') ||
+      /\.(png|jpe?g|webp|docx|pptx|xlsx|txt|md)$/i.test(lowerName);
+
+    if (!isSupported) {
+      setErrorMessage('Please select a valid PDF document (.pdf), image, or study file.');
       return;
     }
 
-    if (selectedFile.size > 25 * 1024 * 1024) {
-      setErrorMessage('File size exceeds the 25MB maximum limit.');
-      return;
-    }
-
+    setIsCompressingFile(true);
     setErrorMessage(null);
-    setFile(selectedFile);
 
-    if (!title) {
-      const cleanTitle = selectedFile.name
-        .replace(/\.pdf$/i, '')
-        .replace(/[-_]+/g, ' ')
-        .trim();
-      setTitle(cleanTitle);
+    try {
+      const prep = await prepareAndValidateUploadFile(selectedFile);
+      if (!prep.isValid || prep.compressedSizeBytes > MAX_UPLOAD_SIZE_BYTES) {
+        setFile(null);
+        setOriginalFileSize(selectedFile.size);
+        setWasCompressed(false);
+        setErrorMessage(prep.error || OVERSIZED_FILE_ERROR_MESSAGE);
+        return;
+      }
+
+      setOriginalFileSize(prep.originalSizeBytes);
+      setWasCompressed(prep.wasCompressed);
+      setFile(prep.file);
+
+      if (!title) {
+        const cleanTitle = selectedFile.name
+          .replace(/\.[^.]+$/i, '')
+          .replace(/[-_]+/g, ' ')
+          .trim();
+        setTitle(cleanTitle);
+      }
+    } catch (err: any) {
+      setFile(null);
+      setErrorMessage(err?.message || OVERSIZED_FILE_ERROR_MESSAGE);
+    } finally {
+      setIsCompressingFile(false);
     }
   };
 
@@ -153,10 +245,39 @@ export const UploadView: React.FC<UploadViewProps> = ({
     }
   };
 
+  const handleSelectCurriculumCourse = (courseId: string) => {
+    setSelectedCourseId(courseId);
+    if (!courseId) return;
+    const found = programCourses.find(c => c.id === courseId);
+    if (found) {
+      setCourseCode(found.code);
+      setCourseName(found.name);
+      setSemesterNumber(found.semesterNumber);
+      if (found.instructor && !professor) {
+        setProfessor(found.instructor);
+      }
+    }
+  };
+
+  const toggleAdditionalProgram = (progId: string) => {
+    if (progId === uploaderProgramId) return;
+    setAdditionalProgramIds(prev =>
+      prev.includes(progId) ? prev.filter(id => id !== progId) : [...prev, progId]
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !courseCode.trim()) {
-      setErrorMessage('Title and Course Code are required.');
+    if (isUploading || isCompressingFile) return;
+
+    const effectiveCourseName = courseName.trim() || uploaderProgramName || subject;
+    if (!title.trim() || !effectiveCourseName) {
+      setErrorMessage('Document Title and Course are required.');
+      return;
+    }
+
+    if (file && file.size > MAX_UPLOAD_SIZE_BYTES) {
+      setErrorMessage(OVERSIZED_FILE_ERROR_MESSAGE);
       return;
     }
 
@@ -171,124 +292,50 @@ export const UploadView: React.FC<UploadViewProps> = ({
         .filter(Boolean);
 
       const parsedYear = Number(academicYear) || 2025;
-      const fileName = file ? file.name : `${courseCode.replace(/\s+/g, '_')}_Study_Notes.pdf`;
-      const fileSizeBytes = file ? file.size : 2415000;
-      const calculatedPages = file ? Math.max(4, Math.round(file.size / (180 * 1024))) : 16;
-
-      let fileUrl = 'https://example.com/notes/' + encodeURIComponent(fileName);
-
-      // Safe Supabase check
       const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase && supabaseConfig.isConnected && isValidHttpUrl(supabaseConfig.url) && file) {
-        setUploadProgress(40);
-        const cleanFileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-        const filePath = `uploads/${cleanFileName}`;
+      const effectiveSubject =
+        subject ||
+        deriveCourseCategoryFromUploaderProgram(uploaderProgramId || uploaderProgramName, effectiveCourseName);
+      const internalCode =
+        courseCode.trim() ||
+        generateInternalCourseCode(effectiveCourseName, effectiveSubject, uploaderProgramName);
 
-        const { error: storageError } = await supabase.storage
-          .from('study-materials')
-          .upload(filePath, file, {
-            contentType: 'application/pdf',
-            upsert: false
-          });
-
-        if (storageError) {
-          console.warn('Storage upload error, continuing with fallback:', storageError.message);
-        } else {
-          const { data: publicUrlData } = supabase.storage
-            .from('study-materials')
-            .getPublicUrl(filePath);
-          if (publicUrlData?.publicUrl) {
-            fileUrl = publicUrlData.publicUrl;
-          }
-        }
-
-        setUploadProgress(70);
-
-        const { error: dbError } = await supabase
-          .from('study_notes')
-          .insert([
-            {
-              title: title.trim(),
-              description: description.trim(),
-              course_code: courseCode.trim().toUpperCase(),
-              course_name: courseName.trim() || courseCode.trim().toUpperCase(),
-              subject,
-              material_type: materialType,
-              academic_year: parsedYear,
-              semester,
-              professor: professor.trim() || 'Instructor',
-              file_url: fileUrl,
-              file_name: fileName,
-              file_size_bytes: fileSizeBytes,
-              page_count: calculatedPages,
-              uploader_name: uploaderName.trim() || 'Anonymous Student',
-              uploader_university: uploaderUniversity.trim() || 'Open Campus',
-              downloads_count: 0,
-              upvotes_count: 0,
-              tags: tags.length > 0 ? tags : [subject, courseCode]
-            }
-          ]);
-
-        if (dbError) {
-          throw new Error(`Supabase Database Error: ${dbError.message}`);
-        }
-      } else {
-        setUploadProgress(60);
-        await new Promise(r => setTimeout(r, 400));
-      }
-
-      setUploadProgress(100);
-
-      const newNote: StudyNote = {
-        id: `sn-${Date.now()}`,
+      const result = await uploadSharedResource({
+        file,
         title: title.trim(),
-        description: description.trim() || `Comprehensive ${materialType.replace(/_/g, ' ')} for ${courseCode}.`,
-        courseCode: courseCode.trim().toUpperCase(),
-        courseName: courseName.trim() || courseCode.trim().toUpperCase(),
-        subject,
+        description: description.trim(),
+        courseCode: internalCode,
+        courseName: effectiveCourseName,
+        courseId: selectedCourseId || undefined,
+        subject: effectiveSubject,
         materialType,
         academicYear: parsedYear,
         semester,
+        semesterNumber,
         professor: professor.trim() || 'Course Instructor',
-        fileUrl,
-        fileName,
-        fileSizeBytes,
-        pageCount: calculatedPages,
-        uploaderName: uploaderName.trim() || 'Anonymous Student',
-        uploaderUniversity: uploaderUniversity.trim() || 'National University of Sciences & Technology (NUST)',
+        tags,
+        uploaderId: user?.id,
+        uploaderName: uploaderName.trim() || user?.name || 'Anonymous Student',
+        uploaderUniversity:
+          uploaderUniversity.trim() || 'National University of Sciences & Technology (NUST)',
         universityId: uploaderUniversityId,
         programId: uploaderProgramId,
+        additionalProgramIds,
         programName: uploaderProgramName,
         degreeTier: uploaderDegreeTier,
-        semesterNumber: semesterNumber,
-        downloadsCount: 0,
-        upvotesCount: 1,
-        hasUpvoted: true,
-        createdAt: new Date().toISOString(),
-        tags: tags.length > 0 ? tags : [subject, courseCode],
-        pages: [
-          {
-            pageNumber: 1,
-            sectionTitle: `${title.trim()} — Section 1 Overview`,
-            content: description.trim() || 'Detailed study guide, high-yield definitions, and key exam concepts verified by student peer review.',
-            keyFormulasOrPoints: [
-              `Course: ${courseCode.trim().toUpperCase()} (${subject})`,
-              `Instructor: ${professor.trim() || 'Faculty Department'}`,
-              `Academic Year: ${parsedYear} ${semester}`
-            ]
-          },
-          {
-            pageNumber: 2,
-            sectionTitle: `${courseCode.trim().toUpperCase()} — Core Formulations & Derivations`,
-            content: 'In-depth notes, worked solutions, and practice exercises for semester reviews.\n\nAll theorems and propositions aligned with official syllabus guidelines.',
-            keyFormulasOrPoints: tags.slice(0, 4)
-          }
-        ]
-      };
+        supabaseClient: supabase,
+        supabaseUrl: supabaseConfig.url,
+        isConnected: supabaseConfig.isConnected,
+        onProgress: pct => setUploadProgress(pct)
+      });
 
-      addLocalNote(newNote);
-      setSuccessNote(newNote);
-      onSuccess(newNote);
+      setLastUploadMeta({
+        deduplicated: result.deduplicated,
+        wasCompressed: result.wasCompressed || wasCompressed,
+        savedBytes: Math.max(0, (originalFileSize || result.originalSizeBytes) - result.finalSizeBytes)
+      });
+      setSuccessNote(result.note);
+      onSuccess(result.note);
     } catch (err: any) {
       setErrorMessage(err?.message || 'Failed to process note upload.');
     } finally {
@@ -307,19 +354,27 @@ export const UploadView: React.FC<UploadViewProps> = ({
           <ArrowLeft className="w-4 h-4" />
           Back to Overview
         </button>
+
+        {/* Storage Quota Indicator (1 GB Total Physical Storage Budget) */}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-[11px] font-jetbrains text-white/70">
+          <HardDrive className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+          <span>
+            Storage: <strong className="text-white">{formatBytesReadable(storageQuota.usedBytes)}</strong> / 1.00 GB ({storageQuota.usagePercent}%)
+          </span>
+        </div>
       </div>
 
       {/* Main Form Container */}
       <div className="glass-card p-6 sm:p-10 shadow-2xl">
         <div className="mb-6">
           <span className="text-xs uppercase tracking-widest text-white/40 font-jetbrains">
-            Open Knowledge Exchange
+            Unified Study Library &amp; My Program Vault
           </span>
           <h1 className="text-3xl font-bold text-white tracking-tight mt-1 neon-text">
             Upload Study Material
           </h1>
           <p className="text-xs text-white/60 mt-1">
-            Contribute PDF lecture notes, exam papers, or cheat sheets. All uploads are free and accessible to students worldwide.
+            Resources uploaded here are automatically shared across both <strong>Study Library</strong> and your selected <strong>My Program</strong> cohort without duplicating files.
           </p>
         </div>
 
@@ -329,11 +384,18 @@ export const UploadView: React.FC<UploadViewProps> = ({
             <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
             <div className="flex-1 text-xs">
               <p className="font-bold text-emerald-200 mb-1">
-                Study Material Published Successfully!
+                Study Material Published to Study Library &amp; {successNote.programName || 'My Program'}!
               </p>
-              <p className="text-emerald-300/80 mb-3">
-                "{successNote.title}" is now available in the study library and document reader.
+              <p className="text-emerald-300/80 mb-2">
+                "{successNote.title}" ({formatBytesReadable(successNote.fileSizeBytes)}) is now live across both sections via a single shared record.
               </p>
+              {lastUploadMeta && (lastUploadMeta.deduplicated || lastUploadMeta.wasCompressed) && (
+                <p className="text-[11px] text-cyan-300 font-jetbrains mb-3">
+                  {lastUploadMeta.deduplicated
+                    ? '✓ Identical file content detected (SHA-256) — reused existing stored file with 0 KB additional storage.'
+                    : `✓ Safely compressed before upload (saved ${formatBytesReadable(lastUploadMeta.savedBytes)}).`}
+                </p>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   onClick={onBack}
@@ -345,6 +407,8 @@ export const UploadView: React.FC<UploadViewProps> = ({
                   onClick={() => {
                     setSuccessNote(null);
                     setFile(null);
+                    setOriginalFileSize(0);
+                    setWasCompressed(false);
                     setTitle('');
                     setDescription('');
                   }}
@@ -358,18 +422,26 @@ export const UploadView: React.FC<UploadViewProps> = ({
         )}
 
         {errorMessage && (
-          <div className="mb-6 p-3.5 bg-red-950/60 border border-red-500/40 text-red-200 text-xs rounded-xl flex items-center gap-2">
+          <div
+            role="alert"
+            className="mb-6 p-3.5 bg-red-950/60 border border-red-500/40 text-red-200 text-xs rounded-xl flex items-center gap-2"
+          >
             <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
             <span>{errorMessage}</span>
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* PDF Dropzone */}
+          {/* File Dropzone with 5 MB Maximum Upload Limit */}
           <div>
-            <label className="block text-xs font-bold uppercase tracking-widest text-white/70 mb-2 font-jetbrains">
-              PDF Document File *
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-bold uppercase tracking-widest text-white/70 font-jetbrains">
+                Study Document File (PDF / Image) *
+              </label>
+              <span className="text-[11px] font-jetbrains text-cyan-300/90">
+                Max file size: 5 MB · Safe auto-compression enabled
+              </span>
+            </div>
             <div
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
@@ -387,13 +459,17 @@ export const UploadView: React.FC<UploadViewProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="application/pdf"
+                accept="application/pdf,image/png,image/jpeg,image/webp,.pdf,.png,.jpg,.jpeg,.webp"
                 onChange={handleFileChange}
                 className="hidden"
               />
 
               <div className="flex flex-col items-center justify-center">
-                {file ? (
+                {isCompressingFile ? (
+                  <span className="text-xs font-jetbrains text-cyan-300 animate-pulse">
+                    Validating &amp; optimizing file for 5 MB upload limit...
+                  </span>
+                ) : file ? (
                   <>
                     <div className="p-3 bg-white/10 text-white rounded-full mb-3">
                       <FileText className="w-6 h-6" />
@@ -401,11 +477,16 @@ export const UploadView: React.FC<UploadViewProps> = ({
                     <span className="text-sm font-bold text-white mb-1">
                       {file.name}
                     </span>
-                    <span className="text-xs text-white/60 font-mono tabular-nums">
-                      {(file.size / (1024 * 1024)).toFixed(2)} MB · Ready to publish
+                    <span className="text-xs text-emerald-300 font-mono tabular-nums">
+                      Selected size: {(file.size / (1024 * 1024)).toFixed(2)} MB ({formatBytesReadable(file.size)}) / 5.00 MB limit · Ready to publish
                     </span>
+                    {wasCompressed && originalFileSize > file.size && (
+                      <span className="text-[11px] text-cyan-300 font-jetbrains mt-1">
+                        Optimized from {formatBytesReadable(originalFileSize)} &rarr; {formatBytesReadable(file.size)}
+                      </span>
+                    )}
                     <span className="text-[11px] text-white/40 mt-2 underline">
-                      Click to choose a different PDF
+                      Click to choose a different file
                     </span>
                   </>
                 ) : (
@@ -414,10 +495,10 @@ export const UploadView: React.FC<UploadViewProps> = ({
                       <Upload className="w-6 h-6" />
                     </div>
                     <span className="text-sm font-medium text-white mb-1">
-                      Drag and drop your PDF here, or click to browse
+                      Drag and drop your PDF or study file here, or click to browse
                     </span>
                     <p className="text-xs text-white/40 font-jetbrains">
-                      Standard PDF documents up to 25 MB
+                      Maximum file size: 5 MB (files are safely compressed &amp; deduplicated via SHA-256)
                     </p>
                   </>
                 )}
@@ -425,56 +506,110 @@ export const UploadView: React.FC<UploadViewProps> = ({
             </div>
           </div>
 
-          {/* Course Identification */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                Course Code *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="e.g. CS 106B, MATH 21A, BIO 101"
-                value={courseCode}
-                onChange={(e) => setCourseCode(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40 font-jetbrains uppercase"
-              />
+          {/* Academic Program, Semester & Course Association (Shared between My Program & Study Library) */}
+          <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-cyan-300 font-jetbrains flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" />
+                My Program &amp; Study Library Association
+              </span>
+              <span className="text-[11px] text-white/45">
+                Appears in both sections automatically
+              </span>
             </div>
-            <div>
-              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                Course Name
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Programming Abstractions"
-                value={courseName}
-                onChange={(e) => setCourseName(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40"
-              />
-            </div>
-          </div>
 
-          {/* Document Title */}
-          <div>
-            <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-              Document Title *
-            </label>
-            <input
-              type="text"
+            <ProgramSelect
+              label="Uploader's Enrolled Degree Course / Program"
+              selectedProgramId={uploaderProgramId}
+              onSelectProgram={(program) => {
+                setUploaderProgramId(program.id);
+                setUploaderProgramName(program.name);
+                setUploaderDegreeTier(program.degreeTier);
+                setSelectedCourseId('');
+                setSubject(deriveCourseCategoryFromUploaderProgram(program));
+              }}
               required
-              placeholder="e.g. Red-Black Trees, Priority Queues & Dijkstra Complete Notes"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40"
             />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
+                  Program Semester Level *
+                </label>
+                <select
+                  value={semesterNumber}
+                  onChange={(e) => setSemesterNumber(Number(e.target.value))}
+                  className="w-full px-3.5 py-2.5 text-sm bg-stone-900 border border-white/15 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-white/40 cursor-pointer"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
+                    <option key={s} value={s}>
+                      Semester {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
+                  Program Curriculum Course (Optional Quick-Fill)
+                </label>
+                <select
+                  value={selectedCourseId}
+                  onChange={(e) => handleSelectCurriculumCourse(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm bg-stone-900 border border-white/15 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-white/40 cursor-pointer"
+                >
+                  <option value="">Custom / Any Course in {uploaderProgramName}</option>
+                  {programCourses.map(c => (
+                    <option key={c.id} value={c.id}>
+                      Sem {c.semesterNumber} · {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Optional Multi-Program Sharing (without duplicating the resource record or file) */}
+            <div>
+              <label className="block text-[11px] font-semibold text-white/55 mb-1.5 font-jetbrains">
+                Also Share With Relevant Degree Programs (Optional — shares same resource without duplicating)
+              </label>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {allProgramsList
+                  .filter(p => p.id !== uploaderProgramId)
+                  .slice(0, 6)
+                  .map(prog => {
+                    const isSelected = additionalProgramIds.includes(prog.id);
+                    return (
+                      <button
+                        key={prog.id}
+                        type="button"
+                        onClick={() => toggleAdditionalProgram(prog.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-cyan-400/20 text-cyan-300 border-cyan-400/50 font-bold'
+                            : 'bg-white/5 text-white/50 border-white/10 hover:text-white'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}
+                        {prog.name}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
           </div>
 
-          {/* Subject & Material Type */}
+          {/* Course Categorization (Aligned with Uploader's Course — No Course Codes Required) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                Academic Subject
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-bold text-white/70 font-jetbrains">
+                  Course Category (Uploader's Course) *
+                </label>
+                <span className="text-[10px] font-jetbrains text-cyan-300/90">
+                  Synced with {uploaderProgramName}
+                </span>
+              </div>
               <select
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
@@ -485,10 +620,40 @@ export const UploadView: React.FC<UploadViewProps> = ({
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
+                Course / Subject Name *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder={`e.g. ${subject === 'Engineering' ? 'Engineering Thermodynamics, Circuit Analysis' : 'Data Structures & Algorithms, Macroeconomics'}`}
+                value={courseName}
+                onChange={(e) => setCourseName(e.target.value)}
+                className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40"
+              />
+            </div>
+          </div>
+
+          {/* Document Title & Material Type */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
+                Document Title *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Complete Lecture Notes, Worked Derivations & Past Exam Solutions"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full px-3.5 py-2.5 text-sm bg-white/5 border border-white/15 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-white/40"
+              />
+            </div>
 
             <div>
               <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                Classification
+                Resource Type / Classification
               </label>
               <select
                 value={materialType}
@@ -555,7 +720,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           {/* Description */}
           <div>
             <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-              Description & Chapters Covered
+              Description &amp; Chapters Covered
             </label>
             <textarea
               rows={3}
@@ -580,7 +745,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             />
           </div>
 
-          {/* Contributor Profile */}
+          {/* Contributor Profile (University is optional metadata and never restricts program visibility) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-white/10">
             <div>
               <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
@@ -596,50 +761,14 @@ export const UploadView: React.FC<UploadViewProps> = ({
             </div>
             <div>
               <HecUniversitySelect
-                label="University / Institution"
+                label="University / Institution (Optional Metadata)"
                 value={uploaderUniversity}
                 onChange={(uniName, uniId) => {
                   setUploaderUniversity(uniName);
                   setUploaderUniversityId(uniId);
                 }}
-                placeholder="Select or search HEC university..."
-                required
+                placeholder="Select or search institution..."
               />
-            </div>
-          </div>
-
-          {/* Academic Program & Degree Tier Mapping */}
-          <div className="pt-2 border-t border-white/10 space-y-3">
-            <ProgramSelect
-              label="Academic Program & Degree Level"
-              selectedProgramId={uploaderProgramId}
-              onSelectProgram={(program) => {
-                setUploaderProgramId(program.id);
-                setUploaderProgramName(program.name);
-                setUploaderDegreeTier(program.degreeTier);
-              }}
-              required
-            />
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-white/70 mb-1.5 font-jetbrains">
-                  Program Semester Level
-                </label>
-                <select
-                  value={semesterNumber}
-                  onChange={(e) => setSemesterNumber(Number(e.target.value))}
-                  className="w-full px-3.5 py-2.5 text-sm bg-stone-900 border border-white/15 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-white/40 cursor-pointer"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
-                    <option key={s} value={s}>
-                      Semester {s} Course Material
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center text-xs text-white/50 pt-6">
-                <span>Notes uploaded here appear directly in the program vault, course syllabi, and study library.</span>
-              </div>
             </div>
           </div>
 
@@ -647,7 +776,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
           {isUploading && (
             <div className="space-y-1.5 pt-2 font-jetbrains">
               <div className="flex items-center justify-between text-xs text-white/70">
-                <span>Publishing material...</span>
+                <span>Publishing shared resource...</span>
                 <span className="tabular-nums font-mono">{uploadProgress}%</span>
               </div>
               <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
@@ -671,7 +800,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isUploading}
+              disabled={isUploading || isCompressingFile}
               className="px-8 py-3 text-xs font-black uppercase tracking-widest text-black bg-white hover:bg-white/90 disabled:opacity-50 rounded-full transition-all cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center gap-2"
             >
               <Upload className="w-4 h-4" />

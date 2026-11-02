@@ -134,9 +134,26 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* Right Side: Account Actions */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {user && !user.isGuest ? (
+          {/* Right Side: Auth Actions (when logged out) or Synchronized Sliding Profile Pill (when logged in) */}
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            {!user || user.isGuest ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onOpenAuthModal('signin')}
+                  className="text-xs font-medium text-white/75 hover:text-white px-2.5 sm:px-3.5 py-1.5 rounded-full hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  Log In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenAuthModal('signup')}
+                  className="bg-white text-black text-xs font-semibold px-3.5 sm:px-4 py-1.5 sm:py-2 rounded-full hover:bg-white/90 transition-all shadow-[0_0_20px_rgba(255,255,255,0.2)] cursor-pointer"
+                >
+                  Sign Up
+                </button>
+              </>
+            ) : (
               <div
                 ref={profileContainerRef}
                 className="relative flex items-center justify-end"
@@ -152,7 +169,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   }}
                   aria-haspopup="menu"
                   aria-expanded={isMenuOpen}
-                  aria-label={`User profile for ${displayHandle}. Click to open Settings and Logout options.`}
+                  aria-label={`User profile for ${displayHandle}. Click to open account options.`}
                   className={`group/profile relative h-9 rounded-full flex items-center overflow-hidden cursor-pointer select-none transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
                     isExpanded
                       ? 'bg-[#0d1017]/95 border border-cyan-400/60 ring-1 ring-cyan-400/35 shadow-[0_0_20px_rgba(0,240,255,0.35)] pl-0.5 pr-3'
@@ -165,15 +182,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                       isExpanded ? 'ring-1 ring-cyan-400/50 scale-95' : 'scale-100'
                     }`}
                   >
-                    {user.avatarUrl ? (
+                    {user?.avatarUrl ? (
                       <img
                         src={user.avatarUrl}
-                        alt={user.name}
+                        alt={user.name || 'Student'}
                         className="w-full h-full object-cover rounded-full"
                       />
                     ) : (
                       <div className="w-full h-full rounded-full bg-gradient-to-tr from-cyan-500/25 to-blue-500/25 text-cyan-300 font-bold flex items-center justify-center text-xs">
-                        {user.name.charAt(0).toUpperCase()}
+                        {(user?.name || 'S').charAt(0).toUpperCase()}
                       </div>
                     )}
                   </div>
@@ -194,7 +211,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
                 </button>
 
-                {/* Floating Option Window (Settings & Logout) */}
+                {/* Floating Option Window (My Profile, Settings & Logout) */}
                 {isMenuOpen && (
                   <div
                     className="absolute right-0 top-full mt-2.5 w-48 rounded-2xl bg-[#0c0e14]/95 border border-white/15 shadow-[0_12px_40px_rgba(0,0,0,0.9)] backdrop-blur-2xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200"
@@ -204,21 +221,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                     {/* User Identity Header inside Option Window */}
                     <div className="px-3 py-2 border-b border-white/10 mb-1 flex items-center gap-2.5">
                       <div className="w-6 h-6 rounded-full overflow-hidden shrink-0 border border-cyan-400/40 flex items-center justify-center bg-cyan-500/10">
-                        {user.avatarUrl ? (
+                        {user?.avatarUrl ? (
                           <img
                             src={user.avatarUrl}
-                            alt={user.name}
+                            alt={user.name || 'Student'}
                             className="w-full h-full object-cover"
                           />
                         ) : (
                           <span className="text-[10px] font-bold text-cyan-300">
-                            {user.name.charAt(0).toUpperCase()}
+                            {(user?.name || 'S').charAt(0).toUpperCase()}
                           </span>
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] font-semibold text-white truncate">
-                          {user.name}
+                          {user?.name || 'Student'}
                         </p>
                         <p className="text-[10px] font-mono text-cyan-300/80 truncate">
                           {displayHandle}
@@ -226,7 +243,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
                     </div>
 
-                    {/* Option 1: Settings */}
+                    {/* Option 1: My Profile */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsMenuOpen(false);
+                        setIsHovered(false);
+                        onOpenAuthModal('profile');
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-white/85 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer text-left group"
+                      role="menuitem"
+                    >
+                      <UserIcon className="w-3.5 h-3.5 text-white/60 group-hover:text-cyan-400 transition-colors shrink-0" />
+                      <span className="font-medium">My Profile</span>
+                    </button>
+
+                    {/* Option 2: Settings */}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -242,42 +275,25 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <span className="font-medium">Settings</span>
                     </button>
 
-                    {/* Option 2: Logout */}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsMenuOpen(false);
-                        setIsHovered(false);
-                        if (onSignOut) {
+                    {/* Option 3: Logout */}
+                    {onSignOut && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsMenuOpen(false);
+                          setIsHovered(false);
                           onSignOut();
-                        } else {
-                          onOpenAuthModal('signin');
-                        }
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-300/85 hover:text-rose-200 hover:bg-rose-500/10 rounded-xl transition-all cursor-pointer text-left group"
-                      role="menuitem"
-                    >
-                      <LogOut className="w-3.5 h-3.5 text-rose-400/80 group-hover:text-rose-400 transition-colors shrink-0" />
-                      <span className="font-medium">Logout</span>
-                    </button>
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-300/85 hover:text-rose-200 hover:bg-rose-500/10 rounded-xl transition-all cursor-pointer text-left group"
+                        role="menuitem"
+                      >
+                        <LogOut className="w-3.5 h-3.5 text-rose-400/80 group-hover:text-rose-400 transition-colors shrink-0" />
+                        <span className="font-medium">Logout</span>
+                      </button>
+                    )}
                   </div>
                 )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <button
-                  onClick={() => onOpenAuthModal('signin')}
-                  className="text-xs sm:text-sm font-medium text-white/70 hover:text-white transition-colors cursor-pointer px-2.5 sm:px-3 py-1.5 rounded-full hover:bg-white/10"
-                >
-                  Log In
-                </button>
-                <button
-                  onClick={() => onOpenAuthModal('signup')}
-                  className="text-xs sm:text-sm font-bold text-black bg-[#00f0ff] hover:bg-[#00f0ff]/90 transition-all cursor-pointer px-3 sm:px-4 py-1.5 rounded-full shadow-[0_0_15px_rgba(0,240,255,0.25)] hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] active:scale-95"
-                >
-                  Sign Up
-                </button>
               </div>
             )}
           </div>
@@ -350,22 +366,20 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         <button
-          onClick={() => onOpenAuthModal(user && !user.isGuest ? 'settings' : 'signup')}
-          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            user && !user.isGuest ? 'text-cyan-300 font-semibold' : 'text-white/60 hover:text-white'
-          }`}
+          onClick={() => onOpenAuthModal('settings')}
+          className="flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 text-cyan-300 font-semibold"
         >
-          {user && !user.isGuest && user.avatarUrl ? (
+          {user?.avatarUrl ? (
             <img
               src={user.avatarUrl}
-              alt={user.name}
+              alt={user.name || 'Student'}
               className="w-4 h-4 rounded-full object-cover mb-0.5 border border-cyan-400 shrink-0"
             />
           ) : (
-            <UserIcon className="w-4 h-4 mb-0.5" />
+            <Settings className="w-4 h-4 mb-0.5" />
           )}
           <span className="text-[10px] truncate max-w-[60px] tracking-tight">
-            {user && !user.isGuest ? 'Settings' : 'Account'}
+            Settings
           </span>
         </button>
       </nav>

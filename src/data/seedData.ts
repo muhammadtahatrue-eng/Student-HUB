@@ -5,13 +5,15 @@ export const INITIAL_STUDY_NOTES: StudyNote[] = [];
 
 export const SUBJECT_OPTIONS = [
   'All Subjects',
+  'Engineering',
   'Computer Science',
+  'Data Science & AI',
+  'Business & Management',
+  'Economics',
   'Mathematics',
-  'Biology',
   'Physics',
   'Chemistry',
-  'Economics',
-  'Engineering',
+  'Biology',
   'Psychology',
   'History',
   'Philosophy'

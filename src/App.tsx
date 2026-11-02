@@ -30,8 +30,11 @@ import { PDFPreviewModal } from './components/PDFPreviewModal.tsx';
 import { UploadView } from './components/UploadView.tsx';
 import { SupabaseModal } from './components/SupabaseModal.tsx';
 import { CodeExportModal } from './components/CodeExportModal.tsx';
-import { AuthModal } from './components/AuthModal.tsx';
+import { AuthModal, AuthModalMode } from './components/AuthModal.tsx';
 import { UserSettingsModal, UserSettingsTab } from './components/UserSettingsModal.tsx';
+import { AuthPages, AuthPageMode } from './components/AuthPages.tsx';
+import { ProfilePages, ProfileManagementSection } from './components/ProfilePages.tsx';
+import { fetchAuthenticatedUserProfile } from './lib/profileService.ts';
 import { DemoModal } from './components/DemoModal.tsx';
 import { Footer } from './components/Footer.tsx';
 import { VerticalTaskbar } from './components/VerticalTaskbar.tsx';
@@ -39,10 +42,22 @@ import { ExploreUniversitiesView } from './components/university/ExploreUniversi
 import { UniversityDirectoryView, UniversityTabKey } from './components/university/UniversityDirectoryView.tsx';
 import { UniversitySetupModal } from './components/university/UniversitySetupModal.tsx';
 import { findUniversityByNameOrFuzzy } from './lib/universityStore.ts';
-import { AcademicProgram } from './types/index.ts';
+import { AcademicProgram, MaterialType } from './types/index.ts';
 import { ExploreProgramsView } from './components/program/ExploreProgramsView.tsx';
 import { ProgramDirectoryView, ProgramTabKey } from './components/program/ProgramDirectoryView.tsx';
 import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
+import {
+  noteBelongsToProgram,
+  updateSharedResource,
+  deleteSharedResource,
+  getAvailableProgramsForFilter,
+  getNoteCourseCategory,
+  getNoteCourseDisplay,
+  deriveCourseCategoryFromUploaderProgram,
+  canUserDeleteNote
+} from './lib/resourceService.ts';
+import { MATERIAL_TYPE_LABELS, SUBJECT_OPTIONS } from './data/seedData.ts';
+import { resolveViewablePdfForNote } from './lib/pdfViewerService.ts';
 
 const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
@@ -63,9 +78,35 @@ const HOLOGRAPHIC_NEON_COLORS = [
   '#d946ef', // Cyber Fuchsia
 ];
 
+export type AppTab =
+  | 'landing'
+  | 'browse'
+  | 'upload'
+  | 'explore'
+  | 'program'
+  | 'university'
+  | 'login'
+  | 'signup'
+  | 'forgot-password'
+  | 'reset-password'
+  | 'profile-setup'
+  | 'profile-management';
+
 export default function App() {
-  // Navigation: 'landing' (showcase), 'browse' (library), 'upload' (share), 'explore' (programs), 'program' (program directory), 'university' (campus)
-  const [currentTab, setCurrentTab] = useState<'landing' | 'browse' | 'upload' | 'explore' | 'program' | 'university'>('landing');
+  // Navigation including dedicated authentication and profile setup/management pages
+  const [currentTab, setCurrentTab] = useState<AppTab>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace(/^#/, '');
+      if (hash.includes('type=recovery') || hash === 'reset-password') return 'reset-password';
+      if (hash === 'login') return 'login';
+      if (hash === 'signup') return 'signup';
+      if (hash === 'profile-setup') return 'profile-setup';
+      if (hash === 'profile') return 'profile-management';
+    }
+    return 'landing';
+  });
+  const [postLoginDestination, setPostLoginDestination] = useState<AppTab>('landing');
+  const [profileSection, setProfileSection] = useState<ProfileManagementSection>('profile');
 
   // Active program directory state
   const [selectedProgramId, setSelectedProgramId] = useState<string>(() => {
@@ -100,29 +141,30 @@ export default function App() {
     university?: string;
     courseCode?: string;
     programId?: string;
+    semesterNumber?: number;
   }>({});
+  const [editingNote, setEditingNote] = useState<StudyNote | null>(null);
 
-  // Supabase & Auth state - anyone can view without registration by default
+  // Supabase & Authenticated User state
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(getSavedSupabaseConfig());
   const [user, setUser] = useState<StudentUser | null>(() => {
     try {
       const saved = localStorage.getItem('studyvault_active_user');
-      if (!saved) return null;
-      const parsed = JSON.parse(saved);
-      if (parsed && parsed.email && parsed.email !== 'student@campus.edu') {
-        parsed.isGuest = false;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.id && parsed.id !== 'student-local' && !parsed.isGuest) {
+          return parsed;
+        }
       }
-      return parsed;
-    } catch {
-      return null;
-    }
+    } catch {}
+    return null;
   });
-  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup' | 'settings' | 'profile'>('signup');
 
   // Modal visibility
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isCodeExportOpen, setIsCodeExportOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<AuthModalMode>('signin');
   const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
   const [userSettingsTab, setUserSettingsTab] = useState<UserSettingsTab>('profile');
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
@@ -323,6 +365,8 @@ export default function App() {
     subject: 'all',
     courseCode: 'all',
     academicYear: 'all',
+    programId: 'all',
+    semesterNumber: 'all',
     sortBy: 'latest'
   });
 
@@ -343,7 +387,7 @@ export default function App() {
     }
     loadData();
 
-    // Setup Supabase Realtime only if valid client exists
+    // Setup Supabase Realtime & Auth Session Management
     const supabase = getSupabaseInstance(supabaseConfig);
     if (supabase && supabaseConfig.isConnected && isValidHttpUrl(supabaseConfig.url)) {
       try {
@@ -358,36 +402,61 @@ export default function App() {
           )
           .subscribe();
 
-        // Check active Supabase auth session
-        supabase.auth.getSession().then(({ data: { session }, error }) => {
-          if (!error && session?.user) {
-            const u: StudentUser = {
-              id: session.user.id,
-              email: session.user.email || '',
-              name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'Student Contributor',
-              university: session.user.user_metadata?.university || 'Campus University',
-              isGuest: false
-            };
-            setUser(u);
-            localStorage.setItem('studyvault_active_user', JSON.stringify(u));
-          }
-        }).catch(() => {});
+        // Check active Supabase Auth session and hydrate profile + setup status
+        supabase.auth
+          .getSession()
+          .then(async ({ data: { session }, error }) => {
+            if (!error && session?.user) {
+              const hydrated = await fetchAuthenticatedUserProfile(supabase, session.user);
+              setUser(hydrated);
+              try {
+                localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
+              } catch {}
+
+              if (!hydrated.setupCompleted) {
+                setCurrentTab((prev) =>
+                  prev === 'reset-password' ? 'reset-password' : 'profile-setup'
+                );
+              } else {
+                setCurrentTab((prev) =>
+                  prev === 'login' || prev === 'signup' || prev === 'profile-setup'
+                    ? 'landing'
+                    : prev
+                );
+              }
+            } else if (!session) {
+              setUser(null);
+              try {
+                localStorage.removeItem('studyvault_active_user');
+              } catch {}
+            }
+          })
+          .catch(() => {});
 
         // Listen for live Supabase Auth state transitions
-        const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+        const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (event === 'PASSWORD_RECOVERY') {
+            setCurrentTab('reset-password');
+            return;
+          }
+
           if (session?.user) {
-            const u: StudentUser = {
-              id: session.user.id,
-              email: session.user.email || '',
-              name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'Student Contributor',
-              university: session.user.user_metadata?.university || 'Campus University',
-              isGuest: false
-            };
-            setUser(u);
-            localStorage.setItem('studyvault_active_user', JSON.stringify(u));
+            const hydrated = await fetchAuthenticatedUserProfile(supabase, session.user);
+            setUser(hydrated);
+            try {
+              localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
+            } catch {}
+
+            if (!hydrated.setupCompleted) {
+              setCurrentTab((prev) =>
+                prev === 'reset-password' ? 'reset-password' : 'profile-setup'
+              );
+            }
           } else if (event === 'SIGNED_OUT') {
             setUser(null);
-            localStorage.removeItem('studyvault_active_user');
+            try {
+              localStorage.removeItem('studyvault_active_user');
+            } catch {}
           }
         });
 
@@ -401,11 +470,34 @@ export default function App() {
     }
   }, [supabaseConfig.isConnected, supabaseConfig.url, supabaseConfig.anonKey]);
 
-  // Extract distinct course codes for quick navigation
+  // Enforce protected routes without redirect loops
+  useEffect(() => {
+    const isAuthenticated = Boolean(user && !user.isGuest);
+    if (
+      (currentTab === 'profile-setup' || currentTab === 'profile-management') &&
+      !isAuthenticated
+    ) {
+      setPostLoginDestination(currentTab);
+      setCurrentTab('login');
+      return;
+    }
+
+    if (
+      isAuthenticated &&
+      user?.setupCompleted === false &&
+      currentTab !== 'profile-setup' &&
+      currentTab !== 'reset-password'
+    ) {
+      setCurrentTab('profile-setup');
+    }
+  }, [currentTab, user]);
+
+  // Extract distinct courses (by course name / uploader's course) for quick navigation
   const availableCourses = useMemo(() => {
     const set = new Set<string>();
     notes.forEach(n => {
-      if (n.courseCode) set.add(n.courseCode);
+      const displayCourse = getNoteCourseDisplay(n);
+      if (displayCourse) set.add(displayCourse);
     });
     return Array.from(set).sort();
   }, [notes]);
@@ -419,29 +511,63 @@ export default function App() {
     return Array.from(set).sort().reverse();
   }, [notes]);
 
-  // Extract distinct subjects dynamically
+  // Extract distinct course categories / subjects dynamically (including standard categories like Engineering)
   const availableSubjects = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>(
+      SUBJECT_OPTIONS.filter(s => s !== 'All Subjects')
+    );
     notes.forEach(n => {
-      if (n.subject) set.add(n.subject);
+      const cat = getNoteCourseCategory(n);
+      if (cat) set.add(cat);
     });
-    return ['All Subjects', ...Array.from(set).sort()];
+    return ['All Subjects', ...Array.from(set)];
   }, [notes]);
 
-  // Filtered & Sorted notes
+  // Filtered & Sorted notes (Unified Study Library & My Program resources)
   const filteredNotes = useMemo(() => {
     const q = filters.searchQuery.trim().toLowerCase();
 
     return notes
       .filter(note => {
+        const noteCategory = getNoteCourseCategory(note);
+        const noteCourseDisplay = getNoteCourseDisplay(note);
+
         if (q) {
           const matchTitle = note.title.toLowerCase().includes(q);
-          const matchCode = note.courseCode.toLowerCase().includes(q);
+          const matchCategory = noteCategory.toLowerCase().includes(q);
+          const matchCourseDisplay = noteCourseDisplay.toLowerCase().includes(q);
+          const matchCourseName = (note.courseName || '').toLowerCase().includes(q);
+          const matchProgram = (note.programName || '').toLowerCase().includes(q);
+          const matchUploader = (note.uploaderName || '').toLowerCase().includes(q);
           const matchSubj = note.subject.toLowerCase().includes(q);
           const matchProf = note.professor.toLowerCase().includes(q);
           const matchDesc = note.description.toLowerCase().includes(q);
           const matchTags = note.tags.some(t => t.toLowerCase().includes(q));
-          if (!matchTitle && !matchCode && !matchSubj && !matchProf && !matchDesc && !matchTags) {
+          if (
+            !matchTitle &&
+            !matchCategory &&
+            !matchCourseDisplay &&
+            !matchCourseName &&
+            !matchProgram &&
+            !matchUploader &&
+            !matchSubj &&
+            !matchProf &&
+            !matchDesc &&
+            !matchTags
+          ) {
+            return false;
+          }
+        }
+
+        if (filters.programId && filters.programId !== 'all') {
+          if (!noteBelongsToProgram(note, filters.programId)) {
+            return false;
+          }
+        }
+
+        if (filters.semesterNumber && filters.semesterNumber !== 'all') {
+          const semNum = parseInt(filters.semesterNumber, 10);
+          if (!isNaN(semNum) && note.semesterNumber !== semNum) {
             return false;
           }
         }
@@ -450,11 +576,20 @@ export default function App() {
           return false;
         }
 
-        if (filters.subject !== 'all' && note.subject !== filters.subject) {
+        if (
+          filters.subject !== 'all' &&
+          noteCategory !== filters.subject &&
+          note.subject !== filters.subject
+        ) {
           return false;
         }
 
-        if (filters.courseCode !== 'all' && note.courseCode !== filters.courseCode) {
+        if (
+          filters.courseCode !== 'all' &&
+          noteCourseDisplay !== filters.courseCode &&
+          note.courseName !== filters.courseCode &&
+          note.courseCode !== filters.courseCode
+        ) {
           return false;
         }
 
@@ -480,42 +615,25 @@ export default function App() {
     setPreviewNote(note);
   };
 
-  const handleDownloadNote = (note: StudyNote) => {
+  const handleDownloadNote = async (note: StudyNote) => {
     incrementDownloadCountLocal(note.id);
     setNotes(prev =>
       prev.map(n => (n.id === note.id ? { ...n, downloadsCount: n.downloadsCount + 1 } : n))
     );
 
-    const content = `%PDF-1.4
-% Xeusar Academic Export
-Course: ${note.courseCode} — ${note.courseName}
-Title: ${note.title}
-Professor: ${note.professor}
-Academic Year: ${note.academicYear} ${note.semester}
-Uploader: ${note.uploaderName} (${note.uploaderUniversity})
-Downloaded from: Xeusar Interactive Open Platform
-
-Summary & Key Takeaways:
-${note.description}
-
-Section 1 Details:
-${note.pages[0]?.content || 'Notes content.'}
-
-Formulas & Key Derivation Points:
-${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
-`;
-
-    const blob = new Blob([content], { type: 'application/pdf' });
-    const downloadUrl = URL.createObjectURL(blob);
+    const { blobUrl } = await resolveViewablePdfForNote(note);
+    const cleanDownloadName =
+      note.fileName ||
+      `${getNoteCourseDisplay(note).replace(/[^a-zA-Z0-9_-]+/g, '_')}_Notes.pdf`;
     const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = note.fileName;
+    link.href = blobUrl;
+    link.download = cleanDownloadName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(downloadUrl);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
 
-    triggerToast(`Downloaded "${note.fileName}"`);
+    triggerToast(`Downloaded "${cleanDownloadName}"`);
   };
 
   const handleUpvoteNote = (noteId: string) => {
@@ -536,10 +654,63 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
   };
 
   const handleUploadSuccess = (newNote: StudyNote) => {
-    setNotes(prev => [newNote, ...prev]);
-    setCurrentTab('browse');
+    setNotes(prev => [newNote, ...prev.filter(n => n.id !== newNote.id)]);
+    if (uploadPrefill.programId) {
+      setSelectedProgramId(uploadPrefill.programId);
+      setProgramSubTab('materials');
+      setCurrentTab('program');
+    } else {
+      setCurrentTab('browse');
+    }
+    setUploadPrefill({});
     setPreviewNote(newNote);
-    triggerToast(`"${newNote.title}" published to library!`);
+    triggerToast(`"${newNote.title}" published to Study Library & ${newNote.programName || 'My Program'}!`);
+  };
+
+  const handleDeleteSharedNote = async (note: StudyNote) => {
+    if (!canUserDeleteNote(note, user)) {
+      triggerToast('Permission denied: Only the uploader can delete this document.');
+      return;
+    }
+    try {
+      const supabase = getSupabaseInstance(supabaseConfig);
+      await deleteSharedResource(note.id, supabase, user);
+      setNotes(prev => prev.filter(n => n.id !== note.id));
+      if (previewNote?.id === note.id) {
+        setPreviewNote(null);
+      }
+      triggerToast(`Removed "${note.title}" from Study Library & My Program`);
+    } catch (err: any) {
+      triggerToast(err?.message || 'Only the uploader can delete this document.');
+    }
+  };
+
+  const handleSaveEditedNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingNote) return;
+    const supabase = getSupabaseInstance(supabaseConfig);
+    const updated = await updateSharedResource({
+      noteId: editingNote.id,
+      title: editingNote.title,
+      description: editingNote.description,
+      courseCode: editingNote.courseCode,
+      courseName: editingNote.courseName,
+      subject: editingNote.subject,
+      materialType: editingNote.materialType,
+      semesterNumber: editingNote.semesterNumber,
+      programId: editingNote.programId,
+      programName: editingNote.programName,
+      professor: editingNote.professor,
+      supabaseClient: supabase
+    });
+    if (updated) {
+      setNotes(prev => prev.map(n => (n.id === updated.id ? updated : n)));
+      if (previewNote?.id === updated.id) {
+        setPreviewNote(updated);
+      }
+      triggerToast(`Updated "${updated.title}" across Study Library & My Program`);
+    }
+    setEditingNote(null);
   };
 
   const handleOpenMyProgram = () => {
@@ -630,15 +801,42 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
   const handleSignOut = async () => {
     try {
       const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase && supabaseConfig.isConnected) {
+      if (supabase) {
         await supabase.auth.signOut();
       }
     } catch {
       // Ignore network errors on logout
     }
-    localStorage.removeItem('studyvault_active_user');
+    try {
+      localStorage.removeItem('studyvault_active_user');
+    } catch {}
     setUser(null);
-    triggerToast('Signed out of student session');
+    setCurrentTab('login');
+    triggerToast('Signed out of Xeusar account');
+  };
+
+  const handleOpenAuthOrProfileRoute = (
+    mode: 'signin' | 'signup' | 'settings' | 'profile' = 'signin'
+  ) => {
+    if (mode === 'signin') {
+      setCurrentTab('login');
+      return;
+    }
+    if (mode === 'signup') {
+      setCurrentTab('signup');
+      return;
+    }
+    if (!user || user.isGuest) {
+      setPostLoginDestination('profile-management');
+      setCurrentTab('login');
+      return;
+    }
+    if (user.setupCompleted === false) {
+      setCurrentTab('profile-setup');
+      return;
+    }
+    setProfileSection(mode === 'settings' ? 'settings' : 'profile');
+    setCurrentTab('profile-management');
   };
 
   return (
@@ -683,33 +881,127 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
           supabaseConfig={supabaseConfig}
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
           user={user}
-          onOpenAuthModal={(mode = 'signup') => {
-            setAuthModalMode(mode);
-            setIsAuthModalOpen(true);
-          }}
+          onOpenAuthModal={handleOpenAuthOrProfileRoute}
           onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
           onSignOut={handleSignOut}
         />
       )}
 
-      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing page) */}
-      {currentTab !== 'landing' && (
-        <VerticalTaskbar
-          currentTab={currentTab}
-          setCurrentTab={setCurrentTab}
-          filters={filters}
-          setFilters={setFilters}
-          user={user}
-          onOpenMyProgram={handleOpenMyProgram}
-          onOpenMyUniversity={handleOpenMyProgram}
-          onOpenExplore={handleOpenExplore}
-          onOpenAuthModal={(mode = 'signup') => {
-            setAuthModalMode(mode);
-            setIsAuthModalOpen(true);
-          }}
-          onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing and auth/setup pages) */}
+      {currentTab !== 'landing' &&
+        currentTab !== 'login' &&
+        currentTab !== 'signup' &&
+        currentTab !== 'forgot-password' &&
+        currentTab !== 'reset-password' &&
+        currentTab !== 'profile-setup' && (
+          <VerticalTaskbar
+            currentTab={
+              currentTab === 'profile-management' ? 'browse' : currentTab
+            }
+            setCurrentTab={setCurrentTab}
+            filters={filters}
+            setFilters={setFilters}
+            user={user}
+            onOpenMyProgram={handleOpenMyProgram}
+            onOpenMyUniversity={handleOpenMyProgram}
+            onOpenExplore={handleOpenExplore}
+            onOpenAuthModal={handleOpenAuthOrProfileRoute}
+            onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
+            supabaseConfig={supabaseConfig}
+            onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+          />
+        )}
+
+      {/* Dedicated Custom Xeusar Login, Signup, and Password Recovery Pages */}
+      {(currentTab === 'login' ||
+        currentTab === 'signup' ||
+        currentTab === 'forgot-password' ||
+        currentTab === 'reset-password') && (
+        <AuthPages
+          mode={currentTab as AuthPageMode}
+          onChangeMode={(nextMode) => setCurrentTab(nextMode)}
           supabaseConfig={supabaseConfig}
-          onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+          onAuthenticated={(authenticatedUser, isNewSignup) => {
+            setUser(authenticatedUser);
+            try {
+              localStorage.setItem(
+                'studyvault_active_user',
+                JSON.stringify(authenticatedUser)
+              );
+            } catch {}
+
+            if (isNewSignup || !authenticatedUser.setupCompleted) {
+              setCurrentTab('profile-setup');
+              triggerToast('Account authenticated! Please complete your profile setup.');
+            } else {
+              const target =
+                postLoginDestination &&
+                postLoginDestination !== 'login' &&
+                postLoginDestination !== 'signup'
+                  ? postLoginDestination
+                  : 'landing';
+              setPostLoginDestination('landing');
+              setCurrentTab(target);
+              triggerToast(`Welcome back, ${authenticatedUser.name}!`);
+            }
+          }}
+          onBackToHome={() => setCurrentTab('landing')}
+          onOpenBackendConfig={() => setIsSupabaseModalOpen(true)}
+        />
+      )}
+
+      {/* Dedicated Profile Setup Page (Post-Signup Onboarding Page) */}
+      {currentTab === 'profile-setup' && user && (
+        <ProfilePages
+          pageMode="setup"
+          user={user}
+          supabaseConfig={supabaseConfig}
+          onUserUpdated={(updated) => setUser(updated)}
+          onSetupCompleted={(completedUser) => {
+            setUser(completedUser);
+            setCurrentTab('landing');
+            triggerToast('Profile setup completed! Welcome to Xeusar.');
+          }}
+          onSignOut={handleSignOut}
+          onBackToDashboard={() => setCurrentTab('landing')}
+          isFlareLocked={isFlareLocked}
+          onToggleFlareLock={handleToggleFlareLock}
+          rayColor={rayColor}
+          onChangeRayColor={handleChangeRayColor}
+          rayOrigin={rayOrigin}
+          onChangeRayOrigin={handleChangeRayOrigin}
+          rayBrightness={rayBrightness}
+          onChangeRayBrightness={handleChangeRayBrightness}
+          onResetFlare={handleResetFlare}
+        />
+      )}
+
+      {/* Dedicated Profile Management Page */}
+      {currentTab === 'profile-management' && user && (
+        <ProfilePages
+          pageMode="management"
+          user={user}
+          supabaseConfig={supabaseConfig}
+          initialSection={profileSection}
+          onUserUpdated={(updated) => {
+            setUser(updated);
+            triggerToast('Profile updated');
+          }}
+          onSetupCompleted={(updated) => {
+            setUser(updated);
+            setCurrentTab('landing');
+          }}
+          onSignOut={handleSignOut}
+          onBackToDashboard={() => setCurrentTab('landing')}
+          isFlareLocked={isFlareLocked}
+          onToggleFlareLock={handleToggleFlareLock}
+          rayColor={rayColor}
+          onChangeRayColor={handleChangeRayColor}
+          rayOrigin={rayOrigin}
+          onChangeRayOrigin={handleChangeRayOrigin}
+          rayBrightness={rayBrightness}
+          onChangeRayBrightness={handleChangeRayBrightness}
+          onResetFlare={handleResetFlare}
         />
       )}
 
@@ -738,18 +1030,19 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       )}
 
       {currentTab === 'explore' && (
-        <main className="relative z-10 flex-1 pt-6 sm:pt-8 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto pl-16 sm:pl-20 md:pl-24 pr-4 sm:pr-6 lg:pr-8 pt-5 sm:pt-7 pb-20 md:pb-10">
           <ExploreProgramsView
             user={user}
             notes={notes}
             onSelectProgram={handleSelectProgram}
+            onOpenMyProgram={handleOpenMyProgram}
             onOpenSetupModal={() => setIsProgramSetupOpen(true)}
           />
         </main>
       )}
 
       {(currentTab === 'program' || currentTab === 'university') && (
-        <main className="relative z-10 flex-1 pt-6 sm:pt-8 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto pl-16 sm:pl-20 md:pl-24 pr-4 sm:pr-6 lg:pr-8 pt-5 sm:pt-7 pb-20 md:pb-10">
           <ProgramDirectoryView
             programId={selectedProgramId}
             user={user}
@@ -761,8 +1054,10 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
             onDownloadNote={handleDownloadNote}
             onToggleUpvoteNote={handleUpvoteNote}
             onUpvoteNote={(n) => handleUpvoteNote(typeof n === 'string' ? n : n.id)}
-            onOpenUpload={(progId: string, cCode?: string) => {
-              setUploadPrefill({ programId: progId, courseCode: cCode });
+            onEditNote={(note) => setEditingNote({ ...note })}
+            onDeleteNote={handleDeleteSharedNote}
+            onOpenUpload={(progId: string, cCode?: string, semNum?: number) => {
+              setUploadPrefill({ programId: progId, courseCode: cCode, semesterNumber: semNum });
               setCurrentTab('upload');
             }}
             onOpenSetupModal={() => setIsProgramSetupOpen(true)}
@@ -771,7 +1066,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       )}
 
       {currentTab === 'browse' && (
-        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 py-6 sm:py-8 pb-24 md:pb-8">
+        <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto pl-16 sm:pl-20 md:pl-24 pr-4 sm:pr-6 lg:pr-8 pt-5 sm:pt-7 pb-20 md:pb-10">
           <SearchHeader
             filters={filters}
             setFilters={setFilters}
@@ -811,6 +1106,8 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
                       subject: 'all',
                       courseCode: 'all',
                       academicYear: 'all',
+                      programId: 'all',
+                      semesterNumber: 'all',
                       sortBy: 'latest'
                     })
                   }
@@ -828,15 +1125,21 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredNotes.map(note => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  onPreview={handlePreviewNote}
-                  onDownload={handleDownloadNote}
-                  onUpvote={handleUpvoteNote}
-                />
-              ))}
+              {filteredNotes.map(note => {
+                const isNoteOwner = canUserDeleteNote(note, user);
+                return (
+                  <NoteCard
+                    key={note.id}
+                    note={note}
+                    onPreview={handlePreviewNote}
+                    onDownload={handleDownloadNote}
+                    onUpvote={handleUpvoteNote}
+                    canManage={isNoteOwner}
+                    onEdit={isNoteOwner ? (n) => setEditingNote({ ...n }) : undefined}
+                    onDelete={isNoteOwner ? handleDeleteSharedNote : undefined}
+                  />
+                );
+              })}
             </div>
           )}
         </main>
@@ -845,7 +1148,7 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
       {currentTab === 'upload' && (
         <main className="relative z-10 flex-1 px-4 sm:px-6 pl-14 sm:pl-20 md:pl-24 lg:px-8 pt-6 sm:pt-8 pb-24 md:pb-8">
           <UploadView
-            onBack={() => setCurrentTab('browse')}
+            onBack={() => setCurrentTab(uploadPrefill.programId ? 'program' : 'browse')}
             onSuccess={handleUploadSuccess}
             supabaseConfig={supabaseConfig}
             user={user}
@@ -853,8 +1156,139 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
             initialUniversity={uploadPrefill.university}
             initialCourseCode={uploadPrefill.courseCode}
             initialProgramId={uploadPrefill.programId}
+            initialSemesterNumber={uploadPrefill.semesterNumber}
           />
         </main>
+      )}
+
+      {/* Synchronized Edit Shared Resource Modal */}
+      {editingNote && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+        >
+          <div className="bg-zinc-950 border border-white/15 rounded-3xl w-full max-w-lg p-6 shadow-2xl text-white font-outfit">
+            <h3 className="text-lg font-bold text-white mb-1">
+              Edit Shared Resource Metadata
+            </h3>
+            <p className="text-xs text-white/50 mb-4">
+              Changes synchronize automatically across both Study Library and My Program.
+            </p>
+            <form onSubmit={handleSaveEditedNote} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                  Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editingNote.title}
+                  onChange={e => setEditingNote({ ...editingNote, title: e.target.value })}
+                  className="w-full px-3 py-2 text-xs bg-white/5 border border-white/15 rounded-xl text-white"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                    Course Category (Discipline)
+                  </label>
+                  <select
+                    value={editingNote.subject || getNoteCourseCategory(editingNote)}
+                    onChange={e => setEditingNote({ ...editingNote, subject: e.target.value })}
+                    className="w-full px-3 py-2 text-xs bg-stone-900 border border-white/15 rounded-xl text-white"
+                  >
+                    {SUBJECT_OPTIONS.filter(s => s !== 'All Subjects').map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                    Course / Subject Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editingNote.courseName}
+                    onChange={e => setEditingNote({ ...editingNote, courseName: e.target.value })}
+                    className="w-full px-3 py-2 text-xs bg-white/5 border border-white/15 rounded-xl text-white"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                    Degree Program
+                  </label>
+                  <select
+                    value={editingNote.programId || 'bs-ee'}
+                    onChange={e => {
+                      const prog = getAvailableProgramsForFilter().find(p => p.id === e.target.value);
+                      const autoSubject = deriveCourseCategoryFromUploaderProgram(prog?.name || e.target.value, editingNote.courseName);
+                      setEditingNote({
+                        ...editingNote,
+                        programId: e.target.value,
+                        programName: prog?.name || editingNote.programName,
+                        subject: autoSubject
+                      });
+                    }}
+                    className="w-full px-3 py-2 text-xs bg-stone-900 border border-white/15 rounded-xl text-white"
+                  >
+                    {getAvailableProgramsForFilter().map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                    Semester
+                  </label>
+                  <select
+                    value={editingNote.semesterNumber || 1}
+                    onChange={e => setEditingNote({ ...editingNote, semesterNumber: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs bg-stone-900 border border-white/15 rounded-xl text-white"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
+                      <option key={s} value={s}>Semester {s}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1 font-jetbrains">
+                  Resource Type
+                </label>
+                <select
+                  value={editingNote.materialType}
+                  onChange={e => setEditingNote({ ...editingNote, materialType: e.target.value as MaterialType })}
+                  className="w-full px-3 py-2 text-xs bg-stone-900 border border-white/15 rounded-xl text-white"
+                >
+                  {Object.entries(MATERIAL_TYPE_LABELS)
+                    .filter(([k]) => k !== 'all')
+                    .map(([k, info]) => (
+                      <option key={k} value={k}>{info.label}</option>
+                    ))}
+                </select>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setEditingNote(null)}
+                  className="px-4 py-2 text-xs font-semibold text-white/60 hover:text-white rounded-xl cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 text-xs font-bold text-black bg-cyan-400 hover:bg-cyan-300 rounded-xl cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* StudyHub Universal Footer */}
@@ -899,25 +1333,14 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         onClose={() => setIsCodeExportOpen(false)}
       />
 
+      {/* Blank Black Login & Sign Up Window (Ready to be updated later) */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
-        user={user}
-        onUserChange={u => setUser(u)}
-        supabaseConfig={supabaseConfig}
         initialMode={authModalMode}
-        isFlareLocked={isFlareLocked}
-        onToggleFlareLock={handleToggleFlareLock}
-        rayColor={rayColor}
-        onChangeRayColor={handleChangeRayColor}
-        rayOrigin={rayOrigin}
-        onChangeRayOrigin={handleChangeRayOrigin}
-        rayBrightness={rayBrightness}
-        onChangeRayBrightness={handleChangeRayBrightness}
-        onResetFlare={handleResetFlare}
       />
 
-      {/* Dedicated User Settings Window (Accessible after user registration) */}
+      {/* Dedicated User Settings Window */}
       <UserSettingsModal
         isOpen={isUserSettingsOpen}
         onClose={() => setIsUserSettingsOpen(false)}
@@ -934,10 +1357,6 @@ ${(note.pages[0]?.keyFormulasOrPoints || []).join('\n')}
         rayBrightness={rayBrightness}
         onChangeRayBrightness={handleChangeRayBrightness}
         onResetFlare={handleResetFlare}
-        onOpenAuthModal={(mode) => {
-          setAuthModalMode(mode);
-          setIsAuthModalOpen(true);
-        }}
       />
 
       {/* University Setup Modal (Prompt & Search for unassigned / changing primary campus) */}

@@ -32,12 +32,23 @@ export interface StudyNote {
   uploaderId?: string;
   universityId?: string;
   departmentId?: string;
-  // Core Program Hierarchy Mapping
-  programId?: string; // e.g. 'bs-cs', 'bba', 'ms-ds'
+  // Core Program Hierarchy Mapping (Shared between My Program & Study Library)
+  programId?: string; // Primary program ID e.g. 'bs-cs', 'bba', 'ms-ds'
+  programIds?: string[]; // Multi-program associations without duplicating the resource
   programName?: string; // e.g. 'BS Computer Science'
   degreeTier?: DegreeTier; // 'Undergraduate' | 'Master\'s' | 'PhD' | 'Associate'
   semesterNumber?: number; // e.g. 1, 2, 3, 4
+  semesterId?: string; // e.g. 'sem-3'
+  courseId?: string; // Associated ProgramCourse ID e.g. 'cs-201'
   isRestricted?: boolean; // If true, only students of the same program/cohort have full download access
+  // Storage, Deduplication & Integrity Metadata
+  contentHash?: string; // SHA-256 hex digest of stored file
+  storagePath?: string; // Physical storage key in bucket
+  originalSizeBytes?: number; // Original file size before safe compression
+  wasCompressed?: boolean; // True if file was safely compressed prior to storage
+  deduplicated?: boolean; // True if physical file was reused via SHA-256 match
+  idempotencyKey?: string; // Prevents duplicate records on retry/double-submit
+  updatedAt?: string;
   downloadsCount: number;
   upvotesCount: number;
   hasUpvoted?: boolean;
@@ -60,6 +71,8 @@ export interface FilterState {
   subject: string; // 'all' or specific subject
   courseCode: string; // 'all' or specific course
   academicYear: string; // 'all' or year
+  programId?: string; // 'all' or specific degree program ID
+  semesterNumber?: string; // 'all' or semester number ('1'..'8')
   sortBy: 'latest' | 'popular' | 'pages';
 }
 
@@ -68,12 +81,33 @@ export type UndergraduateStage = 'high_school' | 'college';
 export type AcademicSemester = 'semester_1' | 'semester_2';
 
 export interface AcademicProfileInfo {
-  educationLevel: EducationLevel;
+  educationLevel?: EducationLevel;
   undergraduateStage?: UndergraduateStage; // 'high_school' | 'college' (Undergraduate only)
   majorOrField?: string; // Major / Field of Study or Research Field
-  institution: string; // Major University / Institution Name
-  academicYear: string; // e.g. "Freshman (1st Year)", "Year 1", etc.
-  semester: AcademicSemester; // 'semester_1' | 'semester_2'
+  institution?: string; // Major University / Institution Name
+  academicYear?: string; // e.g. "Freshman (1st Year)", "Year 1", etc.
+  semester?: AcademicSemester; // 'semester_1' | 'semester_2'
+}
+
+export interface UserSettingsData {
+  publicBadgeEnabled: boolean;
+  showUniOnNotes: boolean;
+  flareLocked?: boolean;
+  rayColor?: string;
+  rayOrigin?: string;
+  rayBrightness?: number;
+}
+
+export interface UserPreferencesData {
+  preferredSubjects: string[];
+  studyStyle?: string;
+  sessionLength?: string;
+  collaborationMode?: string;
+  preferredLanguage: string;
+  themePreference: 'dark' | 'light' | 'system';
+  prioritizeVerifiedNotes: boolean;
+  prioritizeMyInstitution: boolean;
+  includePastExams: boolean;
 }
 
 export type AcademicLevel = 'undergraduate' | 'graduate' | 'college' | 'high_school';
@@ -85,6 +119,9 @@ export interface StudentUser {
   email: string;
   name: string;
   username?: string;
+  setupCompleted?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
   // Core Academic Program & Degree-Level System
   degreeTier?: DegreeTier;
   program?: string; // e.g. "BS Computer Science"
@@ -113,6 +150,9 @@ export interface StudentUser {
   academicYear?: string;
   semester?: AcademicSemester;
   majorOrField?: string;
+  // Settings & Personalization Preferences
+  settings?: UserSettingsData;
+  preferences?: UserPreferencesData;
   // Backwards-compatible legacy fields
   academicLevel?: AcademicLevel;
   undergraduateCollege?: string;

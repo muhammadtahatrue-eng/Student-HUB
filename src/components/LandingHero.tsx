@@ -22,6 +22,7 @@ import {
 import { StudyNote, StudentUser, AcademicProgram } from '../types/index.ts';
 import { getAllPrograms, getAllProgramDiscussions } from '../lib/programStore.ts';
 import { MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
+import { getNoteCourseCategory, getNoteCourseDisplay } from '../lib/resourceService.ts';
 import { RaysOrigin } from './LightRays.tsx';
 
 interface LandingHeroProps {
@@ -172,21 +173,28 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                   className="p-5 sm:p-6 rounded-2xl border border-white/10 bg-white/[0.03] hover:border-cyan-400/50 hover:bg-white/[0.05] transition-all flex flex-col justify-between group shadow-xl"
                 >
                   <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-[10px] font-jetbrains px-2 py-0.5 rounded-full bg-cyan-400/10 text-cyan-300 border border-cyan-400/20 font-semibold uppercase">
-                        {note.courseCode}
+                    <div className="flex items-center justify-between mb-3 gap-2">
+                      <span className="text-[10px] font-jetbrains px-2.5 py-0.5 rounded-full bg-cyan-400/10 text-cyan-300 border border-cyan-400/20 font-semibold uppercase truncate">
+                        {getNoteCourseCategory(note)}
                       </span>
-                      <span className="text-[10px] text-white/50 uppercase tracking-wider font-jetbrains">
+                      <span className="text-[10px] text-white/50 uppercase tracking-wider font-jetbrains shrink-0">
                         {MATERIAL_TYPE_LABELS[note.materialType]?.label || note.materialType}
                       </span>
                     </div>
 
-                    <h3 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-2 mb-2">
+                    <div className="text-[11px] font-medium text-cyan-200/80 mb-1 truncate font-jetbrains">
+                      {getNoteCourseDisplay(note)}
+                    </div>
+
+                    <h3
+                      onClick={() => onPreviewNote?.(note)}
+                      className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-2 mb-2 cursor-pointer"
+                    >
                       {note.title}
                     </h3>
 
                     <p className="text-xs text-white/60 line-clamp-2 mb-4 leading-relaxed font-light">
-                      {note.description || `${note.subject} material shared for course ${note.courseCode}`}
+                      {note.description || `${getNoteCourseCategory(note)} study material shared for ${getNoteCourseDisplay(note)}`}
                     </p>
                   </div>
 
@@ -205,17 +213,20 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                     <div className="flex items-center gap-2">
                       {onPreviewNote && (
                         <button
+                          type="button"
                           onClick={() => onPreviewNote(note)}
                           title="Preview PDF"
-                          className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                          className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5"
                         >
-                          <Eye className="w-3.5 h-3.5" />
+                          <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Preview PDF</span>
                         </button>
                       )}
                       {onDownloadNote && (
                         <button
+                          type="button"
                           onClick={() => onDownloadNote(note)}
-                          title="Download"
+                          title="Download PDF"
                           className="p-1.5 rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 transition-colors cursor-pointer"
                         >
                           <Download className="w-3.5 h-3.5" />
