@@ -25,6 +25,8 @@ import { MATERIAL_TYPE_LABELS } from '../data/seedData.ts';
 import { getNoteCourseCategory, getNoteCourseDisplay } from '../lib/resourceService.ts';
 import { RaysOrigin } from './LightRays.tsx';
 
+import { InfoCenterSectionId } from '../data/legalAndInfoData.ts';
+
 interface LandingHeroProps {
   notes?: StudyNote[];
   user?: StudentUser | null;
@@ -36,6 +38,7 @@ interface LandingHeroProps {
   onUpvoteNote?: (noteId: string) => void;
   onOpenProgram?: (programId: string) => void;
   onOpenExplorePrograms?: () => void;
+  onOpenInfoCenter?: (section?: InfoCenterSectionId) => void;
   rayColor?: string;
   onChangeRayColor?: (color: string) => void;
   rayOrigin?: RaysOrigin;
@@ -55,6 +58,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
   onUpvoteNote,
   onOpenProgram,
   onOpenExplorePrograms,
+  onOpenInfoCenter,
 }) => {
   // Dynamically calculated platform metrics (zero hardcoded fallbacks)
   const liveStats = useMemo(() => {
@@ -441,6 +445,185 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
               </p>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* 5B. XEUSAR PRODUCTS ECOSYSTEM */}
+      <section id="products" className="py-12 sm:py-20 px-4 sm:px-6 max-w-6xl mx-auto border-t border-white/10 scroll-mt-24">
+        <div className="border border-white/15 rounded-2xl sm:rounded-3xl p-5 sm:p-10 bg-white/[0.02] backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+            <div>
+              <div className="inline-flex items-center gap-2 text-[11px] sm:text-xs uppercase tracking-widest text-cyan-400 font-jetbrains mb-2">
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span>Xeusar Product Suite</span>
+              </div>
+              <h2 className="text-2xl sm:text-4xl font-bold tracking-tight text-white neon-text">
+                Products Built for Academic Mastery
+              </h2>
+            </div>
+            <button
+              onClick={onBrowseMaterials}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-all cursor-pointer self-start sm:self-auto"
+            >
+              <span>Open Study Library</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+            {[
+              {
+                icon: BookOpen,
+                badge: 'Core Repository',
+                title: 'Study Library',
+                description:
+                  'Peer-verified lecture notes, past exams, formula sheets, and lab manuals organized by university course codes.',
+                actionLabel: 'Browse Library',
+                onClick: onBrowseMaterials,
+              },
+              {
+                icon: GraduationCap,
+                badge: 'Cohort Hub',
+                title: 'Academic Programs',
+                description:
+                  'Dedicated degree workspaces that unlock automatically as students enroll and collaborate across semesters.',
+                actionLabel: 'Explore Programs',
+                onClick: onOpenExplorePrograms || onBrowseMaterials,
+              },
+              {
+                icon: MessageSquare,
+                badge: 'Peer Network',
+                title: 'Public Forum',
+                description:
+                  'High-signal academic Q&A, problem-solving threads, and resource-linked discussions with peer voting.',
+                actionLabel: 'Join Discussions',
+                onClick: () => onOpenProgram?.('bs-cs'),
+              },
+              {
+                icon: Upload,
+                badge: 'Creator Studio',
+                title: 'Note Publishing',
+                description:
+                  'Instant PDF indexing and course tagging so contributors can share study materials and build academic reputation.',
+                actionLabel: 'Upload Notes',
+                onClick: onUploadNotes,
+              },
+            ].map((product) => {
+              const IconComponent = product.icon;
+              return (
+                <div
+                  key={product.title}
+                  onClick={product.onClick}
+                  className="p-5 sm:p-6 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-cyan-400/50 hover:bg-white/[0.06] transition-all cursor-pointer flex flex-col justify-between group shadow-lg"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-center text-cyan-300 group-hover:scale-105 transition-transform">
+                        <IconComponent className="w-4 h-4" />
+                      </div>
+                      <span className="text-[10px] font-jetbrains px-2.5 py-0.5 rounded-full bg-white/5 text-white/60 border border-white/10 uppercase">
+                        {product.badge}
+                      </span>
+                    </div>
+                    <h3 className="text-base font-bold text-white group-hover:text-cyan-300 transition-colors mb-2">
+                      {product.title}
+                    </h3>
+                    <p className="text-xs text-white/60 leading-relaxed font-light mb-5">
+                      {product.description}
+                    </p>
+                  </div>
+                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-xs font-jetbrains text-cyan-300">
+                    <span>{product.actionLabel}</span>
+                    <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* 5C. ABOUT US SECTION */}
+      <section id="about-us" className="py-12 sm:py-20 px-4 sm:px-6 max-w-6xl mx-auto border-t border-white/10 scroll-mt-24">
+        <div className="border border-white/15 rounded-2xl sm:rounded-3xl p-5 sm:p-10 bg-white/[0.02] backdrop-blur-md">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+            <div className="lg:col-span-7">
+              <div className="inline-flex items-center gap-2 text-[11px] sm:text-xs uppercase tracking-widest text-cyan-400 font-jetbrains mb-2">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                <span>About Xeusar</span>
+              </div>
+              <h2 className="text-2xl sm:text-4xl font-bold tracking-tight text-white mb-4 neon-text">
+                Your Learning. Your Community. Your Future.
+              </h2>
+              <p className="text-xs sm:text-sm text-white/75 leading-relaxed font-light mb-3">
+                Xeusar is an academic learning and collaboration platform designed to help students organize their studies, discover useful learning resources, and connect with a wider academic community.
+              </p>
+              <p className="text-xs sm:text-sm text-white/65 leading-relaxed font-light mb-6">
+                Our mission is to make academic learning more organized, accessible, and collaborative by bringing study resources, academic discussions, and learning tools together in one platform.
+              </p>
+
+              {onOpenInfoCenter && (
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => onOpenInfoCenter('about')}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <span>Read Full About Us &amp; FAQs</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenInfoCenter('terms')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    <span>Terms &amp; Conditions</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenInfoCenter('copyright')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/5 hover:bg-white/15 border border-white/15 text-white/80 hover:text-white text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    <span>Copyright Policy</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              {[
+                {
+                  title: 'Study Library',
+                  desc: 'Discover, organize, and access academic study materials tailored for students.',
+                },
+                {
+                  title: 'Academic Programs',
+                  desc: 'Explore academic programs and organize learning around degree programs and areas of study.',
+                },
+                {
+                  title: 'Community Forum',
+                  desc: 'Ask questions, share ideas, discuss academic topics, and learn from peers.',
+                },
+                {
+                  title: 'Student Collaboration',
+                  desc: 'Connect learning resources with discussions in a structured academic environment.',
+                },
+              ].map((item) => (
+                <div
+                  key={item.title}
+                  className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-cyan-400/40 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5 text-cyan-300 text-xs font-bold mb-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
+                    <span>{item.title}</span>
+                  </div>
+                  <p className="text-[11px] text-white/55 leading-relaxed font-light">
+                    {item.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 

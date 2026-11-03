@@ -25,6 +25,11 @@ import {
   deriveCourseCategoryFromUploaderProgram,
   generateInternalCourseCode
 } from '../lib/resourceService.ts';
+import {
+  UPLOAD_COPYRIGHT_NOTICE,
+  XEUSAR_CONTACT_EMAIL,
+  COPYRIGHT_REPORT_MAILTO
+} from '../data/legalAndInfoData.ts';
 
 interface UploadViewProps {
   onBack: () => void;
@@ -169,6 +174,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successNote, setSuccessNote] = useState<StudyNote | null>(null);
+  const [hasConfirmedCopyrightRights, setHasConfirmedCopyrightRights] = useState(false);
   const [lastUploadMeta, setLastUploadMeta] = useState<{
     deduplicated: boolean;
     wasCompressed: boolean;
@@ -273,6 +279,13 @@ export const UploadView: React.FC<UploadViewProps> = ({
     const effectiveCourseName = courseName.trim() || uploaderProgramName || subject;
     if (!title.trim() || !effectiveCourseName) {
       setErrorMessage('Document Title and Course are required.');
+      return;
+    }
+
+    if (!hasConfirmedCopyrightRights) {
+      setErrorMessage(
+        'Please confirm that you have the necessary rights or permission to share this material before publishing.'
+      );
       return;
     }
 
@@ -788,6 +801,36 @@ export const UploadView: React.FC<UploadViewProps> = ({
             </div>
           )}
 
+          {/* Copyright Notice & Acknowledgment Checkbox */}
+          <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/15 space-y-3">
+            <p className="text-xs text-white/80 leading-relaxed">
+              <strong className="text-white font-bold">{UPLOAD_COPYRIGHT_NOTICE.label}</strong>{' '}
+              Only upload materials you own, have permission to share, or are legally allowed to
+              distribute. Unauthorized sharing of copyrighted books, paid resources, or other
+              protected content is not permitted. Copyright concerns? Contact{' '}
+              <a
+                href={COPYRIGHT_REPORT_MAILTO}
+                className="text-cyan-300 hover:text-cyan-200 underline underline-offset-4 font-jetbrains"
+              >
+                {XEUSAR_CONTACT_EMAIL}
+              </a>
+              .
+            </p>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none pt-1 border-t border-white/10">
+              <input
+                type="checkbox"
+                required
+                checked={hasConfirmedCopyrightRights}
+                onChange={(e) => setHasConfirmedCopyrightRights(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-white/30 bg-black text-cyan-400 focus:ring-2 focus:ring-cyan-400 cursor-pointer accent-cyan-400"
+              />
+              <span className="text-xs font-medium text-white/90 leading-snug">
+                {UPLOAD_COPYRIGHT_NOTICE.acknowledgmentLabel}
+              </span>
+            </label>
+          </div>
+
           {/* Actions */}
           <div className="pt-4 flex items-center justify-end gap-3">
             <button
@@ -800,7 +843,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isUploading || isCompressingFile}
+              disabled={isUploading || isCompressingFile || !hasConfirmedCopyrightRights}
               className="px-8 py-3 text-xs font-black uppercase tracking-widest text-black bg-white hover:bg-white/90 disabled:opacity-50 rounded-full transition-all cursor-pointer shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center gap-2"
             >
               <Upload className="w-4 h-4" />

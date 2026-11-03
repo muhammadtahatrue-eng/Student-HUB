@@ -67,6 +67,9 @@ import {
 import { MATERIAL_TYPE_LABELS, SUBJECT_OPTIONS } from './data/seedData.ts';
 import { resolveViewablePdfForNote } from './lib/pdfViewerService.ts';
 import { PublicForumView } from './components/forum/PublicForumView.tsx';
+import { InfoCenterView } from './components/InfoCenterView.tsx';
+import { InfoCenterSectionId } from './data/legalAndInfoData.ts';
+import { ProductsView } from './components/ProductsView.tsx';
 
 const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
@@ -95,6 +98,8 @@ export type AppTab =
   | 'program'
   | 'university'
   | 'forum'
+  | 'about'
+  | 'products'
   | 'login'
   | 'signup'
   | 'forgot-password'
@@ -107,14 +112,35 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState<AppTab>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace(/^#/, '');
+      const pathname = window.location.pathname.replace(/\/+$/, '');
       if (hash.includes('type=recovery') || hash === 'reset-password') return 'reset-password';
       if (hash === 'login') return 'login';
       if (hash === 'signup') return 'signup';
       if (hash === 'profile-setup') return 'profile-setup';
       if (hash === 'profile') return 'profile-management';
+      if (hash === 'products' || pathname === '/products') return 'products';
+      if (
+        hash === 'about' ||
+        hash === 'faq' ||
+        hash === 'terms' ||
+        hash === 'copyright' ||
+        hash === 'contact' ||
+        pathname === '/about'
+      ) {
+        return 'about';
+      }
       if (hash === 'forum' || hash.startsWith('forum/post/')) return 'forum';
     }
     return 'landing';
+  });
+  const [infoCenterSection, setInfoCenterSection] = useState<InfoCenterSectionId>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace(/^#/, '');
+      if (hash === 'faq' || hash === 'terms' || hash === 'copyright' || hash === 'contact') {
+        return hash;
+      }
+    }
+    return 'about';
   });
   const [initialForumPostId, setInitialForumPostId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
@@ -139,6 +165,17 @@ export default function App() {
           setInitialForumPostId(postId);
           setCurrentTab('forum');
         }
+      } else if (hash === 'products') {
+        setCurrentTab('products');
+      } else if (
+        hash === 'about' ||
+        hash === 'faq' ||
+        hash === 'terms' ||
+        hash === 'copyright' ||
+        hash === 'contact'
+      ) {
+        setInfoCenterSection(hash as InfoCenterSectionId);
+        setCurrentTab('about');
       }
     };
     window.addEventListener('hashchange', handleHashChange);
@@ -1247,10 +1284,20 @@ export default function App() {
     user && !user.isGuest && (user.emailConfirmed === true || Boolean(user.emailConfirmedAt))
   );
 
+  const handleOpenInfoCenter = (section: InfoCenterSectionId = 'about') => {
+    setInfoCenterSection(section);
+    setCurrentTab('about');
+    if (typeof window !== 'undefined') {
+      window.history.replaceState({}, document.title, `#${section}`);
+    }
+  };
+
   const handleNavigateTab = (targetTab: AppTab) => {
     const isPublicTab =
       targetTab === 'landing' ||
       targetTab === 'browse' ||
+      targetTab === 'about' ||
+      targetTab === 'products' ||
       targetTab === 'login' ||
       targetTab === 'signup' ||
       targetTab === 'forgot-password' ||
@@ -1266,6 +1313,20 @@ export default function App() {
     if (isRegisteredUser && user?.setupCompleted === false && targetTab !== 'profile-setup' && targetTab !== 'reset-password') {
       setCurrentTab('profile-setup');
       return;
+    }
+
+    if (targetTab === 'about') {
+      setInfoCenterSection('about');
+    }
+
+    if (typeof window !== 'undefined') {
+      if (targetTab === 'products') {
+        window.history.replaceState({}, document.title, '#products');
+      } else if (targetTab === 'about') {
+        window.history.replaceState({}, document.title, '#about');
+      } else if (targetTab === 'landing') {
+        window.history.replaceState({}, document.title, window.location.pathname || '/');
+      }
     }
 
     setCurrentTab(targetTab);
@@ -1476,8 +1537,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Floating Glass Navigation - ONLY appears on landing page */}
-      {currentTab === 'landing' && (
+      {/* Top Floating Glass Navigation - Appears on landing page, Products, and Information Center */}
+      {(currentTab === 'landing' || currentTab === 'about' || currentTab === 'products') && (
         <Navbar
           currentTab={currentTab}
           setCurrentTab={tab => {
@@ -1498,8 +1559,10 @@ export default function App() {
         />
       )}
 
-      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing and auth/setup pages) */}
+      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing, about, products, and auth/setup pages) */}
       {currentTab !== 'landing' &&
+        currentTab !== 'about' &&
+        currentTab !== 'products' &&
         currentTab !== 'login' &&
         currentTab !== 'signup' &&
         currentTab !== 'forgot-password' &&
@@ -1641,6 +1704,7 @@ export default function App() {
             onUpvoteNote={handleUpvoteNote}
             onOpenProgram={handleSelectProgram}
             onOpenExplorePrograms={handleOpenExplore}
+            onOpenInfoCenter={handleOpenInfoCenter}
             rayColor={rayColor}
             onChangeRayColor={handleChangeRayColor}
             rayOrigin={rayOrigin}
@@ -1649,6 +1713,26 @@ export default function App() {
             onTogglePulsating={() => setRayPulsating(prev => !prev)}
           />
         </div>
+      )}
+
+      {currentTab === 'about' && (
+        <main className="relative z-10 flex-1">
+          <InfoCenterView
+            initialSection={infoCenterSection}
+            onBackToHome={() => handleNavigateTab('landing')}
+            onOpenLibrary={() => handleNavigateTab('browse')}
+            onOpenExplorePrograms={handleOpenExplore}
+            onOpenForum={() => handleNavigateTab('forum')}
+          />
+        </main>
+      )}
+
+      {currentTab === 'products' && (
+        <main className="relative z-10 flex-1">
+          <ProductsView
+            onBackToHome={() => handleNavigateTab('landing')}
+          />
+        </main>
       )}
 
       {currentTab === 'explore' && (
@@ -1931,9 +2015,10 @@ export default function App() {
       {/* StudyHub Universal Footer */}
       <Footer
         onOpenLibrary={() => setCurrentTab('browse')}
-        onOpenUpload={() => setCurrentTab('upload')}
+        onOpenUpload={() => handleNavigateTab('upload')}
         onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+        onOpenInfoCenter={handleOpenInfoCenter}
       />
 
       {/* Interactive Modals */}

@@ -3,16 +3,25 @@ import {
   GraduationCap,
   Home,
   BookOpen,
-  PlusCircle,
   User as UserIcon,
   Settings,
   LogOut,
-  Compass
+  Layers,
+  Info
 } from 'lucide-react';
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
 interface NavbarProps {
-  currentTab: 'landing' | 'browse' | 'upload' | 'explore' | 'university' | 'program' | 'forum';
+  currentTab:
+    | 'landing'
+    | 'browse'
+    | 'upload'
+    | 'explore'
+    | 'university'
+    | 'program'
+    | 'forum'
+    | 'about'
+    | 'products';
   setCurrentTab: (tab: any) => void;
   supabaseConfig?: SupabaseConfig;
   onOpenSupabaseModal?: () => void;
@@ -32,6 +41,21 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const profileContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleNavigateSection = (section: 'overview' | 'products' | 'about') => {
+    if (section === 'products') {
+      setCurrentTab('products');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (section === 'about') {
+      setCurrentTab('about');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    setCurrentTab('landing');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // Close floating account menu on click outside
   useEffect(() => {
@@ -78,7 +102,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-3 sm:gap-8">
             {/* Brand Lockup */}
             <button
-              onClick={() => setCurrentTab('landing')}
+              onClick={() => handleNavigateSection('overview')}
               className="flex items-center gap-2 sm:gap-2.5 cursor-pointer text-left focus:outline-none group shrink-0"
             >
               <div className="w-7 h-7 sm:w-8 sm:h-8 bg-white rounded-lg flex items-center justify-center transition-transform group-hover:scale-105 shrink-0">
@@ -92,7 +116,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Desktop Navigation Links */}
             <div className="hidden md:flex items-center gap-6 text-sm font-medium text-white/70">
               <button
-                onClick={() => setCurrentTab('landing')}
+                onClick={() => handleNavigateSection('overview')}
                 className={`hover:text-white transition-colors cursor-pointer ${
                   currentTab === 'landing' ? 'text-white font-semibold' : ''
                 }`}
@@ -108,36 +132,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                 Study Library
               </button>
               <button
-                onClick={() => setCurrentTab('explore')}
+                onClick={() => handleNavigateSection('products')}
                 className={`hover:text-white transition-colors cursor-pointer ${
-                  currentTab === 'explore' ? 'text-white font-semibold' : ''
+                  currentTab === 'products' ? 'text-white font-semibold' : ''
                 }`}
               >
-                Explore
+                Products
               </button>
               <button
-                onClick={() => setCurrentTab('program')}
+                onClick={() => handleNavigateSection('about')}
                 className={`hover:text-white transition-colors cursor-pointer ${
-                  currentTab === 'program' || currentTab === 'university' ? 'text-white font-semibold' : ''
+                  currentTab === 'about' ? 'text-white font-semibold' : ''
                 }`}
               >
-                My Program
-              </button>
-              <button
-                onClick={() => setCurrentTab('forum')}
-                className={`hover:text-white transition-colors cursor-pointer ${
-                  currentTab === 'forum' ? 'text-white font-semibold' : ''
-                }`}
-              >
-                Forum
-              </button>
-              <button
-                onClick={() => setCurrentTab('upload')}
-                className={`hover:text-white transition-colors cursor-pointer ${
-                  currentTab === 'upload' ? 'text-white font-semibold' : ''
-                }`}
-              >
-                Upload Note
+                About Us
               </button>
             </div>
           </div>
@@ -314,7 +322,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         className="md:hidden fixed bottom-3 inset-x-3 z-40 bg-[#0c0d14]/90 border border-white/15 rounded-2xl p-1.5 shadow-[0_10px_35px_rgba(0,0,0,0.85)] backdrop-blur-2xl flex items-center justify-around"
       >
         <button
-          onClick={() => setCurrentTab('landing')}
+          onClick={() => handleNavigateSection('overview')}
           className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
             currentTab === 'landing'
               ? 'text-[#00f0ff] font-bold bg-white/10'
@@ -338,39 +346,27 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         <button
-          onClick={() => setCurrentTab('explore')}
+          onClick={() => handleNavigateSection('products')}
           className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            currentTab === 'explore'
+            currentTab === 'products'
               ? 'text-[#00f0ff] font-bold bg-white/10'
               : 'text-white/60 hover:text-white'
           }`}
         >
-          <Compass className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] tracking-tight">Explore</span>
+          <Layers className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] tracking-tight">Products</span>
         </button>
 
         <button
-          onClick={() => setCurrentTab('program')}
+          onClick={() => handleNavigateSection('about')}
           className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            currentTab === 'program' || currentTab === 'university'
+            currentTab === 'about'
               ? 'text-[#00f0ff] font-bold bg-white/10'
               : 'text-white/60 hover:text-white'
           }`}
         >
-          <GraduationCap className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] tracking-tight">Program</span>
-        </button>
-
-        <button
-          onClick={() => setCurrentTab('upload')}
-          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
-            currentTab === 'upload'
-              ? 'text-[#00f0ff] font-bold bg-white/10'
-              : 'text-white/60 hover:text-white'
-          }`}
-        >
-          <PlusCircle className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] tracking-tight">Upload</span>
+          <Info className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] tracking-tight">About Us</span>
         </button>
 
         <button
