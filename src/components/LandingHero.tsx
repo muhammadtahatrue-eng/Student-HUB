@@ -556,10 +556,10 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                 Your Learning. Your Community. Your Future.
               </h2>
               <p className="text-xs sm:text-sm text-white/75 leading-relaxed font-light mb-3">
-                Xeusar is an academic learning and collaboration platform designed to help students organize their studies, discover useful learning resources, and connect with a wider academic community.
+                Xeusar is a free educational platform designed to help students discover, access, and share academic resources in one place.
               </p>
               <p className="text-xs sm:text-sm text-white/65 leading-relaxed font-light mb-6">
-                Our mission is to make academic learning more organized, accessible, and collaborative by bringing study resources, academic discussions, and learning tools together in one platform.
+                Our mission is to make learning resources more accessible, encourage academic collaboration, and help students connect with useful study materials and educational communities.
               </p>
 
               {onOpenInfoCenter && (
@@ -632,7 +632,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
         <div className="max-w-5xl mx-auto border border-white/20 rounded-2xl sm:rounded-3xl p-6 sm:p-10 md:p-14 text-center bg-white/[0.03] relative overflow-hidden backdrop-blur-md shadow-2xl">
           <div className="inline-flex items-center gap-2 text-[11px] sm:text-xs uppercase tracking-widest text-cyan-400 font-jetbrains mb-3">
             <Database className="w-3.5 h-3.5 shrink-0" />
-            <span>Open Access Academic Commons</span>
+            <span>Free Study Resource Directory</span>
           </div>
           <h2 className="text-2xl sm:text-3xl md:text-5xl font-black uppercase tracking-tight text-white mb-4 neon-text">
             Ready To Share Knowledge?

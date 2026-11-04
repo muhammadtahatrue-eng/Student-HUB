@@ -37,6 +37,7 @@ interface InfoCenterViewProps {
   onOpenLibrary: () => void;
   onOpenExplorePrograms?: () => void;
   onOpenForum?: () => void;
+  onOpenPrivacyPolicy?: () => void;
 }
 
 export const InfoCenterView: React.FC<InfoCenterViewProps> = ({
@@ -44,7 +45,8 @@ export const InfoCenterView: React.FC<InfoCenterViewProps> = ({
   onBackToHome,
   onOpenLibrary,
   onOpenExplorePrograms,
-  onOpenForum
+  onOpenForum,
+  onOpenPrivacyPolicy
 }) => {
   const [activeNav, setActiveNav] = useState<InfoCenterSectionId>(initialSection);
   const [openFaqIds, setOpenFaqIds] = useState<Record<string, boolean>>({
@@ -508,6 +510,19 @@ export const InfoCenterView: React.FC<InfoCenterViewProps> = ({
                       </a>
                     </div>
                   )}
+
+                  {sec.id === 'terms-3-11' && onOpenPrivacyPolicy && (
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={onOpenPrivacyPolicy}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-400/15 hover:bg-cyan-400/25 border border-cyan-400/35 text-cyan-300 text-xs font-bold transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Read Full Privacy Policy</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -665,12 +680,25 @@ export const InfoCenterView: React.FC<InfoCenterViewProps> = ({
                 <FileText className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
                 <span>Privacy Documentation</span>
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-white">Privacy Policy Notice</h2>
+              <h2 className="text-xl sm:text-2xl font-bold text-white">Privacy Policy</h2>
               <p className="text-xs sm:text-sm text-white/75 leading-relaxed">
-                These Terms &amp; Conditions govern platform usage and copyright responsibilities
-                and do not replace a standalone Privacy Policy.
+                Review our dedicated Privacy Policy to learn how Xeusar collects, uses, stores, and
+                protects personal information across our authentication, database, storage, and email
+                services.
               </p>
-              <p className="text-xs text-white/60 leading-relaxed">
+              {onOpenPrivacyPolicy && (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={onOpenPrivacyPolicy}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-bold transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-white"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Open Privacy Policy</span>
+                  </button>
+                </div>
+              )}
+              <p className="text-xs text-white/60 leading-relaxed pt-1">
                 For questions regarding your account data or privacy requests, please contact{' '}
                 <a
                   href={GENERAL_CONTACT_MAILTO}

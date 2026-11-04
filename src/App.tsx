@@ -70,6 +70,7 @@ import { PublicForumView } from './components/forum/PublicForumView.tsx';
 import { InfoCenterView } from './components/InfoCenterView.tsx';
 import { InfoCenterSectionId } from './data/legalAndInfoData.ts';
 import { ProductsView } from './components/ProductsView.tsx';
+import { PrivacyPolicyView } from './components/PrivacyPolicyView.tsx';
 
 const DEFAULT_FLARE_COLOR = '#9ca3af'; // Ash Grey default
 const DEFAULT_RAY_ORIGIN: RaysOrigin = 'top-center';
@@ -100,6 +101,7 @@ export type AppTab =
   | 'forum'
   | 'about'
   | 'products'
+  | 'privacy'
   | 'login'
   | 'signup'
   | 'forgot-password'
@@ -119,6 +121,14 @@ export default function App() {
       if (hash === 'profile-setup') return 'profile-setup';
       if (hash === 'profile') return 'profile-management';
       if (hash === 'products' || pathname === '/products') return 'products';
+      if (
+        hash === 'privacy' ||
+        hash === 'privacy-policy' ||
+        pathname === '/privacy' ||
+        pathname === '/privacy-policy'
+      ) {
+        return 'privacy';
+      }
       if (
         hash === 'about' ||
         hash === 'faq' ||
@@ -167,6 +177,8 @@ export default function App() {
         }
       } else if (hash === 'products') {
         setCurrentTab('products');
+      } else if (hash === 'privacy' || hash === 'privacy-policy') {
+        setCurrentTab('privacy');
       } else if (
         hash === 'about' ||
         hash === 'faq' ||
@@ -1298,6 +1310,7 @@ export default function App() {
       targetTab === 'browse' ||
       targetTab === 'about' ||
       targetTab === 'products' ||
+      targetTab === 'privacy' ||
       targetTab === 'login' ||
       targetTab === 'signup' ||
       targetTab === 'forgot-password' ||
@@ -1322,6 +1335,8 @@ export default function App() {
     if (typeof window !== 'undefined') {
       if (targetTab === 'products') {
         window.history.replaceState({}, document.title, '#products');
+      } else if (targetTab === 'privacy') {
+        window.history.replaceState({}, document.title, '#privacy');
       } else if (targetTab === 'about') {
         window.history.replaceState({}, document.title, '#about');
       } else if (targetTab === 'landing') {
@@ -1537,8 +1552,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Floating Glass Navigation - Appears on landing page, Products, and Information Center */}
-      {(currentTab === 'landing' || currentTab === 'about' || currentTab === 'products') && (
+      {/* Top Floating Glass Navigation - Appears on landing page, Products, Information Center, and Privacy Policy */}
+      {(currentTab === 'landing' ||
+        currentTab === 'about' ||
+        currentTab === 'products' ||
+        currentTab === 'privacy') && (
         <Navbar
           currentTab={currentTab}
           setCurrentTab={tab => {
@@ -1559,10 +1577,11 @@ export default function App() {
         />
       )}
 
-      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing, about, products, and auth/setup pages) */}
+      {/* Floating Vertical Taskbar on Left Side (Detached from edge; hidden on overview/landing, about, products, privacy, and auth/setup pages) */}
       {currentTab !== 'landing' &&
         currentTab !== 'about' &&
         currentTab !== 'products' &&
+        currentTab !== 'privacy' &&
         currentTab !== 'login' &&
         currentTab !== 'signup' &&
         currentTab !== 'forgot-password' &&
@@ -1723,6 +1742,7 @@ export default function App() {
             onOpenLibrary={() => handleNavigateTab('browse')}
             onOpenExplorePrograms={handleOpenExplore}
             onOpenForum={() => handleNavigateTab('forum')}
+            onOpenPrivacyPolicy={() => handleNavigateTab('privacy')}
           />
         </main>
       )}
@@ -1731,6 +1751,16 @@ export default function App() {
         <main className="relative z-10 flex-1">
           <ProductsView
             onBackToHome={() => handleNavigateTab('landing')}
+          />
+        </main>
+      )}
+
+      {currentTab === 'privacy' && (
+        <main className="relative z-10 flex-1">
+          <PrivacyPolicyView
+            onBackToHome={() => handleNavigateTab('landing')}
+            onOpenLibrary={() => handleNavigateTab('browse')}
+            onOpenInfoCenter={handleOpenInfoCenter}
           />
         </main>
       )}
@@ -2019,6 +2049,7 @@ export default function App() {
         onOpenCodeDrawer={() => setIsCodeExportOpen(true)}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
         onOpenInfoCenter={handleOpenInfoCenter}
+        onOpenPrivacyPolicy={() => handleNavigateTab('privacy')}
       />
 
       {/* Interactive Modals */}

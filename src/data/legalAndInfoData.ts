@@ -43,12 +43,14 @@ export const ABOUT_XEUSAR_CONTENT = {
   title: 'About Xeusar',
   subtitle: 'Your Learning. Your Community. Your Future.',
   introParagraphs: [
-    'Xeusar is an academic learning and collaboration platform designed to help students organize their studies, discover useful learning resources, and connect with a wider academic community.',
-    'We believe learning becomes more effective when students have access to organized resources, meaningful discussions, and a supportive environment where they can share knowledge and learn from one another.'
+    'Xeusar is a free educational platform designed to help students discover, access, and share academic resources in one place.',
+    'Our mission is to make learning resources more accessible, encourage academic collaboration, and help students connect with useful study materials and educational communities.',
+    "Students can use Xeusar's available features according to the platform's access policies. Making the platform available for free does not mean its software source code is open source.",
+    'Xeusar is a privately developed platform. Its source code is not being offered for public reuse under an open-source license.'
   ],
   missionTitle: 'Our Mission',
   missionText:
-    'Our mission is to make academic learning more organized, accessible, and collaborative by bringing study resources, academic discussions, and learning tools together in one platform.',
+    'Our mission is to make learning resources more accessible, encourage academic collaboration, and help students connect with useful study materials and educational communities in one platform.',
   offeringsTitle: 'What Xeusar Offers',
   offerings: [
     {
@@ -273,11 +275,11 @@ export const TERMS_SECTIONS: TermsSectionItem[] = [
   {
     id: 'terms-3-7',
     number: '3.7',
-    title: 'Open-Source Nature of the Platform',
+    title: 'Free Educational Platform and Proprietary Software',
     paragraphs: [
-      "Where Xeusar's source code is released under an open-source license, use, modification, and redistribution of that code are governed by the applicable license.",
-      'The open-source status of the platform does not automatically make user-uploaded textbooks, documents, images, or other third-party materials open source or free to redistribute.',
-      'Users must comply with the applicable license for software and obtain any required rights to share third-party content.'
+      "Xeusar is a free educational platform and study resource directory designed to help students discover, access, and share academic resources in one place. Students can use Xeusar's available features according to the platform's access policies.",
+      'Making the platform available for free does not mean its software source code is open source. Xeusar is a privately developed platform, and its source code is not being offered for public reuse under an open-source license.',
+      'Similarly, free access to the platform does not make user-uploaded textbooks, documents, images, or other third-party materials free of copyright restrictions or free to redistribute without authorization. Users must obtain any required rights or permission to share third-party content.'
     ]
   },
   {
@@ -315,8 +317,8 @@ export const TERMS_SECTIONS: TermsSectionItem[] = [
     number: '3.11',
     title: 'Privacy and Security',
     paragraphs: [
-      'Our handling of personal information should be explained in a separate Privacy Policy.',
-      'Users should review that policy to understand what information is collected, how it is used and stored, and what choices or rights may be available.',
+      'Our handling of personal information is explained in our dedicated Privacy Policy.',
+      'Users should review the Privacy Policy to understand what information is collected, how it is used and stored, which third-party infrastructure providers we use (Supabase, Vercel, and Resend), and what choices or rights are available.',
       'We take reasonable measures to protect the platform, but no internet service can guarantee absolute security.'
     ]
   },

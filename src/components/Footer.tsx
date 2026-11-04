@@ -12,12 +12,14 @@ interface FooterProps {
   onOpenCodeDrawer: () => void;
   onOpenSupabaseModal: () => void;
   onOpenInfoCenter?: (section?: InfoCenterSectionId) => void;
+  onOpenPrivacyPolicy?: () => void;
 }
 
 export const Footer: React.FC<FooterProps> = ({
   onOpenLibrary,
   onOpenUpload,
   onOpenInfoCenter,
+  onOpenPrivacyPolicy,
 }) => {
   return (
     <footer className="py-10 sm:py-12 px-4 sm:px-6 pb-24 md:pb-12 border-t border-white/10 bg-black font-outfit text-white relative z-10">
@@ -82,6 +84,15 @@ export const Footer: React.FC<FooterProps> = ({
                 Copyright Policy
               </button>
             </>
+          )}
+          {onOpenPrivacyPolicy && (
+            <button
+              type="button"
+              onClick={onOpenPrivacyPolicy}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Privacy Policy
+            </button>
           )}
           <a
             href={GENERAL_CONTACT_MAILTO}

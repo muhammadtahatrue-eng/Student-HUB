@@ -7,7 +7,8 @@ import {
   Settings,
   LogOut,
   Layers,
-  Info
+  Info,
+  Shield
 } from 'lucide-react';
 import { SupabaseConfig, StudentUser } from '../types/index.ts';
 
@@ -21,7 +22,8 @@ interface NavbarProps {
     | 'program'
     | 'forum'
     | 'about'
-    | 'products';
+    | 'products'
+    | 'privacy';
   setCurrentTab: (tab: any) => void;
   supabaseConfig?: SupabaseConfig;
   onOpenSupabaseModal?: () => void;
@@ -42,7 +44,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const profileContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleNavigateSection = (section: 'overview' | 'products' | 'about') => {
+  const handleNavigateSection = (
+    section: 'overview' | 'products' | 'about' | 'privacy'
+  ) => {
     if (section === 'products') {
       setCurrentTab('products');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -50,6 +54,11 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
     if (section === 'about') {
       setCurrentTab('about');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (section === 'privacy') {
+      setCurrentTab('privacy');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -146,6 +155,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 }`}
               >
                 About Us
+              </button>
+              <button
+                onClick={() => handleNavigateSection('privacy')}
+                className={`hover:text-white transition-colors cursor-pointer ${
+                  currentTab === 'privacy' ? 'text-white font-semibold' : ''
+                }`}
+              >
+                Privacy Policy
               </button>
             </div>
           </div>
@@ -359,14 +376,26 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         <button
           onClick={() => handleNavigateSection('about')}
-          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-2 rounded-xl transition-all cursor-pointer active:scale-95 ${
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-1.5 rounded-xl transition-all cursor-pointer active:scale-95 ${
             currentTab === 'about'
               ? 'text-[#00f0ff] font-bold bg-white/10'
               : 'text-white/60 hover:text-white'
           }`}
         >
           <Info className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] tracking-tight">About Us</span>
+          <span className="text-[10px] tracking-tight whitespace-nowrap">About Us</span>
+        </button>
+
+        <button
+          onClick={() => handleNavigateSection('privacy')}
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-1.5 rounded-xl transition-all cursor-pointer active:scale-95 ${
+            currentTab === 'privacy'
+              ? 'text-[#00f0ff] font-bold bg-white/10'
+              : 'text-white/60 hover:text-white'
+          }`}
+        >
+          <Shield className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] tracking-tight whitespace-nowrap">Privacy Policy</span>
         </button>
 
         <button

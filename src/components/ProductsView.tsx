@@ -81,12 +81,15 @@ const HolographicScannerBoxSvg: React.FC = () => {
   const sideFaceRefs = useRef<(SVGPolygonElement | null)[]>([]);
   const topUnderGlowRef = useRef<SVGPolygonElement | null>(null);
   const topFaceRef = useRef<SVGPolygonElement | null>(null);
+  const topFaceClipPolygonRef = useRef<SVGPolygonElement | null>(null);
   const innerCoreRef = useRef<SVGPolygonElement | null>(null);
   const packageSeamRef = useRef<SVGLineElement | null>(null);
   const scanStripRef = useRef<SVGPolygonElement | null>(null);
   const scanDepthGlowRef = useRef<SVGPolygonElement | null>(null);
   const scanBeamGlowRef = useRef<SVGLineElement | null>(null);
   const scanBeamCoreRef = useRef<SVGLineElement | null>(null);
+  const scanEdgePulseLeftRef = useRef<SVGLineElement | null>(null);
+  const scanEdgePulseRightRef = useRef<SVGLineElement | null>(null);
   const scanEndpointARef = useRef<SVGCircleElement | null>(null);
   const scanEndpointBRef = useRef<SVGCircleElement | null>(null);
   const edgeRefs = useRef<(SVGLineElement | null)[]>([]);
@@ -141,10 +144,11 @@ const HolographicScannerBoxSvg: React.FC = () => {
         : ((t / CUBE_REVOLUTION_SECONDS) * Math.PI * 2) % (Math.PI * 2);
 
       // 1 side-to-side sweep every 2 seconds (5 sweeps per 10-second cube revolution)
-      // Smoothly reverses at each edge [-0.94, +0.94]
+      // Smoothly reverses at each edge [-0.96, +0.96]
       const scanWave = reducedMotion ? 0.18 : -Math.cos((t / SCAN_SWEEP_SECONDS) * Math.PI);
-      const scanZ = scanWave * 0.94;
-      const stripHalfWidth = 0.2;
+      const scanZ = scanWave * 0.96;
+      const stripHalfWidth = 0.22;
+      const edgePulseHalfSpan = 0.34;
 
       // 1. Subtle layered ring motion
       if (outerRingRef.current) {
@@ -199,12 +203,18 @@ const HolographicScannerBoxSvg: React.FC = () => {
         topUnderGlowRef.current.setAttribute('points', formatPolygonPoints(underPts));
       }
 
-      // 6. Top face polygon
+      // 6. Top face polygon & clipPath polygon
+      const topFacePointsStr = formatPolygonPoints([
+        projected[0],
+        projected[1],
+        projected[2],
+        projected[3]
+      ]);
       if (topFaceRef.current) {
-        topFaceRef.current.setAttribute(
-          'points',
-          formatPolygonPoints([projected[0], projected[1], projected[2], projected[3]])
-        );
+        topFaceRef.current.setAttribute('points', topFacePointsStr);
+      }
+      if (topFaceClipPolygonRef.current) {
+        topFaceClipPolygonRef.current.setAttribute('points', topFacePointsStr);
       }
 
       // 7. Inner floating prism core (y = -0.38, scaled to 0.42)
@@ -228,8 +238,8 @@ const HolographicScannerBoxSvg: React.FC = () => {
         packageSeamRef.current.setAttribute('y1', seamA.y.toFixed(2));
         packageSeamRef.current.setAttribute('x2', seamB.x.toFixed(2));
         packageSeamRef.current.setAttribute('y2', seamB.y.toFixed(2));
-        const seamProximity = Math.max(0, 1 - Math.abs(scanZ) / 0.32);
-        const seamAlpha = 0.32 + seamProximity * 0.36;
+        const seamProximity = Math.max(0, 1 - Math.abs(scanZ) / 0.28);
+        const seamAlpha = 0.32 + seamProximity * 0.46;
         packageSeamRef.current.setAttribute('stroke', `rgba(0,240,255,${seamAlpha.toFixed(3)})`);
       }
 
@@ -275,6 +285,28 @@ const HolographicScannerBoxSvg: React.FC = () => {
         scanBeamCoreRef.current.setAttribute('y2', scanRight.y.toFixed(2));
       }
 
+      // Synchronized traveling light pulses along the two side top edges as the scanner passes
+      const pulseZStart = Math.max(-1, scanZ - edgePulseHalfSpan);
+      const pulseZEnd = Math.min(1, scanZ + edgePulseHalfSpan);
+
+      if (scanEdgePulseLeftRef.current) {
+        const leftPulseA = project3D({ x: -1, y: -1, z: pulseZStart }, yaw);
+        const leftPulseB = project3D({ x: -1, y: -1, z: pulseZEnd }, yaw);
+        scanEdgePulseLeftRef.current.setAttribute('x1', leftPulseA.x.toFixed(2));
+        scanEdgePulseLeftRef.current.setAttribute('y1', leftPulseA.y.toFixed(2));
+        scanEdgePulseLeftRef.current.setAttribute('x2', leftPulseB.x.toFixed(2));
+        scanEdgePulseLeftRef.current.setAttribute('y2', leftPulseB.y.toFixed(2));
+      }
+
+      if (scanEdgePulseRightRef.current) {
+        const rightPulseA = project3D({ x: 1, y: -1, z: pulseZStart }, yaw);
+        const rightPulseB = project3D({ x: 1, y: -1, z: pulseZEnd }, yaw);
+        scanEdgePulseRightRef.current.setAttribute('x1', rightPulseA.x.toFixed(2));
+        scanEdgePulseRightRef.current.setAttribute('y1', rightPulseA.y.toFixed(2));
+        scanEdgePulseRightRef.current.setAttribute('x2', rightPulseB.x.toFixed(2));
+        scanEdgePulseRightRef.current.setAttribute('y2', rightPulseB.y.toFixed(2));
+      }
+
       if (scanEndpointARef.current) {
         scanEndpointARef.current.setAttribute('cx', scanLeft.x.toFixed(2));
         scanEndpointARef.current.setAttribute('cy', scanLeft.y.toFixed(2));
@@ -285,7 +317,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         scanEndpointBRef.current.setAttribute('cy', scanRight.y.toFixed(2));
       }
 
-      // 10. All 12 wireframe edges with camera-depth weighting and scanner illumination
+      // 10. All 12 wireframe edges with camera-depth weighting and synchronized scanner pulse
       CUBE_EDGES.forEach((edge, idx) => {
         const lineEl = edgeRefs.current[idx];
         if (!lineEl) return;
@@ -302,25 +334,46 @@ const HolographicScannerBoxSvg: React.FC = () => {
         const depthNorm = Math.min(1, Math.max(0, (midZ + 1.35) / 2.7));
 
         if (edge.isTop) {
-          // Top edges respond to scanner proximity
+          // Top edges respond with a synchronized pulse of light as the scanner beam passes
           const va = CUBE_VERTICES[edge.a];
           const vb = CUBE_VERTICES[edge.b];
+          const isParallelToScanner = va.z === vb.z;
           const edgeLocalZ = (va.z + vb.z) * 0.5;
-          const distToScanner =
-            va.z === vb.z ? Math.abs(scanZ - edgeLocalZ) : Math.abs(scanZ) * 0.5;
-          const scanBoost = Math.max(0, 1 - distToScanner / 0.42);
+          const distToScanner = isParallelToScanner
+            ? Math.abs(scanZ - edgeLocalZ)
+            : Math.abs(scanZ) * 0.45;
+          const scanBoost = isParallelToScanner
+            ? Math.max(0, 1 - distToScanner / 0.36)
+            : Math.max(0, 1 - distToScanner / 0.5);
 
-          const alpha = Math.min(0.95, 0.42 + depthNorm * 0.24 + scanBoost * 0.32);
-          const width = 1.35 + depthNorm * 0.3 + scanBoost * 0.45;
-          lineEl.setAttribute('stroke', `rgba(0,240,255,${alpha.toFixed(3)})`);
+          const alpha = Math.min(0.98, 0.42 + depthNorm * 0.24 + scanBoost * 0.42);
+          const width = 1.35 + depthNorm * 0.28 + scanBoost * 0.65;
+          lineEl.setAttribute(
+            'stroke',
+            scanBoost > 0.55
+              ? `rgba(185,252,255,${alpha.toFixed(3)})`
+              : `rgba(0,240,255,${alpha.toFixed(3)})`
+          );
           lineEl.setAttribute('stroke-width', width.toFixed(2));
         } else {
-          // Side and bottom edges: front-facing glow cyan, rear-facing subtle gray
+          // Vertical pillar edges also receive a subtle top-contact pulse when scanner hits their top vertex
+          const topVertexIdx = edge.a < 4 ? edge.a : edge.b < 4 ? edge.b : -1;
+          const pillarScanBoost =
+            topVertexIdx >= 0
+              ? Math.max(0, 1 - Math.abs(scanZ - CUBE_VERTICES[topVertexIdx].z) / 0.32) * 0.22
+              : 0;
+
           const isFrontEdge = depthNorm > 0.52;
-          if (isFrontEdge) {
-            const alpha = 0.22 + (depthNorm - 0.5) * 0.48;
+          if (isFrontEdge || pillarScanBoost > 0.08) {
+            const alpha = Math.min(
+              0.85,
+              0.22 + Math.max(0, depthNorm - 0.5) * 0.48 + pillarScanBoost
+            );
             lineEl.setAttribute('stroke', `rgba(0,240,255,${alpha.toFixed(3)})`);
-            lineEl.setAttribute('stroke-width', (1.15 + depthNorm * 0.4).toFixed(2));
+            lineEl.setAttribute(
+              'stroke-width',
+              (1.15 + depthNorm * 0.38 + pillarScanBoost * 0.8).toFixed(2)
+            );
           } else {
             const alpha = 0.14 + depthNorm * 0.18;
             lineEl.setAttribute('stroke', `rgba(255,255,255,${alpha.toFixed(3)})`);
@@ -343,7 +396,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         const isTopVertex = idx < 4;
         const localVertex = CUBE_VERTICES[idx];
         const scanProximity = isTopVertex
-          ? Math.max(0, 1 - Math.abs(scanZ - localVertex.z) / 0.38)
+          ? Math.max(0, 1 - Math.abs(scanZ - localVertex.z) / 0.36)
           : 0;
 
         const staggeredPulse = reducedMotion
@@ -354,17 +407,17 @@ const HolographicScannerBoxSvg: React.FC = () => {
         const coreRadius =
           (isTopVertex ? 2.25 : 1.9) +
           depthNorm * 0.45 +
-          scanProximity * 0.95 +
+          scanProximity * 1.05 +
           staggeredPulse * 0.2;
-        const glowRadius = coreRadius * (2.0 + scanProximity * 0.65);
+        const glowRadius = coreRadius * (2.0 + scanProximity * 0.75);
         const glowOpacity =
-          (0.12 + depthNorm * 0.15 + staggeredPulse * 0.12 + scanProximity * 0.36) *
+          (0.12 + depthNorm * 0.15 + staggeredPulse * 0.12 + scanProximity * 0.42) *
           (isTopVertex ? 1 : 0.72);
 
         coreCircle.setAttribute('r', coreRadius.toFixed(2));
         coreCircle.setAttribute(
           'fill',
-          scanProximity > 0.4
+          scanProximity > 0.35
             ? '#ffffff'
             : isTopVertex || depthNorm > 0.55
             ? '#00f0ff'
@@ -372,7 +425,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         );
 
         glowCircle.setAttribute('r', glowRadius.toFixed(2));
-        glowCircle.setAttribute('fill', `rgba(0,240,255,${Math.min(0.68, glowOpacity).toFixed(3)})`);
+        glowCircle.setAttribute('fill', `rgba(0,240,255,${Math.min(0.72, glowOpacity).toFixed(3)})`);
       });
     };
 
@@ -410,7 +463,12 @@ const HolographicScannerBoxSvg: React.FC = () => {
       className="w-44 h-44 sm:w-52 sm:h-52 overflow-visible select-none pointer-events-none"
     >
       <defs>
-        {/* Subtle Holographic Cyan Glow Filter for Scanner & Front Edges */}
+        {/* Dynamic ClipPath for the rotating top face of the cube */}
+        <clipPath id="xeusar-top-face-clip">
+          <polygon ref={topFaceClipPolygonRef} points="120,54 176,86 120,118 64,86" />
+        </clipPath>
+
+        {/* Subtle Holographic Cyan Glow Filter for Scanner & Passing Edge Pulses */}
         <filter id="xeusar-scanner-glow" x="-35%" y="-35%" width="170%" height="170%">
           <feGaussianBlur stdDeviation="2.4" result="blur" />
           <feMerge>
@@ -429,7 +487,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         {/* Faint Translucent Cyan Light Strip Gradient for Scanner */}
         <linearGradient id="xeusar-scan-strip-grad" x1="0%" y1="0%" x2="100%" y2="100%">
           <stop offset="0%" stopColor="rgba(0,240,255,0.03)" />
-          <stop offset="50%" stopColor="rgba(0,240,255,0.20)" />
+          <stop offset="50%" stopColor="rgba(0,240,255,0.22)" />
           <stop offset="100%" stopColor="rgba(0,240,255,0.03)" />
         </linearGradient>
 
@@ -522,12 +580,14 @@ const HolographicScannerBoxSvg: React.FC = () => {
         fill="url(#xeusar-scan-curtain-grad)"
       />
 
-      {/* Illuminated Translucent Cyan Strip Across Top Face */}
-      <polygon
-        ref={scanStripRef}
-        points="92,70 148,102 136,109 80,77"
-        fill="url(#xeusar-scan-strip-grad)"
-      />
+      {/* Illuminated Translucent Cyan Strip Clipped to Top Face */}
+      <g clipPath="url(#xeusar-top-face-clip)">
+        <polygon
+          ref={scanStripRef}
+          points="92,70 148,102 136,109 80,77"
+          fill="url(#xeusar-scan-strip-grad)"
+        />
+      </g>
 
       {/* 12 3D Wireframe Cube Edges */}
       {CUBE_EDGES.map((_, idx) => (
@@ -546,6 +606,32 @@ const HolographicScannerBoxSvg: React.FC = () => {
         />
       ))}
 
+      {/* Synchronized Traveling Light Pulses on Top Edges Passed by Scanner */}
+      <line
+        ref={scanEdgePulseLeftRef}
+        x1="78"
+        y1="78"
+        x2="106"
+        y2="62"
+        stroke="#a5f3fc"
+        strokeWidth="2.35"
+        strokeOpacity="0.82"
+        strokeLinecap="round"
+        filter="url(#xeusar-scanner-glow)"
+      />
+      <line
+        ref={scanEdgePulseRightRef}
+        x1="134"
+        y1="110"
+        x2="162"
+        y2="94"
+        stroke="#a5f3fc"
+        strokeWidth="2.35"
+        strokeOpacity="0.82"
+        strokeLinecap="round"
+        filter="url(#xeusar-scanner-glow)"
+      />
+
       {/* Scanner Beam Soft Cyan Glow Line */}
       <line
         ref={scanBeamGlowRef}
@@ -555,7 +641,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         y2="102"
         stroke="#00f0ff"
         strokeWidth="2.8"
-        strokeOpacity="0.48"
+        strokeOpacity="0.52"
         strokeLinecap="round"
         filter="url(#xeusar-scanner-glow)"
       />
@@ -568,7 +654,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         x2="148"
         y2="102"
         stroke="#e0ffff"
-        strokeWidth="1.35"
+        strokeWidth="1.4"
         strokeLinecap="round"
       />
 
@@ -577,7 +663,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         ref={scanEndpointARef}
         cx="92"
         cy="70"
-        r="1.9"
+        r="1.95"
         fill="#ffffff"
         filter="url(#xeusar-scanner-glow)"
       />
@@ -585,7 +671,7 @@ const HolographicScannerBoxSvg: React.FC = () => {
         ref={scanEndpointBRef}
         cx="148"
         cy="102"
-        r="1.9"
+        r="1.95"
         fill="#ffffff"
         filter="url(#xeusar-scanner-glow)"
       />
