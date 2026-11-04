@@ -1,10 +1,15 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { StudyNote, SupabaseConfig } from '../types/index.ts';
 import { INITIAL_STUDY_NOTES } from '../data/seedData.ts';
+import {
+  fetchAggregatedPublicPlatformData,
+  updateCurrentUserPublicManifest
+} from './publicSyncRelay.ts';
 
 const STORAGE_KEY_CONFIG = 'xeusar_supabase_config_v2';
 const STORAGE_KEY_NOTES = 'xeusar_local_notes_v2';
 const STORAGE_KEY_UPVOTES = 'xeusar_user_upvotes_v2';
+const STORAGE_KEY_DELETED_NOTE_IDS = 'xeusar_deleted_note_ids_v1';
 
 // Helper to strictly validate HTTP/HTTPS URLs
 export function isValidHttpUrl(urlString: string | null | undefined): boolean {
@@ -44,7 +49,7 @@ export function getSavedSupabaseConfig(): SupabaseConfig {
         };
       }
     }
-  } catch (e) {
+  } catch {
     // Ignore storage parse issues
   }
 
@@ -68,7 +73,7 @@ export function getSavedSupabaseConfig(): SupabaseConfig {
 export function saveSupabaseConfig(config: SupabaseConfig): void {
   try {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
-  } catch (e) {
+  } catch {
     // Ignore storage issues
   }
 }
@@ -100,13 +105,15 @@ export function getSupabaseInstance(config?: SupabaseConfig): SupabaseClient | n
     cachedConfigSignature = sig;
     return cachedClient;
   } catch {
-    // Do not log error to avoid triggering false-positive AI Studio crash alerts
     return null;
   }
 }
 
 // Test live Supabase connection
-export async function testSupabaseConnection(url: string, key: string): Promise<{ success: boolean; message: string }> {
+export async function testSupabaseConnection(
+  url: string,
+  key: string
+): Promise<{ success: boolean; message: string; missingTables?: string[] }> {
   if (!url || !key) {
     return { success: false, message: 'URL and Anon Key are required.' };
   }
@@ -123,62 +130,121 @@ export async function testSupabaseConnection(url: string, key: string): Promise<
       auth: { persistSession: false }
     });
 
-    // Test a basic select or health call
-    const { error } = await testClient.from('study_notes').select('id').limit(1);
+    const coreTables = [
+      'profiles',
+      'academic_information',
+      'user_settings_preferences',
+      'study_notes',
+      'forum_posts',
+      'forum_comments',
+      'program_discussions',
+      'program_doubts',
+      'universities'
+    ];
 
-    if (error) {
+    const missingTables: string[] = [];
+    for (const table of coreTables) {
+      const { error } = await testClient.from(table).select('*').limit(1);
       if (
-        error.code === '42P01' ||
-        error.code === 'PGRST205' ||
-        error.message.includes('relation "study_notes" does not exist') ||
-        error.message.includes('schema cache') ||
-        error.message.includes('not found')
+        error &&
+        (error.code === '42P01' ||
+          error.code === 'PGRST205' ||
+          error.message.includes('does not exist') ||
+          error.message.includes('schema cache'))
       ) {
-        return {
-          success: true,
-          message: 'Connected to Supabase! (Note: database tables are not created yet; run the provided SQL migration in your Supabase SQL Editor).'
-        };
+        missingTables.push(table);
       }
-      return { success: false, message: `Supabase responded with: ${error.message} (Code: ${error.code})` };
     }
 
-    return { success: true, message: 'Connected to Supabase study_notes table successfully!' };
+    if (missingTables.length > 0) {
+      return {
+        success: true,
+        missingTables,
+        message: `Connected to Supabase! (${coreTables.length - missingTables.length}/${coreTables.length} core tables active. Run the updated SQL Migration Script in your Supabase SQL Editor to create: ${missingTables.join(', ')}).`
+      };
+    }
+
+    return {
+      success: true,
+      missingTables: [],
+      message: 'Connected to Supabase! All core database tables and policies are active.'
+    };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Could not reach Supabase endpoint.' };
   }
 }
 
+function getActiveUserIdFromStorage(): string | undefined {
+  try {
+    const raw = localStorage.getItem('studyvault_active_user');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.id) return String(parsed.id);
+    }
+  } catch {}
+  return undefined;
+}
+
+export function getDeletedNoteIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DELETED_NOTE_IDS);
+    if (raw) {
+      return new Set(JSON.parse(raw));
+    }
+  } catch {}
+  return new Set();
+}
+
+export function recordDeletedNoteId(noteId: string): void {
+  if (!noteId) return;
+  try {
+    const set = getDeletedNoteIds();
+    set.add(noteId);
+    localStorage.setItem(STORAGE_KEY_DELETED_NOTE_IDS, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
 // Local Storage Fallback Data Manager
 export function getLocalNotes(): StudyNote[] {
+  const deletedIds = getDeletedNoteIds();
   try {
     const stored = localStorage.getItem(STORAGE_KEY_NOTES);
     if (stored) {
       const parsed: StudyNote[] = JSON.parse(stored);
       const upvotes = getUpvotedIds();
-      return parsed.map(note => ({
-        ...note,
-        hasUpvoted: upvotes.has(note.id)
-      }));
+      return parsed
+        .filter(note => !deletedIds.has(note.id))
+        .map(note => ({
+          ...note,
+          hasUpvoted: upvotes.has(note.id)
+        }));
     }
-  } catch (e) {
+  } catch {
     // Fall back to seed notes
   }
 
-  // Initialize with seed data
-  setLocalNotes(INITIAL_STUDY_NOTES);
-  return INITIAL_STUDY_NOTES;
+  const initial = INITIAL_STUDY_NOTES.filter(n => !deletedIds.has(n.id));
+  setLocalNotes(initial);
+  return initial;
 }
 
 export function setLocalNotes(notes: StudyNote[]): void {
   try {
     localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(notes));
-  } catch (e) {
+  } catch {
     // Ignore storage issues
   }
 }
 
-export function getUpvotedIds(): Set<string> {
+export function getUpvotedIds(userId?: string): Set<string> {
+  const effectiveUser = userId || getActiveUserIdFromStorage();
   try {
+    if (effectiveUser) {
+      const scoped = localStorage.getItem(`${STORAGE_KEY_UPVOTES}_${effectiveUser}`);
+      if (scoped) {
+        return new Set(JSON.parse(scoped));
+      }
+    }
     const stored = localStorage.getItem(STORAGE_KEY_UPVOTES);
     if (stored) {
       return new Set(JSON.parse(stored));
@@ -187,8 +253,20 @@ export function getUpvotedIds(): Set<string> {
   return new Set();
 }
 
-export function toggleUpvoteLocal(noteId: string): { upvoted: boolean; count: number } {
-  const upvotes = getUpvotedIds();
+function saveUpvotedIds(upvotes: Set<string>, userId?: string): void {
+  const effectiveUser = userId || getActiveUserIdFromStorage();
+  const arr = Array.from(upvotes);
+  try {
+    if (effectiveUser) {
+      localStorage.setItem(`${STORAGE_KEY_UPVOTES}_${effectiveUser}`, JSON.stringify(arr));
+    }
+    localStorage.setItem(STORAGE_KEY_UPVOTES, JSON.stringify(arr));
+  } catch {}
+}
+
+export function toggleUpvoteLocal(noteId: string, userId?: string): { upvoted: boolean; count: number } {
+  const effectiveUser = userId || getActiveUserIdFromStorage();
+  const upvotes = getUpvotedIds(effectiveUser);
   const isUpvoted = upvotes.has(noteId);
   const notes = getLocalNotes();
   const noteIndex = notes.findIndex(n => n.id === noteId);
@@ -199,30 +277,114 @@ export function toggleUpvoteLocal(noteId: string): { upvoted: boolean; count: nu
     upvotes.add(noteId);
   }
 
-  try {
-    localStorage.setItem(STORAGE_KEY_UPVOTES, JSON.stringify(Array.from(upvotes)));
-  } catch {}
+  saveUpvotedIds(upvotes, effectiveUser);
 
   let newCount = 0;
   if (noteIndex >= 0) {
-    newCount = isUpvoted ? Math.max(0, notes[noteIndex].upvotesCount - 1) : notes[noteIndex].upvotesCount + 1;
+    newCount = isUpvoted
+      ? Math.max(0, notes[noteIndex].upvotesCount - 1)
+      : notes[noteIndex].upvotesCount + 1;
     notes[noteIndex].upvotesCount = newCount;
     notes[noteIndex].hasUpvoted = !isUpvoted;
     setLocalNotes(notes);
   }
 
+  // Sync upvote with Supabase in the background
+  const supabase = getSupabaseInstance();
+  if (supabase) {
+    syncNoteUpvoteToSupabase(supabase, noteId, effectiveUser, !isUpvoted, newCount).catch(() => {});
+  }
+
   return { upvoted: !isUpvoted, count: newCount };
+}
+
+export async function syncNoteUpvoteToSupabase(
+  supabase: SupabaseClient | null,
+  noteId: string,
+  userId: string | undefined,
+  upvoted: boolean,
+  newCount: number
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(userId)) {
+      // Update public sync manifest for cross-user upvote tally
+      await updateCurrentUserPublicManifest(supabase, userId, current => {
+        const set = new Set<string>(current.noteUpvotes || []);
+        if (upvoted) {
+          set.add(noteId);
+        } else {
+          set.delete(noteId);
+        }
+        return {
+          ...current,
+          noteUpvotes: Array.from(set)
+        };
+      });
+
+      // Sync to note_upvotes table if present
+      if (upvoted) {
+        await supabase
+          .from('note_upvotes')
+          .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'note_id,user_id' })
+          .then(() => {}, () => {});
+      } else {
+        await supabase
+          .from('note_upvotes')
+          .delete()
+          .eq('note_id', noteId)
+          .eq('user_id', userId)
+          .then(() => {}, () => {});
+      }
+    }
+
+    // Update study_notes counter if table is present
+    await supabase
+      .from('study_notes')
+      .update({ upvotes_count: newCount })
+      .eq('id', noteId)
+      .then(() => {}, () => {});
+  } catch {
+    // Ignore network or unmigrated table errors
+  }
 }
 
 export function incrementDownloadCountLocal(noteId: string): number {
   const notes = getLocalNotes();
   const noteIndex = notes.findIndex(n => n.id === noteId);
+  let nextCount = 1;
   if (noteIndex >= 0) {
     notes[noteIndex].downloadsCount += 1;
+    nextCount = notes[noteIndex].downloadsCount;
     setLocalNotes(notes);
-    return notes[noteIndex].downloadsCount;
   }
-  return 0;
+
+  const supabase = getSupabaseInstance();
+  if (supabase) {
+    syncNoteDownloadToSupabase(supabase, noteId, nextCount).catch(() => {});
+  }
+
+  return nextCount;
+}
+
+export async function syncNoteDownloadToSupabase(
+  supabase: SupabaseClient | null,
+  noteId: string,
+  nextCount: number
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    const { error: rpcErr } = await supabase.rpc('increment_downloads', { note_id: noteId });
+    if (rpcErr) {
+      await supabase
+        .from('study_notes')
+        .update({ downloads_count: nextCount })
+        .eq('id', noteId)
+        .then(() => {}, () => {});
+    }
+  } catch {
+    // Ignore offline errors
+  }
 }
 
 export function addLocalNote(newNote: StudyNote): void {
@@ -231,98 +393,191 @@ export function addLocalNote(newNote: StudyNote): void {
   setLocalNotes(notes);
 }
 
-// Unified Service to fetch notes (Supabase if connected, else Local)
-export async function fetchAllNotes(supabaseClient: SupabaseClient | null): Promise<{
+/**
+ * Extracts lossless extended metadata embedded in `row.pages[0]._xeusarMeta` when
+ * `study_notes` in Supabase only has the base columns.
+ */
+function extractEmbeddedMetaFromPages(pagesRaw: any): Record<string, any> {
+  if (!Array.isArray(pagesRaw) || pagesRaw.length === 0) return {};
+  const firstPage = pagesRaw[0];
+  if (firstPage && typeof firstPage === 'object' && firstPage._xeusarMeta && typeof firstPage._xeusarMeta === 'object') {
+    return firstPage._xeusarMeta;
+  }
+  return {};
+}
+
+// Unified Service to fetch notes (Supabase study_notes + Public Sync Relay + Local)
+export async function fetchAllNotes(
+  supabaseClient: SupabaseClient | null,
+  currentUserId?: string
+): Promise<{
   notes: StudyNote[];
   isFromSupabase: boolean;
   error?: string;
 }> {
+  const effectiveUserId = currentUserId || getActiveUserIdFromStorage();
+  const deletedIds = getDeletedNoteIds();
   const localNotes = getLocalNotes();
   const localById = new Map<string, StudyNote>();
   localNotes.forEach(n => localById.set(n.id, n));
 
-  if (supabaseClient) {
-    try {
-      const { data, error } = await supabaseClient
-        .from('study_notes')
-        .select('*')
-        .order('created_at', { ascending: false });
+  if (!supabaseClient) {
+    return { notes: localNotes, isFromSupabase: false };
+  }
 
-      if (error) {
-        return { notes: localNotes, isFromSupabase: false, error: error.message };
+  const upvotes = getUpvotedIds(effectiveUserId);
+  let studyNotesTableRows: StudyNote[] | null = null;
+  let tableErrorMsg: string | undefined;
+
+  try {
+    // 1. Fetch user's remote note_upvotes if authenticated
+    if (effectiveUserId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(effectiveUserId)) {
+      const { data: upvoteRows, error: upvoteErr } = await supabaseClient
+        .from('note_upvotes')
+        .select('note_id')
+        .eq('user_id', effectiveUserId);
+
+      if (!upvoteErr && Array.isArray(upvoteRows)) {
+        upvoteRows.forEach((r: any) => {
+          if (r.note_id) upvotes.add(String(r.note_id));
+        });
+        saveUpvotedIds(upvotes, effectiveUserId);
       }
+    }
 
-      if (data && data.length > 0) {
-        const upvotes = getUpvotedIds();
-        const mapped: StudyNote[] = data.map((row: any) => {
-          const localMatch = localById.get(row.id);
+    // 2. Query dedicated `study_notes` table
+    const { data, error } = await supabaseClient
+      .from('study_notes')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      tableErrorMsg = error.message;
+    } else if (Array.isArray(data)) {
+      studyNotesTableRows = data
+        .filter((row: any) => row && row.id && !deletedIds.has(String(row.id)))
+        .map((row: any) => {
+          const id = String(row.id);
+          const localMatch = localById.get(id);
+          const embeddedMeta = extractEmbeddedMetaFromPages(row.pages);
+
+          const resolvedProgramId =
+            row.program_id || embeddedMeta.programId || localMatch?.programId;
+          const resolvedProgramIds =
+            Array.isArray(row.program_ids) && row.program_ids.length > 0
+              ? row.program_ids
+              : Array.isArray(embeddedMeta.programIds) && embeddedMeta.programIds.length > 0
+              ? embeddedMeta.programIds
+              : localMatch?.programIds || (resolvedProgramId ? [resolvedProgramId] : undefined);
+          const resolvedSemesterNum =
+            typeof row.semester_number === 'number'
+              ? row.semester_number
+              : typeof embeddedMeta.semesterNumber === 'number'
+              ? embeddedMeta.semesterNumber
+              : localMatch?.semesterNumber;
+
           return {
-            id: row.id,
+            id,
             title: row.title,
             description: row.description || '',
             courseCode: row.course_code,
-            courseName: row.course_name || localMatch?.courseName || row.subject,
-            courseId: row.course_id || localMatch?.courseId,
+            courseName: row.course_name || embeddedMeta.courseName || localMatch?.courseName || row.subject,
+            courseId: row.course_id || embeddedMeta.courseId || localMatch?.courseId,
             subject: row.subject,
             materialType: row.material_type,
             academicYear: row.academic_year || new Date().getFullYear(),
             semester: row.semester || localMatch?.semester || 'Current Semester',
-            semesterNumber:
-              typeof row.semester_number === 'number'
-                ? row.semester_number
-                : localMatch?.semesterNumber,
-            semesterId:
-              row.semester_number
-                ? `sem-${row.semester_number}`
-                : localMatch?.semesterId,
+            semesterNumber: resolvedSemesterNum,
+            semesterId: resolvedSemesterNum ? `sem-${resolvedSemesterNum}` : localMatch?.semesterId,
             professor: row.professor || 'Instructor',
             fileUrl: row.file_url,
             fileName: row.file_name,
-            fileSizeBytes: row.file_size_bytes || 2048000,
-            pageCount: row.page_count || 10,
-            uploaderId: row.uploader_id || localMatch?.uploaderId,
+            fileSizeBytes: Number(row.file_size_bytes) || 2048000,
+            pageCount: Number(row.page_count) || 10,
+            uploaderId: row.uploader_id || embeddedMeta.uploaderId || localMatch?.uploaderId,
             uploaderName: row.uploader_name || 'Student Contributor',
             uploaderUniversity: row.uploader_university || 'Open Campus',
-            universityId: row.university_id || localMatch?.universityId,
-            programId: row.program_id || localMatch?.programId,
-            programIds:
-              Array.isArray(row.program_ids) && row.program_ids.length > 0
-                ? row.program_ids
-                : localMatch?.programIds ||
-                  (row.program_id ? [row.program_id] : undefined),
-            programName: row.program_name || localMatch?.programName,
-            degreeTier: row.degree_tier || localMatch?.degreeTier,
-            contentHash: row.content_hash || localMatch?.contentHash,
-            storagePath: row.storage_path || localMatch?.storagePath,
-            downloadsCount: row.downloads_count || 0,
-            upvotesCount: row.upvotes_count || 0,
-            hasUpvoted: upvotes.has(row.id),
+            universityId: row.university_id || embeddedMeta.universityId || localMatch?.universityId,
+            programId: resolvedProgramId,
+            programIds: resolvedProgramIds,
+            programName: row.program_name || embeddedMeta.programName || localMatch?.programName,
+            degreeTier: row.degree_tier || embeddedMeta.degreeTier || localMatch?.degreeTier,
+            contentHash: row.content_hash || embeddedMeta.contentHash || localMatch?.contentHash,
+            storagePath: row.storage_path || embeddedMeta.storagePath || localMatch?.storagePath,
+            downloadsCount: Number(row.downloads_count) || 0,
+            upvotesCount: Number(row.upvotes_count) || 0,
+            hasUpvoted: upvotes.has(id),
             createdAt: row.created_at,
-            tags: row.tags || [row.subject, row.course_code],
-            pages: row.pages || localMatch?.pages || [
-              {
-                pageNumber: 1,
-                sectionTitle: `${row.title} - Overview`,
-                content: row.description || 'Uploaded study guide and lecture notes.',
-                keyFormulasOrPoints: ['Verified peer study material', 'Complete syllabus coverage']
-              }
-            ]
+            tags: Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : [row.subject, row.course_code],
+            pages: Array.isArray(row.pages) && row.pages.length > 0
+              ? row.pages
+              : localMatch?.pages || [
+                  {
+                    pageNumber: 1,
+                    sectionTitle: `${row.title} - Overview`,
+                    content: row.description || 'Uploaded study guide and lecture notes.',
+                    keyFormulasOrPoints: ['Verified peer study material', 'Complete syllabus coverage']
+                  }
+                ]
           };
         });
-
-        // Merge any local notes that are not yet in remote rows (by id) so zero resources are lost
-        const remoteIds = new Set(mapped.map(m => m.id));
-        const merged = [
-          ...mapped,
-          ...localNotes.filter(ln => !remoteIds.has(ln.id))
-        ];
-        setLocalNotes(merged);
-        return { notes: merged, isFromSupabase: true };
-      }
-    } catch {
-      // Fallback
     }
+  } catch (err: any) {
+    tableErrorMsg = err?.message;
   }
 
-  return { notes: localNotes, isFromSupabase: false };
+  // 3. Also fetch cross-user public sync relay data (covers unmigrated study_notes table or cross-user metadata)
+  const aggregatedRelay = await fetchAggregatedPublicPlatformData(supabaseClient, effectiveUserId);
+  const relayNotes = (aggregatedRelay?.notes || []).filter(n => !deletedIds.has(n.id));
+
+  if (studyNotesTableRows !== null || relayNotes.length > 0) {
+    const mergedById = new Map<string, StudyNote>();
+
+    // First add remote study_notes rows (highest authority)
+    if (studyNotesTableRows) {
+      studyNotesTableRows.forEach(n => mergedById.set(n.id, n));
+    }
+
+    // Next add verified cross-user notes from public sync relay
+    relayNotes.forEach(rn => {
+      if (!mergedById.has(rn.id)) {
+        mergedById.set(rn.id, {
+          ...rn,
+          hasUpvoted: upvotes.has(rn.id) || Boolean(rn.hasUpvoted)
+        });
+      } else {
+        const existing = mergedById.get(rn.id)!;
+        mergedById.set(rn.id, {
+          ...existing,
+          programId: existing.programId || rn.programId,
+          programIds: existing.programIds || rn.programIds,
+          programName: existing.programName || rn.programName,
+          degreeTier: existing.degreeTier || rn.degreeTier,
+          semesterNumber: existing.semesterNumber ?? rn.semesterNumber,
+          semesterId: existing.semesterId || rn.semesterId,
+          courseId: existing.courseId || rn.courseId,
+          universityId: existing.universityId || rn.universityId,
+          upvotesCount: Math.max(existing.upvotesCount || 0, rn.upvotesCount || 0)
+        });
+      }
+    });
+
+    // Preserve local seed notes + any local notes uploaded in this browser that haven't been deleted
+    localNotes.forEach(ln => {
+      if (!deletedIds.has(ln.id) && !mergedById.has(ln.id)) {
+        mergedById.set(ln.id, {
+          ...ln,
+          hasUpvoted: upvotes.has(ln.id)
+        });
+      }
+    });
+
+    const finalNotes = Array.from(mergedById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    setLocalNotes(finalNotes);
+    return { notes: finalNotes, isFromSupabase: true };
+  }
+
+  return { notes: localNotes, isFromSupabase: false, error: tableErrorMsg };
 }

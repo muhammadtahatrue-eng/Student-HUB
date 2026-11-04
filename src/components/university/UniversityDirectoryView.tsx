@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Building2,
   MapPin,
@@ -58,7 +58,8 @@ import {
   acceptDoubtAnswer,
   toggleDoubtUpvote,
   getUniversityRealResourceCounts,
-  checkDocumentAccess
+  checkDocumentAccess,
+  syncUniversitiesFromSupabase
 } from '../../lib/universityStore.ts';
 import { NoteCard } from '../NoteCard.tsx';
 
@@ -207,6 +208,18 @@ export const UniversityDirectoryView: React.FC<UniversityDirectoryViewProps> = (
       searchQuery: doubtSearch
     });
   }, [universityId, doubtStatusFilter, doubtSearch, doubtsVersion]);
+
+  useEffect(() => {
+    const refresh = () => {
+      setDiscussionsVersion(v => v + 1);
+      setDoubtsVersion(v => v + 1);
+    };
+    syncUniversitiesFromSupabase(undefined, notes).catch(() => {});
+    window.addEventListener('xeusar-university-data-synced', refresh);
+    return () => {
+      window.removeEventListener('xeusar-university-data-synced', refresh);
+    };
+  }, [universityId, notes, user?.id]);
 
   if (!university) {
     return (

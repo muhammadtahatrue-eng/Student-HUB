@@ -93,7 +93,7 @@ interface PublicForumViewProps {
   notes: StudyNote[];
   initialPostId?: string | null;
   onPreviewNote: (note: StudyNote) => void;
-  onOpenProgram: (programId: string) => void;
+  onOpenProgram: (programId: string, subTab?: any) => void;
   onOpenAuthModal: (mode?: 'signin' | 'signup' | 'settings' | 'profile') => void;
   onTriggerToast: (msg: string) => void;
 }

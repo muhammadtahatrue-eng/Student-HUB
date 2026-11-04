@@ -12,6 +12,28 @@ import {
   StudyNote
 } from '../types/index.ts';
 import { isIgnorableSchemaOrTableError } from './profileService.ts';
+import { getSupabaseInstance } from './supabaseClient.ts';
+import {
+  fetchAggregatedPublicPlatformData,
+  updateCurrentUserPublicManifest
+} from './publicSyncRelay.ts';
+
+function isMissingForumTableError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error.code || '').toUpperCase();
+  const msg = String(error.message || '').toLowerCase();
+  return (
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    msg.includes('could not find the table') ||
+    (msg.includes('relation') && msg.includes('does not exist'))
+  );
+}
+
+function isUuidString(val?: string | null): boolean {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+}
 
 // ============================================================================
 // CONFIGURABLE TEXT-FIRST FORUM LIMITS & CONSTANTS
@@ -616,12 +638,52 @@ export async function fetchForumPosts(
   supabase: SupabaseClient | null,
   currentUserId?: string
 ): Promise<{ posts: ForumPost[]; error?: string }> {
+  const sb = supabase ?? getSupabaseInstance();
   const voteMap = getStoredVoteMap();
   const bookmarksMap = getStoredBookmarksMap();
   const userBookmarks = new Set<string>(currentUserId ? bookmarksMap[currentUserId] || [] : []);
 
-  const localPosts = getStoredPosts();
-  const localComments = getStoredComments().filter(c => c.status !== 'removed');
+  let localPosts = getStoredPosts();
+  let localComments = getStoredComments().filter(c => c.status !== 'removed');
+
+  // 1. Pull verified cross-user forum posts, comments, and accepted answers from publicSyncRelay
+  if (sb) {
+    try {
+      const aggregated = await fetchAggregatedPublicPlatformData(sb);
+      if (aggregated.forumComments.length > 0) {
+        const commById = new Map<string, ForumComment>();
+        localComments.forEach(c => commById.set(c.id, c));
+        aggregated.forumComments.forEach(c => {
+          if (c.status !== 'removed') {
+            commById.set(c.id, c);
+          }
+        });
+        localComments = Array.from(commById.values());
+        saveStoredComments(localComments);
+      }
+
+      if (aggregated.forumPosts.length > 0 || Object.keys(aggregated.acceptedAnswers).length > 0) {
+        const postById = new Map<string, ForumPost>();
+        localPosts.forEach(p => postById.set(p.id, p));
+        aggregated.forumPosts.forEach(p => {
+          if (p.status !== 'removed') {
+            postById.set(p.id, p);
+          }
+        });
+        for (const [pid, cid] of Object.entries(aggregated.acceptedAnswers)) {
+          const existing = postById.get(pid);
+          if (existing) {
+            postById.set(pid, {
+              ...existing,
+              acceptedCommentId: cid || null
+            });
+          }
+        }
+        localPosts = Array.from(postById.values());
+        saveStoredPosts(localPosts);
+      }
+    } catch {}
+  }
 
   // Recompute accurate comment counts from real comments
   const commentCountsByPost = new Map<string, number>();
@@ -629,16 +691,16 @@ export async function fetchForumPosts(
     commentCountsByPost.set(c.postId, (commentCountsByPost.get(c.postId) || 0) + 1);
   });
 
-  if (supabase && forumTablesAvailable !== false) {
+  if (sb && forumTablesAvailable !== false) {
     try {
-      const { data: postRows, error: postError } = await supabase
+      const { data: postRows, error: postError } = await sb
         .from('forum_posts')
         .select('*')
         .neq('status', 'removed')
         .order('created_at', { ascending: false });
 
       if (postError) {
-        if (isIgnorableSchemaOrTableError(postError)) {
+        if (isMissingForumTableError(postError)) {
           forumTablesAvailable = false;
         }
       } else if (postRows) {
@@ -647,11 +709,11 @@ export async function fetchForumPosts(
         // Also fetch user's votes and bookmarks from Supabase if authenticated
         if (currentUserId) {
           const [votesRes, bookmarksRes] = await Promise.all([
-            supabase
+            sb
               .from('forum_votes')
               .select('target_type, target_id, vote_value')
               .eq('user_id', currentUserId),
-            supabase
+            sb
               .from('forum_bookmarks')
               .select('post_id')
               .eq('user_id', currentUserId)
@@ -679,9 +741,11 @@ export async function fetchForumPosts(
           .filter(p => p.status !== 'removed')
           .forEach(p => {
             const vKey = currentUserId ? `${currentUserId}::post::${p.id}` : '';
-            const uv = vKey ? voteMap[vKey] || 0 : 0;
+            const uv = (vKey ? voteMap[vKey] || 0 : 0) as -1 | 0 | 1;
+            const liveComments = commentCountsByPost.get(p.id) ?? (p.commentsCount || 0);
             mergedById.set(p.id, {
               ...p,
+              commentsCount: Math.max(p.commentsCount || 0, liveComments),
               score: (p.upvotesCount || 0) - (p.downvotesCount || 0),
               userVote: uv,
               isBookmarked: userBookmarks.has(p.id)
@@ -693,7 +757,11 @@ export async function fetchForumPosts(
           const vKey = currentUserId ? `${currentUserId}::post::${id}` : '';
           const uv = vKey ? voteMap[vKey] || 0 : 0;
           const mapped = mapRowToForumPost(row, uv, userBookmarks.has(id));
-          mergedById.set(id, mapped);
+          const liveComments = commentCountsByPost.get(id) ?? mapped.commentsCount;
+          mergedById.set(id, {
+            ...mapped,
+            commentsCount: Math.max(mapped.commentsCount, liveComments)
+          });
         });
 
         const finalPosts = Array.from(mergedById.values()).sort(
@@ -703,7 +771,7 @@ export async function fetchForumPosts(
         return { posts: finalPosts };
       }
     } catch {
-      // Fall back to local persistent database records
+      // Fall back to local + aggregated persistent database records
     }
   }
 
@@ -711,9 +779,9 @@ export async function fetchForumPosts(
     .filter(p => p.status !== 'removed')
     .map(p => {
       const vKey = currentUserId ? `${currentUserId}::post::${p.id}` : '';
-      const uv = vKey ? voteMap[vKey] || 0 : 0;
+      const uv = (vKey ? voteMap[vKey] || 0 : 0) as -1 | 0 | 1;
       const realCommentCount = commentCountsByPost.has(p.id)
-        ? commentCountsByPost.get(p.id)!
+        ? Math.max(p.commentsCount || 0, commentCountsByPost.get(p.id)!)
         : p.commentsCount || 0;
       return {
         ...p,
@@ -853,43 +921,65 @@ export async function createForumPost(params: {
   voteMap[`${params.author.id}::post::${postId}`] = 1;
   saveStoredVoteMap(voteMap);
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      const { data, error } = await params.supabase
+      const insertPayload = {
+        id: postId,
+        title: newPost.title,
+        body: newPost.body,
+        post_type: newPost.postType,
+        topic_id: newPost.topicId,
+        topic_name: newPost.topicName,
+        author_id: newPost.authorId,
+        author_name: newPost.authorName,
+        author_username: newPost.authorUsername,
+        author_avatar: newPost.authorAvatar || null,
+        author_program: newPost.authorProgram || null,
+        author_degree_tier: newPost.authorDegreeTier || null,
+        author_university: newPost.authorUniversity || null,
+        resource_id: newPost.resourceId || null,
+        program_course_ref: newPost.programCourseRef || null,
+        external_link: newPost.externalLink || null,
+        upvotes_count: 1,
+        downvotes_count: 0,
+        comments_count: 0,
+        status: 'published',
+        idempotency_key: newPost.idempotencyKey || null
+      };
+
+      let { data, error } = await sb
         .from('forum_posts')
-        .insert({
-          id: postId,
-          title: newPost.title,
-          body: newPost.body,
-          post_type: newPost.postType,
-          topic_id: newPost.topicId,
-          topic_name: newPost.topicName,
-          author_id: newPost.authorId,
-          author_name: newPost.authorName,
-          author_username: newPost.authorUsername,
-          author_avatar: newPost.authorAvatar || null,
-          author_program: newPost.authorProgram || null,
-          author_degree_tier: newPost.authorDegreeTier || null,
-          author_university: newPost.authorUniversity || null,
-          resource_id: newPost.resourceId || null,
-          program_course_ref: newPost.programCourseRef || null,
-          external_link: newPost.externalLink || null,
-          upvotes_count: 1,
-          downvotes_count: 0,
-          comments_count: 0,
-          status: 'published',
-          idempotency_key: newPost.idempotencyKey || null
-        })
+        .insert(insertPayload)
         .select('*')
         .single();
 
+      // If forum_topics isn't seeded yet (FK 23503), seed FORUM_TOPICS and retry
+      if (error && error.code === '23503') {
+        await sb
+          .from('forum_topics')
+          .upsert(
+            FORUM_TOPICS.map(t => ({
+              id: t.id,
+              name: t.name,
+              slug: t.slug,
+              description: t.description
+            })),
+            { onConflict: 'id' }
+          )
+          .then(() => {}, () => {});
+        const retryRes = await sb.from('forum_posts').insert(insertPayload).select('*').single();
+        data = retryRes.data;
+        error = retryRes.error;
+      }
+
       if (error) {
-        if (isIgnorableSchemaOrTableError(error)) {
+        if (isMissingForumTableError(error)) {
           forumTablesAvailable = false;
         }
       } else if (data) {
         forumTablesAvailable = true;
-        await params.supabase
+        await sb
           .from('forum_votes')
           .upsert(
             {
@@ -910,6 +1000,18 @@ export async function createForumPost(params: {
   const updatedPosts = [newPost, ...existingPosts.filter(p => p.id !== newPost.id)];
   saveStoredPosts(updatedPosts);
   clearForumPostDraft(params.author.id);
+
+  if (sb && isUuidString(params.author.id)) {
+    await updateCurrentUserPublicManifest(
+      sb,
+      params.author.id,
+      prev => ({
+        ...prev,
+        forumPosts: [newPost, ...(prev.forumPosts || []).filter(p => p.id !== newPost.id)]
+      }),
+      newPost.authorName
+    );
+  }
 
   return { post: newPost };
 }
@@ -970,9 +1072,10 @@ export async function updateForumPost(params: {
     updatedAt
   };
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      await params.supabase
+      await sb
         .from('forum_posts')
         .update({
           title: updatedPost.title,
@@ -992,6 +1095,16 @@ export async function updateForumPost(params: {
 
   posts[index] = updatedPost;
   saveStoredPosts(posts);
+
+  if (sb && isUuidString(params.user.id)) {
+    await updateCurrentUserPublicManifest(sb, params.user.id, prev => ({
+      ...prev,
+      forumPosts: (prev.forumPosts || []).some(p => p.id === updatedPost.id)
+        ? (prev.forumPosts || []).map(p => (p.id === updatedPost.id ? updatedPost : p))
+        : [updatedPost, ...(prev.forumPosts || [])]
+    }));
+  }
+
   return { post: updatedPost };
 }
 
@@ -1014,9 +1127,10 @@ export async function deleteForumPost(params: {
     return { success: false, error: 'Permission denied: Only the author can delete this post.' };
   }
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      await params.supabase
+      await sb
         .from('forum_posts')
         .delete()
         .eq('id', params.postId)
@@ -1030,6 +1144,13 @@ export async function deleteForumPost(params: {
   const remainingComments = getStoredComments().filter(c => c.postId !== params.postId);
   saveStoredComments(remainingComments);
 
+  if (sb && isUuidString(params.user.id)) {
+    await updateCurrentUserPublicManifest(sb, params.user.id, prev => ({
+      ...prev,
+      forumPosts: (prev.forumPosts || []).filter(p => p.id !== params.postId)
+    }));
+  }
+
   return { success: true };
 }
 
@@ -1042,14 +1163,44 @@ export async function fetchForumComments(
   postId: string,
   currentUserId?: string
 ): Promise<ForumComment[]> {
+  const sb = supabase ?? getSupabaseInstance();
   const voteMap = getStoredVoteMap();
-  const localComments = getStoredComments().filter(
+  let localComments = getStoredComments().filter(
     c => c.postId === postId && c.status !== 'removed'
   );
 
-  if (supabase && forumTablesAvailable !== false) {
+  // Pull cross-user comments from publicSyncRelay
+  if (sb) {
     try {
-      const { data, error } = await supabase
+      const aggregated = await fetchAggregatedPublicPlatformData(sb);
+      const acceptedCommentId = aggregated.acceptedAnswers[postId];
+      const relayForPost = aggregated.forumComments.filter(
+        c => c.postId === postId && c.status !== 'removed'
+      );
+      if (relayForPost.length > 0 || acceptedCommentId !== undefined) {
+        const mergedMap = new Map<string, ForumComment>();
+        localComments.forEach(c =>
+          mergedMap.set(c.id, {
+            ...c,
+            isAccepted: acceptedCommentId !== undefined ? c.id === acceptedCommentId : c.isAccepted
+          })
+        );
+        relayForPost.forEach(c =>
+          mergedMap.set(c.id, {
+            ...c,
+            isAccepted: acceptedCommentId !== undefined ? c.id === acceptedCommentId : c.isAccepted
+          })
+        );
+        localComments = Array.from(mergedMap.values());
+        const otherPosts = getStoredComments().filter(c => c.postId !== postId);
+        saveStoredComments([...otherPosts, ...localComments]);
+      }
+    } catch {}
+  }
+
+  if (sb && forumTablesAvailable !== false) {
+    try {
+      const { data, error } = await sb
         .from('forum_comments')
         .select('*')
         .eq('post_id', postId)
@@ -1057,7 +1208,7 @@ export async function fetchForumComments(
         .order('created_at', { ascending: true });
 
       if (error) {
-        if (isIgnorableSchemaOrTableError(error)) {
+        if (isMissingForumTableError(error)) {
           forumTablesAvailable = false;
         }
       } else if (data) {
@@ -1173,9 +1324,10 @@ export async function createForumComment(params: {
   voteMap[`${params.author.id}::comment::${commentId}`] = 1;
   saveStoredVoteMap(voteMap);
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      const { error } = await params.supabase.from('forum_comments').insert({
+      const { error } = await sb.from('forum_comments').insert({
         id: commentId,
         post_id: newComment.postId,
         parent_comment_id: newComment.parentCommentId,
@@ -1192,7 +1344,7 @@ export async function createForumComment(params: {
         status: 'published'
       });
 
-      if (error && isIgnorableSchemaOrTableError(error)) {
+      if (error && isMissingForumTableError(error)) {
         forumTablesAvailable = false;
       }
     } catch {}
@@ -1213,14 +1365,21 @@ export async function createForumComment(params: {
       commentsCount: nextCount
     };
     saveStoredPosts(posts);
+  }
 
-    if (params.supabase && forumTablesAvailable !== false) {
-      params.supabase
-        .from('forum_posts')
-        .update({ comments_count: nextCount })
-        .eq('id', params.postId)
-        .then(() => {}, () => {});
-    }
+  if (sb && isUuidString(params.author.id)) {
+    await updateCurrentUserPublicManifest(
+      sb,
+      params.author.id,
+      prev => ({
+        ...prev,
+        forumComments: [
+          newComment,
+          ...(prev.forumComments || []).filter(c => c.id !== newComment.id)
+        ]
+      }),
+      newComment.authorName
+    );
   }
 
   return { comment: newComment };
@@ -1258,9 +1417,10 @@ export async function updateForumComment(params: {
     updatedAt
   };
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      await params.supabase
+      await sb
         .from('forum_comments')
         .update({ body: updated.body, updated_at: updatedAt })
         .eq('id', params.commentId)
@@ -1270,6 +1430,16 @@ export async function updateForumComment(params: {
 
   comments[idx] = updated;
   saveStoredComments(comments);
+
+  if (sb && isUuidString(params.user.id)) {
+    await updateCurrentUserPublicManifest(sb, params.user.id, prev => ({
+      ...prev,
+      forumComments: (prev.forumComments || []).some(c => c.id === updated.id)
+        ? (prev.forumComments || []).map(c => (c.id === updated.id ? updated : c))
+        : [updated, ...(prev.forumComments || [])]
+    }));
+  }
+
   return { comment: updated };
 }
 
@@ -1305,9 +1475,10 @@ export async function deleteForumComment(params: {
     });
   }
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      await params.supabase
+      await sb
         .from('forum_comments')
         .delete()
         .eq('id', params.commentId)
@@ -1335,6 +1506,13 @@ export async function deleteForumComment(params: {
       acceptedCommentId: acceptedId
     };
     saveStoredPosts(posts);
+  }
+
+  if (sb && isUuidString(params.user.id)) {
+    await updateCurrentUserPublicManifest(sb, params.user.id, prev => ({
+      ...prev,
+      forumComments: (prev.forumComments || []).filter(c => !toDeleteIds.has(c.id))
+    }));
   }
 
   return { success: true };
@@ -1391,24 +1569,28 @@ export async function toggleAcceptedForumAnswer(params: {
   });
   saveStoredComments(comments);
 
-  if (params.supabase && forumTablesAvailable !== false) {
+  const sb = params.supabase ?? getSupabaseInstance();
+  if (sb && forumTablesAvailable !== false) {
     try {
-      await params.supabase
+      await sb
         .from('forum_posts')
         .update({ accepted_comment_id: nextAcceptedId })
         .eq('id', params.postId)
         .eq('author_id', params.user.id);
-      await params.supabase
-        .from('forum_comments')
-        .update({ is_accepted: false })
-        .eq('post_id', params.postId);
-      if (nextAcceptedId) {
-        await params.supabase
-          .from('forum_comments')
-          .update({ is_accepted: true })
-          .eq('id', nextAcceptedId);
-      }
     } catch {}
+  }
+
+  if (sb && isUuidString(params.user.id)) {
+    await updateCurrentUserPublicManifest(sb, params.user.id, prev => ({
+      ...prev,
+      forumPosts: (prev.forumPosts || []).map(p =>
+        p.id === params.postId ? { ...p, acceptedCommentId: nextAcceptedId } : p
+      ),
+      acceptedAnswers: {
+        ...(prev.acceptedAnswers || {}),
+        [params.postId]: nextAcceptedId || ''
+      }
+    }));
   }
 
   return { acceptedCommentId: nextAcceptedId };

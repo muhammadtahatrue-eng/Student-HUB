@@ -56,7 +56,8 @@ import {
   createProgramDoubt,
   toggleUpvoteProgramDoubt,
   addProgramDoubtAnswer,
-  markAcceptedProgramAnswer
+  markAcceptedProgramAnswer,
+  syncProgramsFromSupabase
 } from '../../lib/programStore.ts';
 import { MATERIAL_TYPE_LABELS } from '../../data/seedData.ts';
 import {
@@ -142,10 +143,11 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
     }
   };
 
-  const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds());
+  const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds(studentUser?.id));
+  const [syncVersion, setSyncVersion] = useState(0);
 
   // Program details
-  const program = useMemo(() => getProgramById(programId), [programId]);
+  const program = useMemo(() => getProgramById(programId), [programId, syncVersion]);
 
   // Scoped Notes for this Program (Shared with Study Library, university-independent)
   const programNotes = useMemo(() => {
@@ -258,9 +260,20 @@ export const ProgramDirectoryView: React.FC<ProgramDirectoryViewProps> = ({
   const [answerInputMap, setAnswerInputMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    setDiscussions(getProgramDiscussions(programId));
-    setDoubts(getProgramDoubts(programId));
-  }, [programId]);
+    const refresh = () => {
+      setDiscussions(getProgramDiscussions(programId));
+      setDoubts(getProgramDoubts(programId));
+      setFollowedIds(getFollowedProgramIds(studentUser?.id));
+      setSyncVersion(v => v + 1);
+    };
+    refresh();
+    syncProgramsFromSupabase(undefined, notesList).catch(() => {});
+
+    window.addEventListener('xeusar-program-data-synced', refresh);
+    return () => {
+      window.removeEventListener('xeusar-program-data-synced', refresh);
+    };
+  }, [programId, studentUser?.id]);
 
   if (!program) {
     return (

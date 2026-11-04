@@ -168,7 +168,9 @@ export const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
             });
             const doc = await loadingTask.promise;
             if (!active) {
-              await doc.destroy();
+              if (typeof (doc as any).destroy === 'function') {
+                await (doc as any).destroy();
+              }
               return;
             }
             loadedDoc = doc;
@@ -194,8 +196,8 @@ export const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
       if (currentUrl) {
         URL.revokeObjectURL(currentUrl);
       }
-      if (loadedDoc && typeof loadedDoc.destroy === 'function') {
-        loadedDoc.destroy().catch(() => {});
+      if (loadedDoc && typeof (loadedDoc as any).destroy === 'function') {
+        (loadedDoc as any).destroy().catch(() => {});
       }
     };
   }, [note?.id]);
@@ -789,7 +791,7 @@ export const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
                                 Key Formulas &amp; Derivation Points
                               </h4>
                               <ul className="space-y-1.5 text-xs text-white/80 font-mono">
-                                {activePageData.keyFormulasOrPoints.map((pt, idx) => (
+                                {activePageData.keyFormulasOrPoints.map((pt: string, idx: number) => (
                                   <li key={idx} className="flex items-start gap-2">
                                     <span className="text-cyan-400 font-bold">›</span>
                                     <span>{highlightSearchText(pt)}</span>

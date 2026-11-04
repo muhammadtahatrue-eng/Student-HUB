@@ -139,7 +139,9 @@ export async function getUploadedPdfPageCount(blob: Blob): Promise<number | null
     const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
     const pdfDoc = await loadingTask.promise;
     const numPages = pdfDoc.numPages;
-    await pdfDoc.destroy();
+    if (typeof (pdfDoc as any).destroy === 'function') {
+      await (pdfDoc as any).destroy();
+    }
     return numPages > 0 ? numPages : null;
   } catch {
     return null;
@@ -472,7 +474,7 @@ export function generateValidPdfDocumentBlob(note: StudyNote): Blob {
     `trailer\n<< /Size ${totalObjCount} /Root 1 0 R >>\nstartxref\n${xrefStartOffset}\n%%EOF\n`
   );
 
-  return new Blob(chunks, { type: 'application/pdf' });
+  return new Blob(chunks as BlobPart[], { type: 'application/pdf' });
 }
 
 /**

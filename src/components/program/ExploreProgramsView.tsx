@@ -16,7 +16,8 @@ import { AcademicProgram, DegreeTier, StudentUser } from '../../types/index.ts';
 import {
   getUnlockedPrograms,
   getFollowedProgramIds,
-  toggleFollowProgram
+  toggleFollowProgram,
+  syncProgramsFromSupabase
 } from '../../lib/programStore.ts';
 
 interface ExploreProgramsViewProps {
@@ -42,7 +43,7 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   const [selectedTier, setSelectedTier] = useState<'All' | DegreeTier>('All');
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'popular' | 'resources' | 'name'>('popular');
-  const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds());
+  const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedProgramIds(activeUser?.id));
 
   // Dynamic Unlock: Show ONLY programs that have at least 1 registered student (activeStudents >= 1)
   const [unlockedPrograms, setUnlockedPrograms] = useState<AcademicProgram[]>(() =>
@@ -50,15 +51,25 @@ export const ExploreProgramsView: React.FC<ExploreProgramsViewProps> = ({
   );
 
   useEffect(() => {
-    setUnlockedPrograms(
-      getUnlockedPrograms().filter(prog => (prog.activeStudents || 0) >= 1)
-    );
-  }, [notes, activeUser?.programId, activeUser?.program, activeUser?.majorOrField]);
+    const refresh = () => {
+      setUnlockedPrograms(
+        getUnlockedPrograms().filter(prog => (prog.activeStudents || 0) >= 1)
+      );
+      setFollowedIds(getFollowedProgramIds(activeUser?.id));
+    };
+    refresh();
+    syncProgramsFromSupabase(undefined, notes).catch(() => {});
+
+    window.addEventListener('xeusar-program-data-synced', refresh);
+    return () => {
+      window.removeEventListener('xeusar-program-data-synced', refresh);
+    };
+  }, [notes, activeUser?.id, activeUser?.programId, activeUser?.program, activeUser?.majorOrField]);
 
   const handleToggleFollow = (e: React.MouseEvent, progId: string) => {
     e.stopPropagation();
-    toggleFollowProgram(progId);
-    setFollowedIds(getFollowedProgramIds());
+    toggleFollowProgram(progId, activeUser?.id);
+    setFollowedIds(getFollowedProgramIds(activeUser?.id));
   };
 
   const hasActiveFilters =

@@ -18,7 +18,9 @@ import {
   getSupabaseInstance,
   fetchAllNotes,
   toggleUpvoteLocal,
+  syncNoteUpvoteToSupabase,
   incrementDownloadCountLocal,
+  syncNoteDownloadToSupabase,
   isValidHttpUrl
 } from './lib/supabaseClient.ts';
 import { LightRays, RaysOrigin } from './components/LightRays.tsx';
@@ -32,7 +34,7 @@ import { SupabaseModal } from './components/SupabaseModal.tsx';
 import { CodeExportModal } from './components/CodeExportModal.tsx';
 import { AuthModal, AuthModalMode } from './components/AuthModal.tsx';
 import { UserSettingsModal, UserSettingsTab } from './components/UserSettingsModal.tsx';
-import { AuthPages, AuthPageMode } from './components/AuthPages.tsx';
+import { AuthPages, AuthPageMode, AuthCallbackBanner } from './components/AuthPages.tsx';
 import { VerificationBanner } from './components/VerificationBanner.tsx';
 import { ProfilePages, ProfileManagementSection } from './components/ProfilePages.tsx';
 import {
@@ -48,12 +50,18 @@ import { VerticalTaskbar } from './components/VerticalTaskbar.tsx';
 import { ExploreUniversitiesView } from './components/university/ExploreUniversitiesView.tsx';
 import { UniversityDirectoryView, UniversityTabKey } from './components/university/UniversityDirectoryView.tsx';
 import { UniversitySetupModal } from './components/university/UniversitySetupModal.tsx';
-import { findUniversityByNameOrFuzzy } from './lib/universityStore.ts';
+import {
+  findUniversityByNameOrFuzzy,
+  syncUniversitiesFromSupabase
+} from './lib/universityStore.ts';
 import { AcademicProgram, MaterialType } from './types/index.ts';
 import { ExploreProgramsView } from './components/program/ExploreProgramsView.tsx';
 import { ProgramDirectoryView, ProgramTabKey } from './components/program/ProgramDirectoryView.tsx';
 import { ProgramSetupModal } from './components/program/ProgramSetupModal.tsx';
-import { ensureSystemProgramForRegisteredStudent } from './lib/programStore.ts';
+import {
+  ensureSystemProgramForRegisteredStudent,
+  syncProgramsFromSupabase
+} from './lib/programStore.ts';
 import {
   noteBelongsToProgram,
   updateSharedResource,
@@ -616,9 +624,11 @@ export default function App() {
     async function loadData() {
       setIsLoading(true);
       const supabase = getSupabaseInstance(supabaseConfig);
-      const result = await fetchAllNotes(supabase);
+      const result = await fetchAllNotes(supabase, user?.id);
       setNotes(result.notes);
       setIsLoading(false);
+      syncProgramsFromSupabase(supabase, result.notes).catch(() => {});
+      syncUniversitiesFromSupabase(supabase, result.notes).catch(() => {});
     }
     loadData();
 
@@ -632,6 +642,13 @@ export default function App() {
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'study_notes' },
+            () => {
+              loadData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'profiles' },
             () => {
               loadData();
             }
@@ -1195,7 +1212,9 @@ export default function App() {
   };
 
   const handleDownloadNote = async (note: StudyNote) => {
-    incrementDownloadCountLocal(note.id);
+    const nextDownloads = incrementDownloadCountLocal(note.id);
+    const supabase = getSupabaseInstance(supabaseConfig);
+    syncNoteDownloadToSupabase(supabase, note.id, nextDownloads).catch(() => {});
     setNotes(prev =>
       prev.map(n => (n.id === note.id ? { ...n, downloadsCount: n.downloadsCount + 1 } : n))
     );
@@ -1216,7 +1235,9 @@ export default function App() {
   };
 
   const handleUpvoteNote = (noteId: string) => {
-    const { upvoted, count } = toggleUpvoteLocal(noteId);
+    const { upvoted, count } = toggleUpvoteLocal(noteId, user?.id);
+    const supabase = getSupabaseInstance(supabaseConfig);
+    syncNoteUpvoteToSupabase(supabase, noteId, user?.id, upvoted, count).catch(() => {});
     setNotes(prev =>
       prev.map(n =>
         n.id === noteId ? { ...n, upvotesCount: count, hasUpvoted: upvoted } : n
@@ -1234,6 +1255,9 @@ export default function App() {
 
   const handleUploadSuccess = (newNote: StudyNote) => {
     setNotes(prev => [newNote, ...prev.filter(n => n.id !== newNote.id)]);
+    const supabase = getSupabaseInstance(supabaseConfig);
+    syncProgramsFromSupabase(supabase, [newNote, ...notes.filter(n => n.id !== newNote.id)]).catch(() => {});
+    syncUniversitiesFromSupabase(supabase, [newNote, ...notes.filter(n => n.id !== newNote.id)]).catch(() => {});
     if (uploadPrefill.programId) {
       setSelectedProgramId(uploadPrefill.programId);
       setProgramSubTab('materials');
@@ -1267,27 +1291,37 @@ export default function App() {
   const handleSaveEditedNote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingNote) return;
-    const supabase = getSupabaseInstance(supabaseConfig);
-    const updated = await updateSharedResource({
-      noteId: editingNote.id,
-      title: editingNote.title,
-      description: editingNote.description,
-      courseCode: editingNote.courseCode,
-      courseName: editingNote.courseName,
-      subject: editingNote.subject,
-      materialType: editingNote.materialType,
-      semesterNumber: editingNote.semesterNumber,
-      programId: editingNote.programId,
-      programName: editingNote.programName,
-      professor: editingNote.professor,
-      supabaseClient: supabase
-    });
-    if (updated) {
-      setNotes(prev => prev.map(n => (n.id === updated.id ? updated : n)));
-      if (previewNote?.id === updated.id) {
-        setPreviewNote(updated);
+    if (!canUserDeleteNote(editingNote, user)) {
+      triggerToast('Permission denied: Only the uploader can edit this document.');
+      setEditingNote(null);
+      return;
+    }
+    try {
+      const supabase = getSupabaseInstance(supabaseConfig);
+      const updated = await updateSharedResource({
+        noteId: editingNote.id,
+        title: editingNote.title,
+        description: editingNote.description,
+        courseCode: editingNote.courseCode,
+        courseName: editingNote.courseName,
+        subject: editingNote.subject,
+        materialType: editingNote.materialType,
+        semesterNumber: editingNote.semesterNumber,
+        programId: editingNote.programId,
+        programName: editingNote.programName,
+        professor: editingNote.professor,
+        supabaseClient: supabase,
+        currentUser: user
+      });
+      if (updated) {
+        setNotes(prev => prev.map(n => (n.id === updated.id ? updated : n)));
+        if (previewNote?.id === updated.id) {
+          setPreviewNote(updated);
+        }
+        triggerToast(`Updated "${updated.title}" across Study Library & My Program`);
       }
-      triggerToast(`Updated "${updated.title}" across Study Library & My Program`);
+    } catch (err: any) {
+      triggerToast(err?.message || 'Only the uploader can edit this document.');
     }
     setEditingNote(null);
   };
@@ -1380,7 +1414,7 @@ export default function App() {
     }
   };
 
-  const handleSelectProgram = (program: string | AcademicProgram) => {
+  const handleSelectProgram = (program: string | AcademicProgram, subTab: ProgramTabKey = 'overview') => {
     if (!isRegisteredUser) {
       setPostLoginDestination('program');
       setCurrentTab('login');
@@ -1389,7 +1423,7 @@ export default function App() {
     }
     const progId = typeof program === 'string' ? program : program.id;
     setSelectedProgramId(progId);
-    setProgramSubTab('overview');
+    setProgramSubTab(subTab);
     setCurrentTab('program');
   };
 
@@ -1785,7 +1819,7 @@ export default function App() {
             notes={notes}
             initialPostId={initialForumPostId}
             onPreviewNote={handlePreviewNote}
-            onOpenProgram={(progId, subTab) => handleSelectProgram(progId, subTab)}
+            onOpenProgram={(progId: string, subTab?: ProgramTabKey) => handleSelectProgram(progId, subTab || 'overview')}
             onOpenAuthModal={(mode) => handleOpenAuthOrProfileRoute(mode)}
             onTriggerToast={triggerToast}
           />

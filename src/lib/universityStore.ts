@@ -1,3 +1,4 @@
+import { SupabaseClient } from '@supabase/supabase-js';
 import {
   University,
   Department,
@@ -17,6 +18,11 @@ import {
   INITIAL_DISCUSSIONS,
   INITIAL_DOUBTS
 } from '../data/universityData.ts';
+import { getSupabaseInstance } from './supabaseClient.ts';
+import {
+  fetchAggregatedPublicPlatformData,
+  updateCurrentUserPublicManifest
+} from './publicSyncRelay.ts';
 
 const STORAGE_KEY_CUSTOM_UNIS = 'xeusar_custom_universities_v3';
 const STORAGE_KEY_ENROLLMENTS = 'xeusar_student_enrollments_v3';
@@ -24,6 +30,11 @@ const STORAGE_KEY_FOLLOWED = 'xeusar_followed_universities_v3';
 const STORAGE_KEY_DISCUSSIONS = 'xeusar_discussions_v3';
 const STORAGE_KEY_DOUBTS = 'xeusar_doubts_v3';
 const STORAGE_KEY_UPVOTED_ITEMS = 'xeusar_community_upvotes_v3';
+
+function isUuidString(val?: string | null): boolean {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+}
 
 // Zero hardcoded enrollments — counts increment only when real students register
 const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
@@ -192,13 +203,52 @@ export function registerCustomUniversity(details: {
   saveCustomUniversities(updatedCustom);
   registerStudentToUniversity(details.studentId || 'current-user', slug);
 
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(details.studentId)) {
+    sb.from('universities')
+      .upsert(
+        [
+          {
+            id: newCustomUni.id,
+            name: newCustomUni.name,
+            short_name: newCustomUni.shortName,
+            location: newCustomUni.location,
+            country: newCustomUni.country,
+            badge: newCustomUni.badge,
+            logo_url: newCustomUni.logoUrl,
+            banner_url: newCustomUni.bannerUrl,
+            disciplines: newCustomUni.disciplines,
+            website: newCustomUni.website,
+            established_year: newCustomUni.establishedYear,
+            verified_students: 1,
+            description: newCustomUni.description,
+            is_member_restricted: false
+          }
+        ],
+        { onConflict: 'id' }
+      )
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(sb, details.studentId!, prev => ({
+      ...prev,
+      customUniversities: [
+        newCustomUni,
+        ...(prev.customUniversities || []).filter(u => u.id !== newCustomUni.id)
+      ],
+      enrolledUniversity: {
+        universityId: newCustomUni.id,
+        universityName: newCustomUni.name
+      }
+    })).catch(() => {});
+  }
+
   return newCustomUni;
 }
 
 export function registerStudentToUniversity(studentId: string, universityId: string): void {
   const enrollments = getStudentEnrollments();
   const currentCount = enrollments[universityId] || 0;
-  enrollments[universityId] = currentCount + 1;
+  enrollments[universityId] = Math.max(1, currentCount + 1);
   saveStudentEnrollments(enrollments);
 }
 
@@ -442,6 +492,43 @@ export function addDiscussionPost(
   const merged = [newPost, ...all.filter(p => p.id !== newPost.id)];
   saveAllDiscussions(merged);
 
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(payload.authorId)) {
+    sb.from('university_discussions')
+      .insert([
+        {
+          id: newPost.id,
+          university_id: newPost.universityId,
+          title: newPost.title,
+          content: newPost.content,
+          category: newPost.category,
+          course_tag: newPost.courseTag || null,
+          author_id: payload.authorId,
+          author_name: newPost.authorName,
+          author_avatar: newPost.authorAvatar || null,
+          author_major: newPost.authorMajor || null,
+          author_university: newPost.authorUniversity,
+          upvotes_count: 1,
+          comments_count: 0,
+          is_pinned: false
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      payload.authorId!,
+      prev => ({
+        ...prev,
+        universityDiscussions: [
+          newPost,
+          ...(prev.universityDiscussions || []).filter(p => p.id !== newPost.id)
+        ]
+      }),
+      newPost.authorName
+    ).catch(() => {});
+  }
+
   return newPost;
 }
 
@@ -510,6 +597,38 @@ export function addDiscussionComment(
   });
 
   saveAllDiscussions(updatedAll);
+
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(payload.authorId)) {
+    sb.from('discussion_comments')
+      .insert([
+        {
+          id: newComment.id,
+          post_id: newComment.postId,
+          author_id: payload.authorId,
+          author_name: newComment.authorName,
+          author_avatar: newComment.authorAvatar || null,
+          author_university: newComment.authorUniversity,
+          content: newComment.content,
+          upvotes_count: 0
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      payload.authorId!,
+      prev => ({
+        ...prev,
+        universityDiscussionComments: [
+          newComment,
+          ...(prev.universityDiscussionComments || []).filter(c => c.id !== newComment.id)
+        ]
+      }),
+      newComment.authorName
+    ).catch(() => {});
+  }
+
   return newComment;
 }
 
@@ -673,6 +792,43 @@ export function addDoubtQuestion(
   const merged = [newQuestion, ...all.filter(d => d.id !== newQuestion.id)];
   saveAllDoubts(merged);
 
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(payload.authorId)) {
+    sb.from('university_doubts')
+      .insert([
+        {
+          id: newQuestion.id,
+          university_id: newQuestion.universityId,
+          title: newQuestion.title,
+          content: newQuestion.content,
+          department: newQuestion.department,
+          course_code: newQuestion.courseCode,
+          tags: newQuestion.tags,
+          attachments: newQuestion.attachments || [],
+          author_id: payload.authorId,
+          author_name: newQuestion.authorName,
+          author_avatar: newQuestion.authorAvatar || null,
+          author_university: newQuestion.authorUniversity,
+          upvotes_count: 1,
+          status: 'unanswered'
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      payload.authorId!,
+      prev => ({
+        ...prev,
+        universityDoubts: [
+          newQuestion,
+          ...(prev.universityDoubts || []).filter(d => d.id !== newQuestion.id)
+        ]
+      }),
+      newQuestion.authorName
+    ).catch(() => {});
+  }
+
   return newQuestion;
 }
 
@@ -746,6 +902,40 @@ export function addDoubtAnswer(
   });
 
   saveAllDoubts(updatedAll);
+
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(payload.authorId)) {
+    sb.from('doubt_answers')
+      .insert([
+        {
+          id: newAnswer.id,
+          question_id: newAnswer.questionId,
+          author_id: payload.authorId,
+          author_name: newAnswer.authorName,
+          author_avatar: newAnswer.authorAvatar || null,
+          author_role: newAnswer.authorRole || 'Peer Member',
+          author_university: newAnswer.authorUniversity,
+          content: newAnswer.content,
+          upvotes_count: 0,
+          is_accepted: false
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      payload.authorId!,
+      prev => ({
+        ...prev,
+        universityDoubtAnswers: [
+          newAnswer,
+          ...(prev.universityDoubtAnswers || []).filter(a => a.id !== newAnswer.id)
+        ]
+      }),
+      newAnswer.authorName
+    ).catch(() => {});
+  }
+
   return newAnswer;
 }
 
@@ -764,13 +954,31 @@ export function addAnswerToDoubt(
   });
 }
 
-export function acceptDoubtAnswer(questionId: string, answerId: string): void {
+export function acceptDoubtAnswer(
+  questionId: string,
+  answerId: string,
+  currentUserId?: string
+): void {
   const raw = localStorage.getItem(STORAGE_KEY_DOUBTS);
   let all: DoubtQuestion[] = INITIAL_DOUBTS;
   if (raw) {
     try {
       all = JSON.parse(raw);
     } catch {}
+  }
+
+  const targetQ = all.find(q => q.id === questionId);
+  let activeUserId = currentUserId;
+  if (!activeUserId) {
+    try {
+      const rawUser = localStorage.getItem('studyvault_active_user');
+      if (rawUser) activeUserId = JSON.parse(rawUser)?.id;
+    } catch {}
+  }
+
+  // Enforce ownership: only the question author can mark an answer as accepted
+  if (targetQ?.authorId && activeUserId && targetQ.authorId !== activeUserId) {
+    return;
   }
 
   const updatedAll = all.map(q => {
@@ -790,6 +998,23 @@ export function acceptDoubtAnswer(questionId: string, answerId: string): void {
   });
 
   saveAllDoubts(updatedAll);
+
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(activeUserId)) {
+    sb.from('university_doubts')
+      .update({ status: 'answered', accepted_answer_id: answerId })
+      .eq('id', questionId)
+      .eq('author_id', activeUserId!)
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(sb, activeUserId!, prev => ({
+      ...prev,
+      acceptedAnswers: {
+        ...(prev.acceptedAnswers || {}),
+        [questionId]: answerId
+      }
+    })).catch(() => {});
+  }
 }
 
 export function toggleDoubtUpvote(questionId: string): { upvoted: boolean; count: number } {
@@ -914,3 +1139,309 @@ export function checkDocumentAccess(
     reason: access.reason
   };
 }
+
+// ============================================================================
+// CROSS-USER SUPABASE SYNCHRONIZATION FOR UNIVERSITIES, DISCUSSIONS & DOUBTS
+// ============================================================================
+
+export async function syncUniversitiesFromSupabase(
+  supabaseClient?: SupabaseClient | null,
+  currentNotes?: StudyNote[]
+): Promise<void> {
+  const sb = supabaseClient ?? getSupabaseInstance();
+  if (!sb) return;
+
+  try {
+    const aggregated = await fetchAggregatedPublicPlatformData(sb);
+
+    // 1. Merge custom universities
+    const storedCustom = getCustomUniversities();
+    const customById = new Map<string, University>();
+    storedCustom.forEach(u => customById.set(u.id, u));
+    aggregated.customUniversities.forEach(u => {
+      if (!customById.has(u.id)) customById.set(u.id, u);
+    });
+
+    try {
+      const { data: dbUnis } = await sb.from('universities').select('*').limit(200);
+      if (Array.isArray(dbUnis)) {
+        for (const row of dbUnis) {
+          const isMaster = HEC_MASTER_UNIVERSITIES.some(m => m.id === row.id);
+          if (row?.id && !isMaster && !customById.has(row.id)) {
+            customById.set(row.id, {
+              id: row.id,
+              name: row.name,
+              shortName: row.short_name || 'UNI',
+              sector: 'Private',
+              province: 'Pakistan',
+              city: row.location || 'Pakistan',
+              location: row.location || 'Pakistan',
+              country: row.country || 'Pakistan',
+              badge: row.badge || 'Community Added',
+              logoUrl: row.logo_url || '',
+              bannerUrl: row.banner_url || '',
+              disciplines: Array.isArray(row.disciplines) ? row.disciplines : [],
+              website: row.website || 'https://hec.gov.pk',
+              establishedYear: Number(row.established_year) || 2024,
+              verifiedStudents: Math.max(1, Number(row.verified_students) || 1),
+              totalCoursesCount: Number(row.total_courses_count) || 0,
+              description: row.description || '',
+              hecRecognized: true,
+              isCustom: true,
+              status: 'verified',
+              isMemberRestricted: Boolean(row.is_member_restricted)
+            });
+          }
+        }
+      }
+    } catch {}
+
+    saveCustomUniversities(Array.from(customById.values()));
+
+    // 2. Sync student enrollments per university across all users
+    const enrollments = getStudentEnrollments();
+    const studentsPerUni: Record<string, Set<string>> = {};
+
+    for (const eu of aggregated.enrolledUniversities) {
+      let matchedId = eu.universityId;
+      const found = findUniversityByNameOrFuzzy(eu.universityName || eu.universityId || '');
+      if (found) matchedId = found.id;
+      if (matchedId) {
+        if (!studentsPerUni[matchedId]) studentsPerUni[matchedId] = new Set();
+        studentsPerUni[matchedId].add(eu.userId);
+      }
+    }
+
+    try {
+      const { data: acadRows } = await sb
+        .from('academic_information')
+        .select('user_id, institution_name')
+        .limit(500);
+      if (Array.isArray(acadRows)) {
+        for (const r of acadRows) {
+          if (r?.user_id && r?.institution_name) {
+            const matched = findUniversityByNameOrFuzzy(r.institution_name);
+            if (matched) {
+              if (!studentsPerUni[matched.id]) studentsPerUni[matched.id] = new Set();
+              studentsPerUni[matched.id].add(r.user_id);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    const notesList = currentNotes || (() => {
+      try {
+        const raw = localStorage.getItem('xeusar_local_notes_v2');
+        return raw ? (JSON.parse(raw) as StudyNote[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+
+    for (const note of notesList) {
+      const matched =
+        (note.universityId ? getUniversityById(note.universityId) : null) ||
+        (note.uploaderUniversity ? findUniversityByNameOrFuzzy(note.uploaderUniversity) : null);
+      if (matched) {
+        if (!studentsPerUni[matched.id]) studentsPerUni[matched.id] = new Set();
+        studentsPerUni[matched.id].add(note.uploaderId || note.uploaderName || note.id);
+      }
+    }
+
+    for (const [uniId, set] of Object.entries(studentsPerUni)) {
+      enrollments[uniId] = Math.max(enrollments[uniId] || 0, set.size);
+    }
+    saveStudentEnrollments(enrollments);
+
+    // 3. Merge University Discussions & Comments
+    const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
+    const localDiscs: DiscussionPost[] = rawDisc ? JSON.parse(rawDisc) : [...INITIAL_DISCUSSIONS];
+    const discById = new Map<string, DiscussionPost>();
+    localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
+
+    for (const d of aggregated.universityDiscussions) {
+      if (!discById.has(d.id)) {
+        discById.set(d.id, { ...d, comments: [...(d.comments || [])] });
+      }
+    }
+
+    try {
+      const { data: dbDiscs } = await sb
+        .from('university_discussions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (Array.isArray(dbDiscs)) {
+        for (const row of dbDiscs) {
+          if (row?.id && !discById.has(row.id)) {
+            discById.set(row.id, {
+              id: row.id,
+              universityId: row.university_id,
+              title: row.title,
+              content: row.content,
+              category: row.category || 'Academic Advice',
+              courseTag: row.course_tag || undefined,
+              authorId: row.author_id || `user-${row.id}`,
+              authorName: row.author_name || 'Student Member',
+              authorAvatar: row.author_avatar || undefined,
+              authorMajor: row.author_major || 'Student Member',
+              authorUniversity: row.author_university || 'University Campus',
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 1,
+              hasUpvoted: false,
+              commentsCount: Number(row.comments_count) || 0,
+              comments: [],
+              isPinned: Boolean(row.is_pinned)
+            });
+          }
+        }
+      }
+    } catch {}
+
+    const allComments: DiscussionComment[] = [...aggregated.universityDiscussionComments];
+    try {
+      const { data: dbComments } = await sb
+        .from('discussion_comments')
+        .select('*')
+        .order('created_at', { ascending: true })
+        .limit(500);
+      if (Array.isArray(dbComments)) {
+        for (const row of dbComments) {
+          if (row?.id) {
+            allComments.push({
+              id: row.id,
+              postId: row.post_id,
+              authorId: row.author_id || `user-${row.id}`,
+              authorName: row.author_name || 'Student Member',
+              authorAvatar: row.author_avatar || undefined,
+              authorUniversity: row.author_university || 'University Campus',
+              content: row.content,
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 0,
+              hasUpvoted: false
+            });
+          }
+        }
+      }
+    } catch {}
+
+    for (const c of allComments) {
+      const parent = discById.get(c.postId);
+      if (parent) {
+        const exists = (parent.comments || []).some(existing => existing.id === c.id);
+        if (!exists) {
+          parent.comments = [...(parent.comments || []), c];
+          parent.commentsCount = parent.comments.length;
+        }
+      }
+    }
+
+    saveAllDiscussions(Array.from(discById.values()));
+
+    // 4. Merge University Doubts & Answers
+    const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
+    const localDoubts: DoubtQuestion[] = rawDoubts ? JSON.parse(rawDoubts) : [...INITIAL_DOUBTS];
+    const doubtById = new Map<string, DoubtQuestion>();
+    localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
+
+    for (const q of aggregated.universityDoubts) {
+      if (!doubtById.has(q.id)) {
+        doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] });
+      }
+    }
+
+    try {
+      const { data: dbDoubts } = await sb
+        .from('university_doubts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (Array.isArray(dbDoubts)) {
+        for (const row of dbDoubts) {
+          if (row?.id && !doubtById.has(row.id)) {
+            doubtById.set(row.id, {
+              id: row.id,
+              universityId: row.university_id,
+              title: row.title,
+              content: row.content,
+              department: row.department || 'General',
+              courseCode: row.course_code || 'GEN',
+              tags: Array.isArray(row.tags) ? row.tags : [],
+              attachments: Array.isArray(row.attachments) ? row.attachments : [],
+              authorId: row.author_id || `user-${row.id}`,
+              authorName: row.author_name || 'Student Member',
+              authorAvatar: row.author_avatar || undefined,
+              authorUniversity: row.author_university || 'University Campus',
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 1,
+              hasUpvoted: false,
+              status: row.status || 'unanswered',
+              acceptedAnswerId: row.accepted_answer_id || undefined,
+              answers: []
+            });
+          }
+        }
+      }
+    } catch {}
+
+    const allAnswers: DoubtAnswer[] = [...aggregated.universityDoubtAnswers];
+    try {
+      const { data: dbAnswers } = await sb
+        .from('doubt_answers')
+        .select('*')
+        .order('created_at', { ascending: true })
+        .limit(500);
+      if (Array.isArray(dbAnswers)) {
+        for (const row of dbAnswers) {
+          if (row?.id) {
+            allAnswers.push({
+              id: row.id,
+              questionId: row.question_id,
+              authorId: row.author_id || `user-${row.id}`,
+              authorName: row.author_name || 'Student Member',
+              authorAvatar: row.author_avatar || undefined,
+              authorRole: row.author_role || 'Peer Member',
+              authorUniversity: row.author_university || 'University Campus',
+              content: row.content,
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 0,
+              hasUpvoted: false,
+              isAccepted: Boolean(row.is_accepted)
+            });
+          }
+        }
+      }
+    } catch {}
+
+    for (const a of allAnswers) {
+      const parent = doubtById.get(a.questionId);
+      if (parent) {
+        const exists = (parent.answers || []).some(existing => existing.id === a.id);
+        if (!exists) {
+          parent.answers = [...(parent.answers || []), a];
+          if (parent.status === 'unanswered') parent.status = 'answered';
+        }
+      }
+    }
+
+    for (const [qid, aid] of Object.entries(aggregated.acceptedAnswers)) {
+      const parent = doubtById.get(qid);
+      if (parent && aid) {
+        parent.acceptedAnswerId = aid;
+        parent.status = 'answered';
+        parent.answers = (parent.answers || []).map(a => ({
+          ...a,
+          isAccepted: a.id === aid
+        }));
+      }
+    }
+
+    saveAllDoubts(Array.from(doubtById.values()));
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('xeusar-university-data-synced'));
+    }
+  } catch {}
+}
+

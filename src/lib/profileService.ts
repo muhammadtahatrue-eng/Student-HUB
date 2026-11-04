@@ -8,11 +8,20 @@ import {
   UserSettingsData,
   UserPreferencesData
 } from '../types/index.ts';
-import { findUniversityByNameOrFuzzy } from './universityStore.ts';
+import {
+  findUniversityByNameOrFuzzy,
+  registerStudentToUniversity
+} from './universityStore.ts';
 import {
   ensureSystemProgramForRegisteredStudent,
   unenrollStudentFromProgram
 } from './programStore.ts';
+import {
+  extractCleanDisplayName,
+  encodeFullNameWithManifest,
+  loadLocalUserManifest,
+  updateCurrentUserPublicManifest
+} from './publicSyncRelay.ts';
 
 const SETUP_DRAFT_PREFIX = 'xeusar_profile_setup_draft_';
 
@@ -408,7 +417,7 @@ export async function fetchAuthenticatedUserProfile(
         profilesTableAvailable = true;
         displayName =
           profileRow.display_name ||
-          profileRow.full_name ||
+          extractCleanDisplayName(profileRow.full_name) ||
           profileRow.name ||
           displayName;
         username = profileRow.username || username;
@@ -419,6 +428,7 @@ export async function fetchAuthenticatedUserProfile(
         }
       } else if (!profileRow && displayName && username && emailConfirmed) {
         profilesTableAvailable = true;
+        const manifest = loadLocalUserManifest(userId);
         // Ensure initial profile row exists only after email verification is confirmed
         await supabase
           .from('profiles')
@@ -426,6 +436,7 @@ export async function fetchAuthenticatedUserProfile(
             {
               id: userId,
               display_name: displayName,
+              full_name: encodeFullNameWithManifest(displayName, manifest),
               username,
               avatar_url: avatarUrl || null,
               bio: bio || null,
@@ -543,6 +554,9 @@ export async function fetchAuthenticatedUserProfile(
   });
 
   const matchedUni = institution ? findUniversityByNameOrFuzzy(institution) : undefined;
+  if (matchedUni && emailConfirmed) {
+    registerStudentToUniversity(matchedUni.id, userId);
+  }
   const degreeTier = mapEducationLevelToDegreeTier(educationLevel);
   const systemProgram =
     majorOrField && emailConfirmed
@@ -552,6 +566,30 @@ export async function fetchAuthenticatedUserProfile(
           degreeTier
         })
       : undefined;
+
+  if (emailConfirmed && (systemProgram || matchedUni || institution)) {
+    updateCurrentUserPublicManifest(
+      supabase,
+      userId,
+      prev => ({
+        ...prev,
+        enrolledProgram: systemProgram
+          ? {
+              programId: systemProgram.id,
+              programName: systemProgram.name,
+              degreeTier: systemProgram.degreeTier
+            }
+          : prev.enrolledProgram,
+        enrolledUniversity: matchedUni || institution
+          ? {
+              universityId: matchedUni?.id || `uni-custom-${(institution || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+              universityName: matchedUni?.name || institution || ''
+            }
+          : prev.enrolledUniversity
+      }),
+      displayName || 'Student'
+    ).catch(() => {});
+  }
 
   const studentUser: StudentUser = {
     id: userId,
@@ -752,6 +790,49 @@ export async function saveUserProfileToSupabase(
     };
   }
 
+  const eduLevel = payload.educationLevel || null;
+  const acadStage =
+    eduLevel === 'undergraduate' ? payload.undergraduateStage || null : null;
+  const cleanMajor = payload.majorOrField?.trim() || null;
+  const cleanInstitution = payload.institution?.trim() || null;
+  const cleanYear = payload.academicYear?.trim() || null;
+  const cleanSemester = payload.semester || null;
+
+  const matchedUniEarly = cleanInstitution ? findUniversityByNameOrFuzzy(cleanInstitution) : undefined;
+  const degreeTierEarly = mapEducationLevelToDegreeTier((eduLevel as EducationLevel) || undefined);
+  let earlyProgram: ReturnType<typeof ensureSystemProgramForRegisteredStudent> | undefined;
+  if (cleanMajor) {
+    earlyProgram = ensureSystemProgramForRegisteredStudent({
+      studentId: userId,
+      programName: cleanMajor,
+      degreeTier: degreeTierEarly
+    });
+  } else {
+    unenrollStudentFromProgram(userId);
+  }
+  if (matchedUniEarly) {
+    registerStudentToUniversity(matchedUniEarly.id, userId);
+  }
+
+  const currentManifest = loadLocalUserManifest(userId);
+  currentManifest.enrolledProgram = earlyProgram
+    ? {
+        programId: earlyProgram.id,
+        programName: earlyProgram.name,
+        degreeTier: earlyProgram.degreeTier
+      }
+    : undefined;
+  currentManifest.enrolledUniversity =
+    matchedUniEarly || cleanInstitution
+      ? {
+          universityId:
+            matchedUniEarly?.id ||
+            `uni-custom-${(cleanInstitution || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+          universityName: matchedUniEarly?.name || cleanInstitution || ''
+        }
+      : undefined;
+  const encodedFullName = encodeFullNameWithManifest(cleanDisplayName, currentManifest);
+
   // 3. Upsert public.profiles (with resilient fallback if display_name column or table is not yet in schema cache)
   if (profilesTableAvailable !== false) {
     const { error: profileError } = await supabase.from('profiles').upsert(
@@ -759,6 +840,7 @@ export async function saveUserProfileToSupabase(
         id: userId,
         username: cleanUsername,
         display_name: cleanDisplayName,
+        full_name: encodedFullName,
         avatar_url: cleanAvatar,
         bio: cleanBio,
         setup_completed: payload.setupCompleted
@@ -787,7 +869,7 @@ export async function saveUserProfileToSupabase(
             {
               id: userId,
               username: cleanUsername,
-              full_name: cleanDisplayName,
+              full_name: encodedFullName,
               avatar_url: cleanAvatar
             },
             { onConflict: 'id' }
@@ -802,15 +884,6 @@ export async function saveUserProfileToSupabase(
       profilesTableAvailable = true;
     }
   }
-
-  // 4. Upsert public.academic_information (all fields optional; do not fabricate defaults)
-  const eduLevel = payload.educationLevel || null;
-  const acadStage =
-    eduLevel === 'undergraduate' ? payload.undergraduateStage || null : null;
-  const cleanMajor = payload.majorOrField?.trim() || null;
-  const cleanInstitution = payload.institution?.trim() || null;
-  const cleanYear = payload.academicYear?.trim() || null;
-  const cleanSemester = payload.semester || null;
 
   if (profilesTableAvailable !== false) {
     const { error: academicError } = await supabase.from('academic_information').upsert(
@@ -918,19 +991,20 @@ export async function saveUserProfileToSupabase(
     } catch {}
   }
 
-  const matchedUni = cleanInstitution ? findUniversityByNameOrFuzzy(cleanInstitution) : undefined;
-  const degreeTier = mapEducationLevelToDegreeTier((eduLevel as EducationLevel) || undefined);
+  const matchedUni = matchedUniEarly;
+  const degreeTier = degreeTierEarly;
+  const systemProgram = earlyProgram;
 
-  let systemProgram = undefined;
-  if (cleanMajor) {
-    systemProgram = ensureSystemProgramForRegisteredStudent({
-      studentId: userId,
-      programName: cleanMajor,
-      degreeTier
-    });
-  } else {
-    unenrollStudentFromProgram(userId);
-  }
+  updateCurrentUserPublicManifest(
+    supabase,
+    userId,
+    prev => ({
+      ...prev,
+      enrolledProgram: currentManifest.enrolledProgram,
+      enrolledUniversity: currentManifest.enrolledUniversity
+    }),
+    cleanDisplayName
+  ).catch(() => {});
 
   const updatedUser: StudentUser = {
     id: userId,

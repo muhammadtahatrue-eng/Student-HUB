@@ -1,3 +1,4 @@
+import { SupabaseClient } from '@supabase/supabase-js';
 import {
   AcademicProgram,
   ProgramSemester,
@@ -16,6 +17,11 @@ import {
   INITIAL_PROGRAM_DISCUSSIONS,
   INITIAL_PROGRAM_DOUBTS
 } from '../data/programData.ts';
+import { getSupabaseInstance } from './supabaseClient.ts';
+import {
+  fetchAggregatedPublicPlatformData,
+  updateCurrentUserPublicManifest
+} from './publicSyncRelay.ts';
 
 // Local storage keys
 const STORAGE_KEY_PROGRAMS = 'xeusar_academic_programs_v2';
@@ -24,6 +30,19 @@ const STORAGE_KEY_STUDENT_PROGRAM_MAP = 'xeusar_student_program_map_v2';
 const STORAGE_KEY_FOLLOWED_PROGRAMS = 'xeusar_followed_programs_v2';
 const STORAGE_KEY_DISCUSSIONS = 'xeusar_program_discussions_v2';
 const STORAGE_KEY_DOUBTS = 'xeusar_program_doubts_v2';
+
+function getActiveUserFromStorage(): { id?: string; name?: string; isGuest?: boolean; programId?: string; program?: string; majorOrField?: string } | null {
+  try {
+    const raw = localStorage.getItem('studyvault_active_user');
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
+function isUuidString(val?: string | null): boolean {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+}
 
 // Zero hardcoded enrollments — counts increment only when real students register
 const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
@@ -183,6 +202,11 @@ export function getAllPrograms(): AcademicProgram[] {
       realStudents = Math.max(realStudents, 1);
     }
     const realResources = notesCountMap[prog.id] ?? prog.resourceCount ?? 0;
+    // If real shared resources have been uploaded to this program by a registered student,
+    // ensure at least 1 active student is reflected so the program is unlocked across all users.
+    if (realResources > 0) {
+      realStudents = Math.max(realStudents, 1);
+    }
     return {
       ...prog,
       activeStudents: realStudents,
@@ -359,20 +383,24 @@ export function ensureSystemProgramForRegisteredStudent(params: {
   const totalSemesters = durationYears * 2;
   const defaultSemesters: ProgramSemester[] = Array.from({ length: totalSemesters }, (_, i) => ({
     semesterNumber: i + 1,
-    title: `Semester ${i + 1}`,
+    name: `Semester ${i + 1}`,
     courses: [
       {
+        id: `${id}-sem${i + 1}-c1`,
+        programId: id,
+        semesterNumber: i + 1,
         code: `${shortCode}-${(i + 1) * 100 + 1}`,
         name: `${rawName} Core I (Sem ${i + 1})`,
         credits: 3,
-        category: 'Core',
         description: `Core curriculum module for ${formattedName} in Semester ${i + 1}.`
       },
       {
+        id: `${id}-sem${i + 1}-c2`,
+        programId: id,
+        semesterNumber: i + 1,
         code: `${shortCode}-${(i + 1) * 100 + 2}`,
         name: `${rawName} Applied Lab & Seminar (Sem ${i + 1})`,
         credits: 3,
-        category: i < 4 ? 'Core' : 'Major Elective',
         description: `Applied coursework and research methods for ${formattedName}.`
       }
     ]
@@ -402,6 +430,44 @@ export function ensureSystemProgramForRegisteredStudent(params: {
   saveStoredSystemPrograms(customList);
 
   enrollStudentInProgram(id, params.studentId);
+
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(params.studentId)) {
+    sb.from('academic_programs')
+      .upsert(
+        [
+          {
+            id: newSystemProgram.id,
+            name: newSystemProgram.name,
+            short_code: newSystemProgram.shortCode,
+            degree_tier: newSystemProgram.degreeTier,
+            discipline: newSystemProgram.discipline,
+            description: newSystemProgram.description,
+            duration_years: newSystemProgram.durationYears,
+            total_semesters: newSystemProgram.totalSemesters,
+            total_credits: newSystemProgram.totalCredits,
+            semesters: newSystemProgram.semesters,
+            created_by: params.studentId
+          }
+        ],
+        { onConflict: 'id' }
+      )
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(sb, params.studentId!, prev => ({
+      ...prev,
+      customPrograms: [
+        newSystemProgram,
+        ...(prev.customPrograms || []).filter(p => p.id !== newSystemProgram.id)
+      ],
+      enrolledProgram: {
+        programId: newSystemProgram.id,
+        programName: newSystemProgram.name,
+        degreeTier: newSystemProgram.degreeTier
+      }
+    })).catch(() => {});
+  }
+
   return getProgramById(id) || newSystemProgram;
 }
 
@@ -423,20 +489,27 @@ export function registerCustomProgram(params: {
 }
 
 // ----------------------------------------------------------------------------
-// FOLLOWED PROGRAMS
+// FOLLOWED PROGRAMS (SCOPED PER USER)
 // ----------------------------------------------------------------------------
 
-export function getFollowedProgramIds(): string[] {
+function getFollowedProgramsStorageKey(userId?: string): string {
+  const effectiveUserId = userId || getActiveUserFromStorage()?.id;
+  return effectiveUserId
+    ? `${STORAGE_KEY_FOLLOWED_PROGRAMS}_${effectiveUserId}`
+    : STORAGE_KEY_FOLLOWED_PROGRAMS;
+}
+
+export function getFollowedProgramIds(userId?: string): string[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_FOLLOWED_PROGRAMS);
+    const raw = localStorage.getItem(getFollowedProgramsStorageKey(userId));
     if (raw) return JSON.parse(raw);
   } catch {}
   return [];
 }
 
-export function toggleFollowProgram(programId: string): boolean {
+export function toggleFollowProgram(programId: string, userId?: string): boolean {
   try {
-    const current = getFollowedProgramIds();
+    const current = getFollowedProgramIds(userId);
     let updated: string[];
     let isNowFollowing = false;
     if (current.includes(programId)) {
@@ -446,7 +519,7 @@ export function toggleFollowProgram(programId: string): boolean {
       updated = [...current, programId];
       isNowFollowing = true;
     }
-    localStorage.setItem(STORAGE_KEY_FOLLOWED_PROGRAMS, JSON.stringify(updated));
+    localStorage.setItem(getFollowedProgramsStorageKey(userId), JSON.stringify(updated));
     return isNowFollowing;
   } catch {
     return false;
@@ -550,6 +623,43 @@ export function createProgramDiscussion(params: {
     localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(list));
   } catch {}
 
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(params.author.id)) {
+    sb.from('program_discussions')
+      .insert([
+        {
+          id: newPost.id,
+          program_id: newPost.programId,
+          title: newPost.title,
+          content: newPost.content,
+          category: newPost.category,
+          semester_tag: newPost.semesterTag || null,
+          course_tag: newPost.courseTag || null,
+          author_id: params.author.id,
+          author_name: newPost.authorName,
+          author_avatar: newPost.authorAvatar || null,
+          author_program: newPost.authorProgram,
+          author_degree_tier: newPost.authorDegreeTier || null,
+          upvotes_count: 1,
+          comments_count: 0
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      params.author.id,
+      prev => ({
+        ...prev,
+        programDiscussions: [
+          newPost,
+          ...(prev.programDiscussions || []).filter(p => p.id !== newPost.id)
+        ]
+      }),
+      params.author.name
+    ).catch(() => {});
+  }
+
   return newPost;
 }
 
@@ -605,6 +715,38 @@ export function addProgramDiscussionComment(params: {
     post.commentsCount = post.comments.length;
 
     localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(list));
+
+    const sb = getSupabaseInstance();
+    if (sb && isUuidString(params.author.id)) {
+      sb.from('program_discussion_comments')
+        .insert([
+          {
+            id: comment.id,
+            post_id: comment.postId,
+            author_id: params.author.id,
+            author_name: comment.authorName,
+            author_avatar: comment.authorAvatar || null,
+            author_program: comment.authorProgram,
+            author_degree_tier: comment.authorDegreeTier || null,
+            content: comment.content
+          }
+        ])
+        .then(() => {}, () => {});
+
+      updateCurrentUserPublicManifest(
+        sb,
+        params.author.id,
+        prev => ({
+          ...prev,
+          programDiscussionComments: [
+            comment,
+            ...(prev.programDiscussionComments || []).filter(c => c.id !== comment.id)
+          ]
+        }),
+        params.author.name
+      ).catch(() => {});
+    }
+
     return comment;
   } catch {
     return null;
@@ -662,6 +804,42 @@ export function createProgramDoubt(params: {
     list.unshift(newQuestion);
     localStorage.setItem(STORAGE_KEY_DOUBTS, JSON.stringify(list));
   } catch {}
+
+  const sb = getSupabaseInstance();
+  if (sb && isUuidString(params.author.id)) {
+    sb.from('program_doubts')
+      .insert([
+        {
+          id: newQuestion.id,
+          program_id: newQuestion.programId,
+          title: newQuestion.title,
+          content: newQuestion.content,
+          course_code: newQuestion.courseCode,
+          semester_tag: newQuestion.semesterTag || null,
+          tags: newQuestion.tags,
+          author_id: params.author.id,
+          author_name: newQuestion.authorName,
+          author_avatar: newQuestion.authorAvatar || null,
+          author_program: newQuestion.authorProgram,
+          upvotes_count: 1,
+          status: 'unanswered'
+        }
+      ])
+      .then(() => {}, () => {});
+
+    updateCurrentUserPublicManifest(
+      sb,
+      params.author.id,
+      prev => ({
+        ...prev,
+        programDoubts: [
+          newQuestion,
+          ...(prev.programDoubts || []).filter(q => q.id !== newQuestion.id)
+        ]
+      }),
+      params.author.name
+    ).catch(() => {});
+  }
 
   return newQuestion;
 }
@@ -722,18 +900,60 @@ export function addProgramDoubtAnswer(params: {
     }
 
     localStorage.setItem(STORAGE_KEY_DOUBTS, JSON.stringify(list));
+
+    const sb = getSupabaseInstance();
+    if (sb && isUuidString(params.author.id)) {
+      sb.from('program_doubt_answers')
+        .insert([
+          {
+            id: answer.id,
+            question_id: answer.questionId,
+            author_id: params.author.id,
+            author_name: answer.authorName,
+            author_avatar: answer.authorAvatar || null,
+            author_role: answer.authorRole,
+            author_program: answer.authorProgram,
+            content: answer.content
+          }
+        ])
+        .then(() => {}, () => {});
+
+      updateCurrentUserPublicManifest(
+        sb,
+        params.author.id,
+        prev => ({
+          ...prev,
+          programDoubtAnswers: [
+            answer,
+            ...(prev.programDoubtAnswers || []).filter(a => a.id !== answer.id)
+          ]
+        }),
+        params.author.name
+      ).catch(() => {});
+    }
+
     return answer;
   } catch {
     return null;
   }
 }
 
-export function markAcceptedProgramAnswer(questionId: string, answerId: string): boolean {
+export function markAcceptedProgramAnswer(
+  questionId: string,
+  answerId: string,
+  currentUserId?: string
+): boolean {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_DOUBTS);
     const list: ProgramDoubtQuestion[] = raw ? JSON.parse(raw) : [...INITIAL_PROGRAM_DOUBTS];
     const q = list.find(item => item.id === questionId);
     if (!q) return false;
+
+    const activeUserId = currentUserId || getActiveUserFromStorage()?.id;
+    // Enforce that only the question author can mark an accepted answer
+    if (q.authorId && activeUserId && q.authorId !== activeUserId) {
+      return false;
+    }
 
     q.acceptedAnswerId = answerId;
     q.status = 'answered';
@@ -742,8 +962,348 @@ export function markAcceptedProgramAnswer(questionId: string, answerId: string):
     });
 
     localStorage.setItem(STORAGE_KEY_DOUBTS, JSON.stringify(list));
+
+    const sb = getSupabaseInstance();
+    if (sb && isUuidString(activeUserId)) {
+      sb.from('program_doubts')
+        .update({ accepted_answer_id: answerId, status: 'answered' })
+        .eq('id', questionId)
+        .eq('author_id', activeUserId!)
+        .then(() => {}, () => {});
+
+      updateCurrentUserPublicManifest(sb, activeUserId!, prev => ({
+        ...prev,
+        acceptedAnswers: {
+          ...(prev.acceptedAnswers || {}),
+          [questionId]: answerId
+        }
+      })).catch(() => {});
+    }
+
     return true;
   } catch {
     return false;
   }
 }
+
+// ----------------------------------------------------------------------------
+// CROSS-USER SUPABASE SYNCHRONIZATION FOR PROGRAMS, ENROLLMENTS, DISCUSSIONS & DOUBTS
+// ----------------------------------------------------------------------------
+
+export async function syncProgramsFromSupabase(
+  supabaseClient?: SupabaseClient | null,
+  currentNotes?: StudyNote[]
+): Promise<void> {
+  const sb = supabaseClient ?? getSupabaseInstance();
+  if (!sb) return;
+
+  try {
+    const aggregated = await fetchAggregatedPublicPlatformData(sb);
+
+    // 1. Merge custom programs from public manifests & dedicated table
+    const storedCustom = getStoredSystemPrograms();
+    const customById = new Map<string, AcademicProgram>();
+    storedCustom.forEach(p => customById.set(p.id, p));
+    aggregated.customPrograms.forEach(p => {
+      if (!customById.has(p.id)) customById.set(p.id, p);
+    });
+
+    try {
+      const { data: dbProgs } = await sb.from('academic_programs').select('*').limit(200);
+      if (Array.isArray(dbProgs)) {
+        for (const row of dbProgs) {
+          if (row?.id && !customById.has(row.id)) {
+            customById.set(row.id, {
+              id: row.id,
+              name: row.name,
+              shortCode: row.short_code || 'PROG',
+              degreeTier: (row.degree_tier as DegreeTier) || 'Undergraduate',
+              discipline: row.discipline || 'Interdisciplinary Studies',
+              description: row.description || '',
+              badge: `${row.degree_tier || 'Undergraduate'} Cohort`,
+              durationYears: Number(row.duration_years) || 4,
+              totalSemesters: Number(row.total_semesters) || 8,
+              totalCredits: Number(row.total_credits) || 130,
+              activeStudents: 1,
+              resourceCount: 0,
+              status: 'verified',
+              bannerGradient: 'from-cyan-950/40 via-indigo-950/60 to-black',
+              semesters: Array.isArray(row.semesters) ? row.semesters : []
+            });
+          }
+        }
+      }
+    } catch {}
+
+    saveStoredSystemPrograms(Array.from(customById.values()));
+
+    // 2. Sync student enrollments per program across all users
+    const studentMap = getStudentProgramMap();
+    for (const ep of aggregated.enrolledPrograms) {
+      if (ep.userId && ep.programId) {
+        studentMap[ep.userId] = ep.programId;
+      } else if (ep.userId && ep.programName) {
+        const matched = findProgramByNameOrFuzzy(ep.programName, ep.degreeTier as DegreeTier);
+        if (matched) studentMap[ep.userId] = matched.id;
+      }
+    }
+
+    // Also inspect public.academic_information if readable across users
+    try {
+      const { data: acadRows } = await sb
+        .from('academic_information')
+        .select('user_id, major, education_level')
+        .limit(500);
+      if (Array.isArray(acadRows)) {
+        for (const r of acadRows) {
+          if (r?.user_id && r?.major) {
+            const prog = ensureSystemProgramForRegisteredStudent({
+              studentId: r.user_id,
+              programName: r.major
+            });
+            if (prog) {
+              studentMap[r.user_id] = prog.id;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    saveStudentProgramMap(studentMap);
+
+    // Recompute enrollment counts from distinct students + current notes
+    const countsByProgram: Record<string, Set<string>> = {};
+    for (const [uid, pid] of Object.entries(studentMap)) {
+      if (!pid) continue;
+      if (!countsByProgram[pid]) countsByProgram[pid] = new Set();
+      countsByProgram[pid].add(uid);
+    }
+
+    const notesList = currentNotes || (() => {
+      try {
+        const raw = localStorage.getItem('xeusar_local_notes_v2');
+        return raw ? (JSON.parse(raw) as StudyNote[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+
+    for (const note of notesList) {
+      const pids = new Set<string>();
+      if (note.programId) pids.add(note.programId);
+      if (Array.isArray(note.programIds)) note.programIds.forEach(p => p && pids.add(p));
+      for (const pid of pids) {
+        if (!countsByProgram[pid]) countsByProgram[pid] = new Set();
+        countsByProgram[pid].add(note.uploaderId || note.uploaderName || note.id);
+      }
+    }
+
+    const enrollmentCounts = getProgramEnrollmentMap();
+    for (const [pid, set] of Object.entries(countsByProgram)) {
+      enrollmentCounts[pid] = Math.max(enrollmentCounts[pid] || 0, set.size);
+    }
+    saveProgramEnrollmentMap(enrollmentCounts);
+
+    // 3. Merge Program Discussions & Comments
+    const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
+    const localDiscs: ProgramDiscussionPost[] = rawDisc
+      ? JSON.parse(rawDisc)
+      : [...INITIAL_PROGRAM_DISCUSSIONS];
+    const discById = new Map<string, ProgramDiscussionPost>();
+    localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
+
+    for (const d of aggregated.programDiscussions) {
+      const existing = discById.get(d.id);
+      if (!existing) {
+        discById.set(d.id, { ...d, comments: [...(d.comments || [])] });
+      }
+    }
+
+    try {
+      const { data: dbDiscs } = await sb
+        .from('program_discussions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (Array.isArray(dbDiscs)) {
+        for (const row of dbDiscs) {
+          if (row?.id && !discById.has(row.id)) {
+            discById.set(row.id, {
+              id: row.id,
+              programId: row.program_id,
+              title: row.title,
+              content: row.content,
+              category: row.category || 'Course Advice',
+              semesterTag: row.semester_tag || undefined,
+              courseTag: row.course_tag || undefined,
+              authorId: row.author_id,
+              authorName: row.author_name || 'Student Peer',
+              authorAvatar: row.author_avatar || undefined,
+              authorProgram: row.author_program || 'Student Peer',
+              authorDegreeTier: row.author_degree_tier || undefined,
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 1,
+              hasUpvoted: false,
+              commentsCount: Number(row.comments_count) || 0,
+              comments: []
+            });
+          }
+        }
+      }
+    } catch {}
+
+    // Attach all cross-user comments to their parent program discussions
+    const allComments: ProgramDiscussionComment[] = [...aggregated.programDiscussionComments];
+    try {
+      const { data: dbComments } = await sb
+        .from('program_discussion_comments')
+        .select('*')
+        .order('created_at', { ascending: true })
+        .limit(500);
+      if (Array.isArray(dbComments)) {
+        for (const row of dbComments) {
+          if (row?.id) {
+            allComments.push({
+              id: row.id,
+              postId: row.post_id,
+              authorId: row.author_id,
+              authorName: row.author_name || 'Student Peer',
+              authorAvatar: row.author_avatar || undefined,
+              authorProgram: row.author_program || 'Student Peer',
+              authorDegreeTier: row.author_degree_tier || undefined,
+              content: row.content,
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 0,
+              hasUpvoted: false
+            });
+          }
+        }
+      }
+    } catch {}
+
+    for (const c of allComments) {
+      const parent = discById.get(c.postId);
+      if (parent) {
+        const exists = (parent.comments || []).some(existing => existing.id === c.id);
+        if (!exists) {
+          parent.comments = [...(parent.comments || []), c];
+          parent.commentsCount = parent.comments.length;
+        }
+      }
+    }
+
+    const mergedDiscs = Array.from(discById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(mergedDiscs));
+
+    // 4. Merge Program Doubts & Answers
+    const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
+    const localDoubts: ProgramDoubtQuestion[] = rawDoubts
+      ? JSON.parse(rawDoubts)
+      : [...INITIAL_PROGRAM_DOUBTS];
+    const doubtById = new Map<string, ProgramDoubtQuestion>();
+    localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
+
+    for (const q of aggregated.programDoubts) {
+      if (!doubtById.has(q.id)) {
+        doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] });
+      }
+    }
+
+    try {
+      const { data: dbDoubts } = await sb
+        .from('program_doubts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (Array.isArray(dbDoubts)) {
+        for (const row of dbDoubts) {
+          if (row?.id && !doubtById.has(row.id)) {
+            doubtById.set(row.id, {
+              id: row.id,
+              programId: row.program_id,
+              title: row.title,
+              content: row.content,
+              courseCode: row.course_code || 'GEN',
+              semesterTag: row.semester_tag || undefined,
+              tags: Array.isArray(row.tags) ? row.tags : [],
+              authorId: row.author_id,
+              authorName: row.author_name || 'Student Peer',
+              authorAvatar: row.author_avatar || undefined,
+              authorProgram: row.author_program || 'Student Peer',
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 1,
+              hasUpvoted: false,
+              status: row.status || 'unanswered',
+              acceptedAnswerId: row.accepted_answer_id || undefined,
+              answers: []
+            });
+          }
+        }
+      }
+    } catch {}
+
+    const allAnswers: ProgramDoubtAnswer[] = [...aggregated.programDoubtAnswers];
+    try {
+      const { data: dbAnswers } = await sb
+        .from('program_doubt_answers')
+        .select('*')
+        .order('created_at', { ascending: true })
+        .limit(500);
+      if (Array.isArray(dbAnswers)) {
+        for (const row of dbAnswers) {
+          if (row?.id) {
+            allAnswers.push({
+              id: row.id,
+              questionId: row.question_id,
+              authorId: row.author_id,
+              authorName: row.author_name || 'Student Peer',
+              authorAvatar: row.author_avatar || undefined,
+              authorRole: row.author_role || 'Peer',
+              authorProgram: row.author_program || 'Student Peer',
+              content: row.content,
+              createdAt: row.created_at || new Date().toISOString(),
+              upvotesCount: Number(row.upvotes_count) || 0,
+              hasUpvoted: false,
+              isAccepted: Boolean(row.is_accepted)
+            });
+          }
+        }
+      }
+    } catch {}
+
+    for (const a of allAnswers) {
+      const parent = doubtById.get(a.questionId);
+      if (parent) {
+        const exists = (parent.answers || []).some(existing => existing.id === a.id);
+        if (!exists) {
+          parent.answers = [...(parent.answers || []), a];
+          if (parent.status === 'unanswered') parent.status = 'answered';
+        }
+      }
+    }
+
+    for (const [qid, aid] of Object.entries(aggregated.acceptedAnswers)) {
+      const parent = doubtById.get(qid);
+      if (parent && aid) {
+        parent.acceptedAnswerId = aid;
+        parent.status = 'answered';
+        parent.answers = (parent.answers || []).map(a => ({
+          ...a,
+          isAccepted: a.id === aid
+        }));
+      }
+    }
+
+    const mergedDoubts = Array.from(doubtById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    localStorage.setItem(STORAGE_KEY_DOUBTS, JSON.stringify(mergedDoubts));
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('xeusar-program-data-synced'));
+    }
+  } catch {}
+}
+

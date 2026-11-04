@@ -9,8 +9,10 @@ import {
 import {
   getLocalNotes,
   setLocalNotes,
-  isValidHttpUrl
+  isValidHttpUrl,
+  recordDeletedNoteId
 } from './supabaseClient.ts';
+import { updateCurrentUserPublicManifest } from './publicSyncRelay.ts';
 import { getAllPrograms, getProgramById } from './programStore.ts';
 import {
   storeLocalPdfBlob,
@@ -1205,6 +1207,43 @@ endobj
         effectiveUploaderId
       );
 
+    const notePages: any[] = [
+      {
+        pageNumber: 1,
+        sectionTitle: `${params.title.trim()} — Section 1 Overview`,
+        content:
+          params.description.trim() ||
+          'Detailed study guide, high-yield definitions, and key exam concepts verified by student peer review.',
+        keyFormulasOrPoints: [
+          `Category: ${resolvedSubject}`,
+          `Course: ${normalizedCourseName}`,
+          `Program: ${params.programName} (Semester ${params.semesterNumber})`,
+          `Instructor: ${params.professor.trim() || 'Faculty Department'}`,
+          `Academic Term: ${params.academicYear} ${params.semester}`
+        ],
+        _xeusarMeta: {
+          programId: params.programId,
+          programIds,
+          programName: params.programName,
+          degreeTier: params.degreeTier,
+          semesterNumber: params.semesterNumber,
+          courseId: params.courseId,
+          universityId: params.universityId,
+          contentHash,
+          storagePath,
+          uploaderId: effectiveUploaderId,
+          courseName: normalizedCourseName
+        }
+      },
+      {
+        pageNumber: 2,
+        sectionTitle: `${normalizedCourseName} — Core Formulations & Derivations`,
+        content:
+          'In-depth notes, worked solutions, and practice exercises for semester reviews.\n\nShared across My Program and Study Library.',
+        keyFormulasOrPoints: (params.tags.length > 0 ? params.tags : [resolvedSubject, normalizedCourseName]).slice(0, 4)
+      }
+    ];
+
     // 5. Persist authoritative record to Supabase study_notes (with graceful column fallback)
     if (
       params.supabaseClient &&
@@ -1241,11 +1280,12 @@ endobj
         content_hash: contentHash,
         storage_path: storagePath,
         downloads_count: 0,
-        upvotes_count: 0,
+        upvotes_count: 1,
         tags:
           params.tags.length > 0
             ? params.tags
-            : [resolvedSubject, normalizedCourseName, params.programName].filter(Boolean)
+            : [resolvedSubject, normalizedCourseName, params.programName].filter(Boolean),
+        pages: notePages
       };
 
       const { error: fullInsertErr } = await params.supabaseClient
@@ -1254,6 +1294,7 @@ endobj
 
       if (fullInsertErr) {
         // Fallback if extended columns haven't been migrated yet on user's Supabase DB
+        // Note: `pages` JSONB carries lossless `_xeusarMeta` so program/semester/hash associations are never lost!
         const basePayload: Record<string, any> = {
           id: noteId,
           title: fullPayload.title,
@@ -1272,8 +1313,9 @@ endobj
           uploader_name: fullPayload.uploader_name,
           uploader_university: fullPayload.uploader_university,
           downloads_count: 0,
-          upvotes_count: 0,
-          tags: fullPayload.tags
+          upvotes_count: 1,
+          tags: fullPayload.tags,
+          pages: notePages
         };
         if (isUuidUploaderId) {
           basePayload.uploader_id = effectiveUploaderId;
@@ -1330,29 +1372,7 @@ endobj
         params.tags.length > 0
           ? params.tags
           : [resolvedSubject, normalizedCourseName],
-      pages: [
-        {
-          pageNumber: 1,
-          sectionTitle: `${params.title.trim()} — Section 1 Overview`,
-          content:
-            params.description.trim() ||
-            'Detailed study guide, high-yield definitions, and key exam concepts verified by student peer review.',
-          keyFormulasOrPoints: [
-            `Category: ${resolvedSubject}`,
-            `Course: ${normalizedCourseName}`,
-            `Program: ${params.programName} (Semester ${params.semesterNumber})`,
-            `Instructor: ${params.professor.trim() || 'Faculty Department'}`,
-            `Academic Term: ${params.academicYear} ${params.semester}`
-          ]
-        },
-        {
-          pageNumber: 2,
-          sectionTitle: `${normalizedCourseName} — Core Formulations & Derivations`,
-          content:
-            'In-depth notes, worked solutions, and practice exercises for semester reviews.\n\nShared across My Program and Study Library.',
-          keyFormulasOrPoints: (params.tags.length > 0 ? params.tags : [resolvedSubject, normalizedCourseName]).slice(0, 4)
-        }
-      ]
+      pages: notePages
     };
 
     recordUploadedNoteOwnership(newNote.id, effectiveUploaderId);
@@ -1361,6 +1381,19 @@ endobj
     const latestNotes = getLocalNotes().filter(n => n.id !== newNote.id);
     latestNotes.unshift(newNote);
     setLocalNotes(latestNotes);
+
+    // Sync to verified cross-user public manifest so other users discover this resource immediately
+    if (params.supabaseClient && isUuidUploaderId) {
+      await updateCurrentUserPublicManifest(
+        params.supabaseClient,
+        effectiveUploaderId,
+        prev => ({
+          ...prev,
+          notes: [newNote, ...(prev.notes || []).filter(n => n.id !== newNote.id)]
+        }),
+        params.uploaderName.trim()
+      );
+    }
 
     return {
       note: newNote,
@@ -1398,11 +1431,13 @@ export interface UpdateSharedResourceParams {
   degreeTier?: DegreeTier;
   tags?: string[];
   supabaseClient?: SupabaseClient | null;
+  currentUser?: StudentUser | null;
 }
 
 /**
  * Updates a shared resource's metadata in-place so changes immediately synchronize
  * across both My Program and Study Library without creating duplicates.
+ * Enforces that only the original uploader is authorized to edit the resource.
  */
 export async function updateSharedResource(
   params: UpdateSharedResourceParams
@@ -1412,6 +1447,10 @@ export async function updateSharedResource(
   if (idx === -1) return null;
 
   const existing = notes[idx];
+  if (params.currentUser !== undefined && !canUserDeleteNote(existing, params.currentUser)) {
+    throw new Error('Permission denied: Only the student who uploaded this resource can edit it.');
+  }
+
   const resolvedProgram = params.programId
     ? getProgramById(params.programId)
     : existing.programId
@@ -1422,6 +1461,46 @@ export async function updateSharedResource(
   const nextProgramIds = params.programIds
     ? Array.from(new Set([ ...(nextProgramId ? [nextProgramId] : []), ...params.programIds ]))
     : existing.programIds || (nextProgramId ? [nextProgramId] : []);
+
+  const nextProgramName =
+    params.programName ??
+    resolvedProgram?.name ??
+    existing.programName;
+  const nextDegreeTier =
+    params.degreeTier ??
+    resolvedProgram?.degreeTier ??
+    existing.degreeTier;
+  const nextSemesterNumber =
+    params.semesterNumber !== undefined
+      ? params.semesterNumber
+      : existing.semesterNumber;
+  const nextCourseId = params.courseId !== undefined ? params.courseId : existing.courseId;
+  const nextCourseName =
+    params.courseName !== undefined ? params.courseName.trim() : existing.courseName;
+
+  const updatedPages = Array.isArray(existing.pages) && existing.pages.length > 0
+    ? existing.pages.map((p, i) =>
+        i === 0
+          ? {
+              ...p,
+              _xeusarMeta: {
+                ...((p as any)._xeusarMeta || {}),
+                programId: nextProgramId,
+                programIds: nextProgramIds,
+                programName: nextProgramName,
+                degreeTier: nextDegreeTier,
+                semesterNumber: nextSemesterNumber,
+                courseId: nextCourseId,
+                universityId: existing.universityId,
+                contentHash: existing.contentHash,
+                storagePath: existing.storagePath,
+                uploaderId: existing.uploaderId,
+                courseName: nextCourseName
+              }
+            }
+          : p
+      )
+    : existing.pages;
 
   const updated: StudyNote = {
     ...existing,
@@ -1434,20 +1513,14 @@ export async function updateSharedResource(
       params.courseCode !== undefined
         ? params.courseCode.trim().toUpperCase()
         : existing.courseCode,
-    courseName:
-      params.courseName !== undefined
-        ? params.courseName.trim()
-        : existing.courseName,
-    courseId: params.courseId !== undefined ? params.courseId : existing.courseId,
+    courseName: nextCourseName,
+    courseId: nextCourseId,
     subject: params.subject !== undefined ? params.subject : existing.subject,
     materialType:
       params.materialType !== undefined
         ? params.materialType
         : existing.materialType,
-    semesterNumber:
-      params.semesterNumber !== undefined
-        ? params.semesterNumber
-        : existing.semesterNumber,
+    semesterNumber: nextSemesterNumber,
     semesterId:
       params.semesterNumber !== undefined
         ? `sem-${params.semesterNumber}`
@@ -1457,15 +1530,10 @@ export async function updateSharedResource(
       params.professor !== undefined ? params.professor.trim() : existing.professor,
     programId: nextProgramId,
     programIds: nextProgramIds,
-    programName:
-      params.programName ??
-      resolvedProgram?.name ??
-      existing.programName,
-    degreeTier:
-      params.degreeTier ??
-      resolvedProgram?.degreeTier ??
-      existing.degreeTier,
+    programName: nextProgramName,
+    degreeTier: nextDegreeTier,
     tags: params.tags !== undefined ? params.tags : existing.tags,
+    pages: updatedPages,
     updatedAt: new Date().toISOString()
   };
 
@@ -1474,22 +1542,64 @@ export async function updateSharedResource(
 
   if (params.supabaseClient) {
     try {
-      await params.supabaseClient
+      const { error: extUpdateErr } = await params.supabaseClient
         .from('study_notes')
         .update({
           title: updated.title,
           description: updated.description,
           course_code: updated.courseCode,
           course_name: updated.courseName,
+          course_id: updated.courseId || null,
           subject: updated.subject,
           material_type: updated.materialType,
           semester: updated.semester,
+          semester_number: updated.semesterNumber,
           professor: updated.professor,
-          tags: updated.tags
+          program_id: updated.programId,
+          program_ids: updated.programIds,
+          program_name: updated.programName,
+          degree_tier: updated.degreeTier,
+          tags: updated.tags,
+          pages: updated.pages
         })
         .eq('id', updated.id);
+
+      if (extUpdateErr) {
+        await params.supabaseClient
+          .from('study_notes')
+          .update({
+            title: updated.title,
+            description: updated.description,
+            course_code: updated.courseCode,
+            course_name: updated.courseName,
+            subject: updated.subject,
+            material_type: updated.materialType,
+            semester: updated.semester,
+            professor: updated.professor,
+            tags: updated.tags,
+            pages: updated.pages
+          })
+          .eq('id', updated.id);
+      }
     } catch {
       // Ignore if offline or RLS restricted
+    }
+
+    const ownerUuid = params.currentUser?.id || updated.uploaderId;
+    if (
+      ownerUuid &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerUuid)
+    ) {
+      await updateCurrentUserPublicManifest(
+        params.supabaseClient,
+        ownerUuid,
+        prev => ({
+          ...prev,
+          notes: (prev.notes || []).some(n => n.id === updated.id)
+            ? (prev.notes || []).map(n => (n.id === updated.id ? updated : n))
+            : [updated, ...(prev.notes || [])]
+        })
+      );
     }
   }
 
@@ -1519,6 +1629,8 @@ export async function deleteSharedResource(
     throw new Error('Permission denied: Only the student who uploaded this resource can delete it.');
   }
 
+  recordDeletedNoteId(noteId);
+
   const remainingNotes = notes.filter(n => n.id !== noteId);
   setLocalNotes(remainingNotes);
 
@@ -1535,6 +1647,17 @@ export async function deleteSharedResource(
       }
       await query;
     } catch {}
+
+    const ownerUuid = currentUser?.id || target?.uploaderId;
+    if (
+      ownerUuid &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerUuid)
+    ) {
+      await updateCurrentUserPublicManifest(supabaseClient, ownerUuid, prev => ({
+        ...prev,
+        notes: (prev.notes || []).filter(n => n.id !== noteId)
+      }));
+    }
   }
 
   if (!target) {

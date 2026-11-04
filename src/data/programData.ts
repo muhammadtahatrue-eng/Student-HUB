@@ -104,6 +104,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'ee-c1',
+            programId: 'bs-ee',
+            semesterNumber: 1,
             code: 'ENG-EE-101',
             name: 'Linear Circuit Analysis',
             credits: 4,
@@ -111,6 +113,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'ee-c2',
+            programId: 'bs-ee',
+            semesterNumber: 1,
             code: 'ENG-EE-102',
             name: 'Engineering Mechanics & Statics',
             credits: 3,
@@ -124,6 +128,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'ee-c3',
+            programId: 'bs-ee',
+            semesterNumber: 2,
             code: 'ENG-EE-201',
             name: 'Digital Logic Design',
             credits: 4,
@@ -131,6 +137,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'ee-c4',
+            programId: 'bs-ee',
+            semesterNumber: 2,
             code: 'ENG-EE-202',
             name: 'Signals & Systems',
             credits: 3,
@@ -144,6 +152,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'ee-c5',
+            programId: 'bs-ee',
+            semesterNumber: 3,
             code: 'ENG-EE-301',
             name: 'Microprocessor Systems & Embedded Interfacing',
             credits: 4,
@@ -151,6 +161,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'ee-c6',
+            programId: 'bs-ee',
+            semesterNumber: 3,
             code: 'ENG-EE-302',
             name: 'Electrical Machines & Power Electronics',
             credits: 4,
@@ -182,6 +194,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'me-c1',
+            programId: 'bs-me',
+            semesterNumber: 1,
             code: 'ENG-ME-101',
             name: 'Engineering Thermodynamics',
             credits: 3,
@@ -189,6 +203,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'me-c2',
+            programId: 'bs-me',
+            semesterNumber: 1,
             code: 'ENG-ME-102',
             name: 'Fluid Mechanics',
             credits: 4,
@@ -202,6 +218,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'me-c3',
+            programId: 'bs-me',
+            semesterNumber: 2,
             code: 'ENG-ME-201',
             name: 'Mechanics of Materials',
             credits: 3,
@@ -209,6 +227,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'me-c4',
+            programId: 'bs-me',
+            semesterNumber: 2,
             code: 'ENG-ME-202',
             name: 'Heat & Mass Transfer',
             credits: 3,
@@ -240,6 +260,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
         courses: [
           {
             id: 'ce-c1',
+            programId: 'bs-ce',
+            semesterNumber: 1,
             code: 'ENG-CE-101',
             name: 'Structural Analysis & Design',
             credits: 4,
@@ -247,6 +269,8 @@ export const MASTER_ACADEMIC_PROGRAMS: AcademicProgram[] = [
           },
           {
             id: 'ce-c2',
+            programId: 'bs-ce',
+            semesterNumber: 1,
             code: 'ENG-CE-102',
             name: 'Soil Mechanics & Geotechnical Engineering',
             credits: 3,

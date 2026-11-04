@@ -12,6 +12,8 @@ export interface NotePage {
   keyFormulasOrPoints: string[];
 }
 
+export type StudyNotePage = NotePage;
+
 export interface StudyNote {
   id: string;
   title: string;

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Compass,
   Search,
@@ -23,7 +23,8 @@ import {
   getAllHecUniversities,
   getFollowedUniversityIds,
   toggleFollowUniversity,
-  getUniversityRealStats
+  getUniversityRealStats,
+  syncUniversitiesFromSupabase
 } from '../../lib/universityStore.ts';
 
 interface ExploreUniversitiesViewProps {
@@ -45,10 +46,20 @@ export const ExploreUniversitiesView: React.FC<ExploreUniversitiesViewProps> = (
   const [selectedSector, setSelectedSector] = useState<'all' | 'Public' | 'Private'>('all');
   const [onlyFollowed, setOnlyFollowed] = useState<boolean>(false);
   const [followedIds, setFollowedIds] = useState<string[]>(() => getFollowedUniversityIds());
+  const [syncVersion, setSyncVersion] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => setSyncVersion(v => v + 1);
+    syncUniversitiesFromSupabase(undefined, notes).catch(() => {});
+    window.addEventListener('xeusar-university-data-synced', refresh);
+    return () => {
+      window.removeEventListener('xeusar-university-data-synced', refresh);
+    };
+  }, [notes, user?.id]);
 
   // Dynamic Unlock Rule: Only universities with >= 1 registered student appear in the Explore grid
-  const unlockedUniversities = useMemo(() => getUnlockedUniversities(), [user]);
-  const allMasterCount = useMemo(() => getAllHecUniversities().length, []);
+  const unlockedUniversities = useMemo(() => getUnlockedUniversities(), [user, notes, syncVersion]);
+  const allMasterCount = useMemo(() => getAllHecUniversities().length, [syncVersion]);
 
   // Compute available provinces and disciplines from unlocked pool
   const provinces = useMemo(() => {
