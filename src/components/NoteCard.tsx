@@ -48,6 +48,17 @@ export const NoteCard: React.FC<NoteCardProps> = ({
             )}
             <span aria-hidden="true" className="text-white/20">·</span>
             <span className="text-white/60">{typeInfo.label}</span>
+            {note.isUnsynced && (
+              <>
+                <span aria-hidden="true" className="text-white/20">·</span>
+                <span
+                  className="text-amber-300 font-semibold"
+                  title={note.syncError || 'Saved in this browser only until Supabase tables are migrated'}
+                >
+                  Local only (unsynced)
+                </span>
+              </>
+            )}
           </div>
 
           {canManage && (onEdit || onDelete) && (

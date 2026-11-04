@@ -10,9 +10,9 @@ import {
   getLocalNotes,
   setLocalNotes,
   isValidHttpUrl,
-  recordDeletedNoteId
+  recordDeletedNoteId,
+  classifySupabaseError
 } from './supabaseClient.ts';
-import { updateCurrentUserPublicManifest } from './publicSyncRelay.ts';
 import { getAllPrograms, getProgramById } from './programStore.ts';
 import {
   storeLocalPdfBlob,
@@ -932,6 +932,8 @@ export interface SharedResourceUploadResult {
   finalSizeBytes: number;
   deduplicated: boolean;
   contentHash: string;
+  syncedToSupabase: boolean;
+  syncWarning?: string;
 }
 
 export async function uploadSharedResource(
@@ -948,7 +950,7 @@ export async function uploadSharedResource(
   // Check if an identical idempotency key was already saved recently (retry protection)
   const currentLocalNotes = getLocalNotes();
   const existingByIdempotency = currentLocalNotes.find(
-    n => n.idempotencyKey && n.idempotencyKey === idempotencyKey
+    n => n.idempotencyKey && n.idempotencyKey === idempotencyKey && !n.isUnsynced
   );
   if (existingByIdempotency) {
     return {
@@ -957,7 +959,9 @@ export async function uploadSharedResource(
       originalSizeBytes: existingByIdempotency.originalSizeBytes || existingByIdempotency.fileSizeBytes,
       finalSizeBytes: existingByIdempotency.fileSizeBytes,
       deduplicated: true,
-      contentHash: existingByIdempotency.contentHash || ''
+      contentHash: existingByIdempotency.contentHash || '',
+      syncedToSupabase: !existingByIdempotency.isUnsynced,
+      syncWarning: existingByIdempotency.syncError
     };
   }
 
@@ -976,7 +980,6 @@ export async function uploadSharedResource(
     // 1. Validate & Safely Compress File (enforcing 5 MB limit)
     if (params.file) {
       if (params.file.size > MAX_UPLOAD_SIZE_BYTES * 4) {
-        // Extremely large file that cannot be safely compressed under 5 MB
         throw new Error(OVERSIZED_FILE_ERROR_MESSAGE);
       }
 
@@ -1038,9 +1041,10 @@ endobj
     let fileUrl = '';
     let storagePath = '';
     let deduplicated = false;
+    let storageErrorMsg: string | undefined;
 
-    if (existingPhysical) {
-      // Reuse existing physical file! Zero new bytes consumed.
+    if (existingPhysical && !existingPhysical.fileUrl.startsWith('https://xeusar.local/')) {
+      // Reuse existing verified physical file! Zero new bytes consumed.
       fileUrl = existingPhysical.fileUrl;
       storagePath = existingPhysical.storagePath;
       deduplicated = true;
@@ -1062,7 +1066,7 @@ endobj
           const extMatch = finalFile!.name.match(/\.[^.]+$/);
           const ext = extMatch ? extMatch[0].toLowerCase() : '.pdf';
           const hashStoragePath = `shared/${contentHash}${ext}`;
-          let resolvedUrl = `https://xeusar.local/storage/${hashStoragePath}`;
+          let resolvedUrl = '';
           let uploadedToRemoteBucket = false;
 
           if (
@@ -1091,35 +1095,41 @@ endobj
                 resolvedUrl = publicUrlData.publicUrl;
                 uploadedToRemoteBucket = true;
               }
+            } else {
+              storageErrorMsg = `Supabase Storage bucket "study-materials" error: ${storageError.message}`;
             }
 
-            // Record in stored_files table if present
-            try {
-              await params.supabaseClient.from('stored_files').upsert(
-                [
-                  {
-                    content_hash: contentHash,
-                    storage_path: hashStoragePath,
-                    file_url: resolvedUrl,
-                    mime_type: finalFile.type || 'application/pdf',
-                    size_bytes: finalSizeBytes
-                  }
-                ],
-                { onConflict: 'content_hash' }
-              );
-            } catch {
-              // Ignore if stored_files table is not yet migrated
+            if (uploadedToRemoteBucket) {
+              // Record in stored_files table if present
+              try {
+                await params.supabaseClient.from('stored_files').upsert(
+                  [
+                    {
+                      content_hash: contentHash,
+                      storage_path: hashStoragePath,
+                      file_url: resolvedUrl,
+                      mime_type: finalFile.type || 'application/pdf',
+                      size_bytes: finalSizeBytes
+                    }
+                  ],
+                  { onConflict: 'content_hash' }
+                );
+              } catch {
+                // Ignore if stored_files table is not yet migrated
+              }
             }
           }
 
           // If remote storage bucket is not yet created/public and user uploaded a file,
-          // encode as Data URL (up to 3.5 MB) so the exact posted PDF is preserved in study_notes.file_url
-          if (!uploadedToRemoteBucket && params.file && finalFile && finalFile.size <= 3.5 * 1024 * 1024) {
+          // encode as Data URL (up to 3.5 MB) for local preview fallback
+          if (!uploadedToRemoteBucket && finalFile && finalFile.size <= 3.5 * 1024 * 1024) {
             try {
               resolvedUrl = await blobToDataUrl(finalFile);
             } catch {
-              // Keep local storage path URL and rely on IndexedDB cache
+              resolvedUrl = `https://xeusar.local/storage/${hashStoragePath}`;
             }
+          } else if (!uploadedToRemoteBucket) {
+            resolvedUrl = `https://xeusar.local/storage/${hashStoragePath}`;
           }
 
           // Save to local physical file registry
@@ -1220,20 +1230,7 @@ endobj
           `Program: ${params.programName} (Semester ${params.semesterNumber})`,
           `Instructor: ${params.professor.trim() || 'Faculty Department'}`,
           `Academic Term: ${params.academicYear} ${params.semester}`
-        ],
-        _xeusarMeta: {
-          programId: params.programId,
-          programIds,
-          programName: params.programName,
-          degreeTier: params.degreeTier,
-          semesterNumber: params.semesterNumber,
-          courseId: params.courseId,
-          universityId: params.universityId,
-          contentHash,
-          storagePath,
-          uploaderId: effectiveUploaderId,
-          courseName: normalizedCourseName
-        }
+        ]
       },
       {
         pageNumber: 2,
@@ -1244,7 +1241,10 @@ endobj
       }
     ];
 
-    // 5. Persist authoritative record to Supabase study_notes (with graceful column fallback)
+    // 5. Persist authoritative record to Supabase study_notes and verify database persistence
+    let syncedToSupabase = false;
+    let dbSyncWarning: string | undefined;
+
     if (
       params.supabaseClient &&
       params.isConnected &&
@@ -1273,6 +1273,7 @@ endobj
         uploader_name: params.uploaderName.trim() || 'Anonymous Student',
         uploader_university:
           params.uploaderUniversity.trim() || 'Open Campus',
+        university_id: params.universityId || null,
         program_id: params.programId,
         program_ids: programIds,
         program_name: params.programName,
@@ -1292,37 +1293,58 @@ endobj
         .from('study_notes')
         .insert([fullPayload]);
 
-      if (fullInsertErr) {
-        // Fallback if extended columns haven't been migrated yet on user's Supabase DB
-        // Note: `pages` JSONB carries lossless `_xeusarMeta` so program/semester/hash associations are never lost!
-        const basePayload: Record<string, any> = {
-          id: noteId,
-          title: fullPayload.title,
-          description: fullPayload.description,
-          course_code: fullPayload.course_code,
-          course_name: fullPayload.course_name,
-          subject: fullPayload.subject,
-          material_type: fullPayload.material_type,
-          academic_year: fullPayload.academic_year,
-          semester: fullPayload.semester,
-          professor: fullPayload.professor,
-          file_url: fullPayload.file_url,
-          file_name: fullPayload.file_name,
-          file_size_bytes: fullPayload.file_size_bytes,
-          page_count: fullPayload.page_count,
-          uploader_name: fullPayload.uploader_name,
-          uploader_university: fullPayload.uploader_university,
-          downloads_count: 0,
-          upvotes_count: 1,
-          tags: fullPayload.tags,
-          pages: notePages
-        };
-        if (isUuidUploaderId) {
-          basePayload.uploader_id = effectiveUploaderId;
-        }
+      if (!fullInsertErr) {
+        syncedToSupabase = true;
+      } else {
+        const classified = classifySupabaseError(fullInsertErr, 'study_notes');
+        if (classified.category === 'missing_column') {
+          // Only fallback to base columns if a column is missing (42703 / PGRST204)
+          const basePayload: Record<string, any> = {
+            id: noteId,
+            title: fullPayload.title,
+            description: fullPayload.description,
+            course_code: fullPayload.course_code,
+            course_name: fullPayload.course_name,
+            subject: fullPayload.subject,
+            material_type: fullPayload.material_type,
+            academic_year: fullPayload.academic_year,
+            semester: fullPayload.semester,
+            professor: fullPayload.professor,
+            file_url: fullPayload.file_url,
+            file_name: fullPayload.file_name,
+            file_size_bytes: fullPayload.file_size_bytes,
+            page_count: fullPayload.page_count,
+            uploader_name: fullPayload.uploader_name,
+            uploader_university: fullPayload.uploader_university,
+            downloads_count: 0,
+            upvotes_count: 1,
+            tags: fullPayload.tags,
+            pages: notePages
+          };
+          if (isUuidUploaderId) {
+            basePayload.uploader_id = effectiveUploaderId;
+          }
 
-        await params.supabaseClient.from('study_notes').insert([basePayload]);
+          const { error: baseInsertErr } = await params.supabaseClient
+            .from('study_notes')
+            .insert([basePayload]);
+          if (!baseInsertErr) {
+            syncedToSupabase = true;
+          } else {
+            dbSyncWarning = classifySupabaseError(baseInsertErr, 'study_notes').userMessage;
+          }
+        } else {
+          dbSyncWarning = classified.userMessage;
+        }
       }
+    } else {
+      dbSyncWarning = 'Supabase connection is not active; saved to local browser storage only.';
+    }
+
+    if (storageErrorMsg && !dbSyncWarning) {
+      dbSyncWarning = storageErrorMsg;
+    } else if (storageErrorMsg && dbSyncWarning) {
+      dbSyncWarning = `${dbSyncWarning} (${storageErrorMsg})`;
     }
 
     params.onProgress?.(100);
@@ -1372,28 +1394,17 @@ endobj
         params.tags.length > 0
           ? params.tags
           : [resolvedSubject, normalizedCourseName],
-      pages: notePages
+      pages: notePages,
+      isUnsynced: !syncedToSupabase || Boolean(storageErrorMsg),
+      syncError: dbSyncWarning
     };
 
     recordUploadedNoteOwnership(newNote.id, effectiveUploaderId);
 
-    // Save into authoritative local cache so both Study Library and My Program reflect immediately
+    // Save into local cache for current browser session
     const latestNotes = getLocalNotes().filter(n => n.id !== newNote.id);
     latestNotes.unshift(newNote);
     setLocalNotes(latestNotes);
-
-    // Sync to verified cross-user public manifest so other users discover this resource immediately
-    if (params.supabaseClient && isUuidUploaderId) {
-      await updateCurrentUserPublicManifest(
-        params.supabaseClient,
-        effectiveUploaderId,
-        prev => ({
-          ...prev,
-          notes: [newNote, ...(prev.notes || []).filter(n => n.id !== newNote.id)]
-        }),
-        params.uploaderName.trim()
-      );
-    }
 
     return {
       note: newNote,
@@ -1401,7 +1412,9 @@ endobj
       originalSizeBytes,
       finalSizeBytes,
       deduplicated,
-      contentHash
+      contentHash,
+      syncedToSupabase: syncedToSupabase && !storageErrorMsg,
+      syncWarning: dbSyncWarning
     };
   } finally {
     inFlightByteReservations.delete(reservationId);
@@ -1478,30 +1491,6 @@ export async function updateSharedResource(
   const nextCourseName =
     params.courseName !== undefined ? params.courseName.trim() : existing.courseName;
 
-  const updatedPages = Array.isArray(existing.pages) && existing.pages.length > 0
-    ? existing.pages.map((p, i) =>
-        i === 0
-          ? {
-              ...p,
-              _xeusarMeta: {
-                ...((p as any)._xeusarMeta || {}),
-                programId: nextProgramId,
-                programIds: nextProgramIds,
-                programName: nextProgramName,
-                degreeTier: nextDegreeTier,
-                semesterNumber: nextSemesterNumber,
-                courseId: nextCourseId,
-                universityId: existing.universityId,
-                contentHash: existing.contentHash,
-                storagePath: existing.storagePath,
-                uploaderId: existing.uploaderId,
-                courseName: nextCourseName
-              }
-            }
-          : p
-      )
-    : existing.pages;
-
   const updated: StudyNote = {
     ...existing,
     title: params.title !== undefined ? params.title.trim() : existing.title,
@@ -1533,38 +1522,38 @@ export async function updateSharedResource(
     programName: nextProgramName,
     degreeTier: nextDegreeTier,
     tags: params.tags !== undefined ? params.tags : existing.tags,
-    pages: updatedPages,
     updatedAt: new Date().toISOString()
   };
 
-  notes[idx] = updated;
-  setLocalNotes(notes);
-
   if (params.supabaseClient) {
-    try {
-      const { error: extUpdateErr } = await params.supabaseClient
-        .from('study_notes')
-        .update({
-          title: updated.title,
-          description: updated.description,
-          course_code: updated.courseCode,
-          course_name: updated.courseName,
-          course_id: updated.courseId || null,
-          subject: updated.subject,
-          material_type: updated.materialType,
-          semester: updated.semester,
-          semester_number: updated.semesterNumber,
-          professor: updated.professor,
-          program_id: updated.programId,
-          program_ids: updated.programIds,
-          program_name: updated.programName,
-          degree_tier: updated.degreeTier,
-          tags: updated.tags,
-          pages: updated.pages
-        })
-        .eq('id', updated.id);
+    const { error: extUpdateErr } = await params.supabaseClient
+      .from('study_notes')
+      .update({
+        title: updated.title,
+        description: updated.description,
+        course_code: updated.courseCode,
+        course_name: updated.courseName,
+        course_id: updated.courseId || null,
+        subject: updated.subject,
+        material_type: updated.materialType,
+        semester: updated.semester,
+        semester_number: updated.semesterNumber,
+        professor: updated.professor,
+        program_id: updated.programId,
+        program_ids: updated.programIds,
+        program_name: updated.programName,
+        degree_tier: updated.degreeTier,
+        tags: updated.tags,
+        pages: updated.pages
+      })
+      .eq('id', updated.id);
 
-      if (extUpdateErr) {
+    if (extUpdateErr) {
+      const classified = classifySupabaseError(extUpdateErr, 'study_notes');
+      if (classified.category === 'permission_denied') {
+        throw new Error(classified.userMessage);
+      }
+      if (classified.category === 'missing_column') {
         await params.supabaseClient
           .from('study_notes')
           .update({
@@ -1581,27 +1570,14 @@ export async function updateSharedResource(
           })
           .eq('id', updated.id);
       }
-    } catch {
-      // Ignore if offline or RLS restricted
-    }
-
-    const ownerUuid = params.currentUser?.id || updated.uploaderId;
-    if (
-      ownerUuid &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerUuid)
-    ) {
-      await updateCurrentUserPublicManifest(
-        params.supabaseClient,
-        ownerUuid,
-        prev => ({
-          ...prev,
-          notes: (prev.notes || []).some(n => n.id === updated.id)
-            ? (prev.notes || []).map(n => (n.id === updated.id ? updated : n))
-            : [updated, ...(prev.notes || [])]
-        })
-      );
+    } else {
+      updated.isUnsynced = false;
+      updated.syncError = undefined;
     }
   }
+
+  notes[idx] = updated;
+  setLocalNotes(notes);
 
   return updated;
 }
@@ -1629,36 +1605,29 @@ export async function deleteSharedResource(
     throw new Error('Permission denied: Only the student who uploaded this resource can delete it.');
   }
 
+  if (supabaseClient) {
+    let query = supabaseClient.from('study_notes').delete().eq('id', noteId);
+    if (
+      currentUser?.id &&
+      target?.uploaderId &&
+      target.uploaderId === currentUser.id &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentUser.id)
+    ) {
+      query = query.eq('uploader_id', currentUser.id);
+    }
+    const { error: deleteErr } = await query;
+    if (deleteErr) {
+      const classified = classifySupabaseError(deleteErr, 'study_notes');
+      if (classified.category === 'permission_denied') {
+        throw new Error(classified.userMessage);
+      }
+    }
+  }
+
   recordDeletedNoteId(noteId);
 
   const remainingNotes = notes.filter(n => n.id !== noteId);
   setLocalNotes(remainingNotes);
-
-  if (supabaseClient) {
-    try {
-      let query = supabaseClient.from('study_notes').delete().eq('id', noteId);
-      if (
-        currentUser?.id &&
-        target?.uploaderId &&
-        target.uploaderId === currentUser.id &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentUser.id)
-      ) {
-        query = query.eq('uploader_id', currentUser.id);
-      }
-      await query;
-    } catch {}
-
-    const ownerUuid = currentUser?.id || target?.uploaderId;
-    if (
-      ownerUuid &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerUuid)
-    ) {
-      await updateCurrentUserPublicManifest(supabaseClient, ownerUuid, prev => ({
-        ...prev,
-        notes: (prev.notes || []).filter(n => n.id !== noteId)
-      }));
-    }
-  }
 
   if (!target) {
     return {

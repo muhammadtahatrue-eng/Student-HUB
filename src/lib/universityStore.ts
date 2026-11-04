@@ -19,10 +19,6 @@ import {
   INITIAL_DOUBTS
 } from '../data/universityData.ts';
 import { getSupabaseInstance } from './supabaseClient.ts';
-import {
-  fetchAggregatedPublicPlatformData,
-  updateCurrentUserPublicManifest
-} from './publicSyncRelay.ts';
 
 const STORAGE_KEY_CUSTOM_UNIS = 'xeusar_custom_universities_v3';
 const STORAGE_KEY_ENROLLMENTS = 'xeusar_student_enrollments_v3';
@@ -228,18 +224,6 @@ export function registerCustomUniversity(details: {
         { onConflict: 'id' }
       )
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(sb, details.studentId!, prev => ({
-      ...prev,
-      customUniversities: [
-        newCustomUni,
-        ...(prev.customUniversities || []).filter(u => u.id !== newCustomUni.id)
-      ],
-      enrolledUniversity: {
-        universityId: newCustomUni.id,
-        universityName: newCustomUni.name
-      }
-    })).catch(() => {});
   }
 
   return newCustomUni;
@@ -514,19 +498,6 @@ export function addDiscussionPost(
         }
       ])
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      payload.authorId!,
-      prev => ({
-        ...prev,
-        universityDiscussions: [
-          newPost,
-          ...(prev.universityDiscussions || []).filter(p => p.id !== newPost.id)
-        ]
-      }),
-      newPost.authorName
-    ).catch(() => {});
   }
 
   return newPost;
@@ -600,33 +571,25 @@ export function addDiscussionComment(
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(payload.authorId)) {
-    sb.from('discussion_comments')
-      .insert([
-        {
-          id: newComment.id,
-          post_id: newComment.postId,
-          author_id: payload.authorId,
-          author_name: newComment.authorName,
-          author_avatar: newComment.authorAvatar || null,
-          author_university: newComment.authorUniversity,
-          content: newComment.content,
-          upvotes_count: 0
+    const commentRow = {
+      id: newComment.id,
+      post_id: newComment.postId,
+      author_id: payload.authorId,
+      author_name: newComment.authorName,
+      author_avatar: newComment.authorAvatar || null,
+      author_university: newComment.authorUniversity,
+      content: newComment.content,
+      upvotes_count: 0
+    };
+    sb.from('university_discussion_comments')
+      .insert([commentRow])
+      .then(({ error }) => {
+        if (error) {
+          sb.from('discussion_comments')
+            .insert([commentRow])
+            .then(() => {}, () => {});
         }
-      ])
-      .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      payload.authorId!,
-      prev => ({
-        ...prev,
-        universityDiscussionComments: [
-          newComment,
-          ...(prev.universityDiscussionComments || []).filter(c => c.id !== newComment.id)
-        ]
-      }),
-      newComment.authorName
-    ).catch(() => {});
+      }, () => {});
   }
 
   return newComment;
@@ -814,19 +777,6 @@ export function addDoubtQuestion(
         }
       ])
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      payload.authorId!,
-      prev => ({
-        ...prev,
-        universityDoubts: [
-          newQuestion,
-          ...(prev.universityDoubts || []).filter(d => d.id !== newQuestion.id)
-        ]
-      }),
-      newQuestion.authorName
-    ).catch(() => {});
   }
 
   return newQuestion;
@@ -905,35 +855,27 @@ export function addDoubtAnswer(
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(payload.authorId)) {
-    sb.from('doubt_answers')
-      .insert([
-        {
-          id: newAnswer.id,
-          question_id: newAnswer.questionId,
-          author_id: payload.authorId,
-          author_name: newAnswer.authorName,
-          author_avatar: newAnswer.authorAvatar || null,
-          author_role: newAnswer.authorRole || 'Peer Member',
-          author_university: newAnswer.authorUniversity,
-          content: newAnswer.content,
-          upvotes_count: 0,
-          is_accepted: false
+    const answerRow = {
+      id: newAnswer.id,
+      question_id: newAnswer.questionId,
+      author_id: payload.authorId,
+      author_name: newAnswer.authorName,
+      author_avatar: newAnswer.authorAvatar || null,
+      author_role: newAnswer.authorRole || 'Peer Member',
+      author_university: newAnswer.authorUniversity,
+      content: newAnswer.content,
+      upvotes_count: 0,
+      is_accepted: false
+    };
+    sb.from('university_doubt_answers')
+      .insert([answerRow])
+      .then(({ error }) => {
+        if (error) {
+          sb.from('doubt_answers')
+            .insert([answerRow])
+            .then(() => {}, () => {});
         }
-      ])
-      .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      payload.authorId!,
-      prev => ({
-        ...prev,
-        universityDoubtAnswers: [
-          newAnswer,
-          ...(prev.universityDoubtAnswers || []).filter(a => a.id !== newAnswer.id)
-        ]
-      }),
-      newAnswer.authorName
-    ).catch(() => {});
+      }, () => {});
   }
 
   return newAnswer;
@@ -1006,14 +948,6 @@ export function acceptDoubtAnswer(
       .eq('id', questionId)
       .eq('author_id', activeUserId!)
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(sb, activeUserId!, prev => ({
-      ...prev,
-      acceptedAnswers: {
-        ...(prev.acceptedAnswers || {}),
-        [questionId]: answerId
-      }
-    })).catch(() => {});
   }
 }
 
@@ -1152,15 +1086,10 @@ export async function syncUniversitiesFromSupabase(
   if (!sb) return;
 
   try {
-    const aggregated = await fetchAggregatedPublicPlatformData(sb);
-
-    // 1. Merge custom universities
+    // 1. Merge custom universities from canonical universities table
     const storedCustom = getCustomUniversities();
     const customById = new Map<string, University>();
     storedCustom.forEach(u => customById.set(u.id, u));
-    aggregated.customUniversities.forEach(u => {
-      if (!customById.has(u.id)) customById.set(u.id, u);
-    });
 
     try {
       const { data: dbUnis } = await sb.from('universities').select('*').limit(200);
@@ -1198,19 +1127,9 @@ export async function syncUniversitiesFromSupabase(
 
     saveCustomUniversities(Array.from(customById.values()));
 
-    // 2. Sync student enrollments per university across all users
+    // 2. Sync student enrollments per university from public.academic_information
     const enrollments = getStudentEnrollments();
     const studentsPerUni: Record<string, Set<string>> = {};
-
-    for (const eu of aggregated.enrolledUniversities) {
-      let matchedId = eu.universityId;
-      const found = findUniversityByNameOrFuzzy(eu.universityName || eu.universityId || '');
-      if (found) matchedId = found.id;
-      if (matchedId) {
-        if (!studentsPerUni[matchedId]) studentsPerUni[matchedId] = new Set();
-        studentsPerUni[matchedId].add(eu.userId);
-      }
-    }
 
     try {
       const { data: acadRows } = await sb
@@ -1254,17 +1173,11 @@ export async function syncUniversitiesFromSupabase(
     }
     saveStudentEnrollments(enrollments);
 
-    // 3. Merge University Discussions & Comments
+    // 3. Merge University Discussions & Comments from canonical tables
     const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     const localDiscs: DiscussionPost[] = rawDisc ? JSON.parse(rawDisc) : [...INITIAL_DISCUSSIONS];
     const discById = new Map<string, DiscussionPost>();
     localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
-
-    for (const d of aggregated.universityDiscussions) {
-      if (!discById.has(d.id)) {
-        discById.set(d.id, { ...d, comments: [...(d.comments || [])] });
-      }
-    }
 
     try {
       const { data: dbDiscs } = await sb
@@ -1299,13 +1212,21 @@ export async function syncUniversitiesFromSupabase(
       }
     } catch {}
 
-    const allComments: DiscussionComment[] = [...aggregated.universityDiscussionComments];
+    const allComments: DiscussionComment[] = [];
     try {
-      const { data: dbComments } = await sb
-        .from('discussion_comments')
+      let { data: dbComments, error: commErr } = await sb
+        .from('university_discussion_comments')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(500);
+      if (commErr) {
+        const fallback = await sb
+          .from('discussion_comments')
+          .select('*')
+          .order('created_at', { ascending: true })
+          .limit(500);
+        dbComments = fallback.data;
+      }
       if (Array.isArray(dbComments)) {
         for (const row of dbComments) {
           if (row?.id) {
@@ -1339,17 +1260,11 @@ export async function syncUniversitiesFromSupabase(
 
     saveAllDiscussions(Array.from(discById.values()));
 
-    // 4. Merge University Doubts & Answers
+    // 4. Merge University Doubts & Answers from canonical tables
     const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
     const localDoubts: DoubtQuestion[] = rawDoubts ? JSON.parse(rawDoubts) : [...INITIAL_DOUBTS];
     const doubtById = new Map<string, DoubtQuestion>();
     localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
-
-    for (const q of aggregated.universityDoubts) {
-      if (!doubtById.has(q.id)) {
-        doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] });
-      }
-    }
 
     try {
       const { data: dbDoubts } = await sb
@@ -1359,7 +1274,8 @@ export async function syncUniversitiesFromSupabase(
         .limit(200);
       if (Array.isArray(dbDoubts)) {
         for (const row of dbDoubts) {
-          if (row?.id && !doubtById.has(row.id)) {
+          if (row?.id) {
+            const existing = doubtById.get(row.id);
             doubtById.set(row.id, {
               id: row.id,
               universityId: row.university_id,
@@ -1375,23 +1291,31 @@ export async function syncUniversitiesFromSupabase(
               authorUniversity: row.author_university || 'University Campus',
               createdAt: row.created_at || new Date().toISOString(),
               upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: false,
+              hasUpvoted: existing?.hasUpvoted || false,
               status: row.status || 'unanswered',
-              acceptedAnswerId: row.accepted_answer_id || undefined,
-              answers: []
+              acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
+              answers: existing?.answers ? [...existing.answers] : []
             });
           }
         }
       }
     } catch {}
 
-    const allAnswers: DoubtAnswer[] = [...aggregated.universityDoubtAnswers];
+    const allAnswers: DoubtAnswer[] = [];
     try {
-      const { data: dbAnswers } = await sb
-        .from('doubt_answers')
+      let { data: dbAnswers, error: ansErr } = await sb
+        .from('university_doubt_answers')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(500);
+      if (ansErr) {
+        const fallback = await sb
+          .from('doubt_answers')
+          .select('*')
+          .order('created_at', { ascending: true })
+          .limit(500);
+        dbAnswers = fallback.data;
+      }
       if (Array.isArray(dbAnswers)) {
         for (const row of dbAnswers) {
           if (row?.id) {
@@ -1422,18 +1346,12 @@ export async function syncUniversitiesFromSupabase(
           parent.answers = [...(parent.answers || []), a];
           if (parent.status === 'unanswered') parent.status = 'answered';
         }
-      }
-    }
-
-    for (const [qid, aid] of Object.entries(aggregated.acceptedAnswers)) {
-      const parent = doubtById.get(qid);
-      if (parent && aid) {
-        parent.acceptedAnswerId = aid;
-        parent.status = 'answered';
-        parent.answers = (parent.answers || []).map(a => ({
-          ...a,
-          isAccepted: a.id === aid
-        }));
+        if (parent.acceptedAnswerId) {
+          parent.answers = parent.answers.map(ans => ({
+            ...ans,
+            isAccepted: ans.id === parent.acceptedAnswerId
+          }));
+        }
       }
     }
 

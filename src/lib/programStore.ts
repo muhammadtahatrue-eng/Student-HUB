@@ -18,10 +18,6 @@ import {
   INITIAL_PROGRAM_DOUBTS
 } from '../data/programData.ts';
 import { getSupabaseInstance } from './supabaseClient.ts';
-import {
-  fetchAggregatedPublicPlatformData,
-  updateCurrentUserPublicManifest
-} from './publicSyncRelay.ts';
 
 // Local storage keys
 const STORAGE_KEY_PROGRAMS = 'xeusar_academic_programs_v2';
@@ -453,19 +449,6 @@ export function ensureSystemProgramForRegisteredStudent(params: {
         { onConflict: 'id' }
       )
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(sb, params.studentId!, prev => ({
-      ...prev,
-      customPrograms: [
-        newSystemProgram,
-        ...(prev.customPrograms || []).filter(p => p.id !== newSystemProgram.id)
-      ],
-      enrolledProgram: {
-        programId: newSystemProgram.id,
-        programName: newSystemProgram.name,
-        degreeTier: newSystemProgram.degreeTier
-      }
-    })).catch(() => {});
   }
 
   return getProgramById(id) || newSystemProgram;
@@ -645,19 +628,6 @@ export function createProgramDiscussion(params: {
         }
       ])
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      params.author.id,
-      prev => ({
-        ...prev,
-        programDiscussions: [
-          newPost,
-          ...(prev.programDiscussions || []).filter(p => p.id !== newPost.id)
-        ]
-      }),
-      params.author.name
-    ).catch(() => {});
   }
 
   return newPost;
@@ -732,19 +702,6 @@ export function addProgramDiscussionComment(params: {
           }
         ])
         .then(() => {}, () => {});
-
-      updateCurrentUserPublicManifest(
-        sb,
-        params.author.id,
-        prev => ({
-          ...prev,
-          programDiscussionComments: [
-            comment,
-            ...(prev.programDiscussionComments || []).filter(c => c.id !== comment.id)
-          ]
-        }),
-        params.author.name
-      ).catch(() => {});
     }
 
     return comment;
@@ -826,19 +783,6 @@ export function createProgramDoubt(params: {
         }
       ])
       .then(() => {}, () => {});
-
-    updateCurrentUserPublicManifest(
-      sb,
-      params.author.id,
-      prev => ({
-        ...prev,
-        programDoubts: [
-          newQuestion,
-          ...(prev.programDoubts || []).filter(q => q.id !== newQuestion.id)
-        ]
-      }),
-      params.author.name
-    ).catch(() => {});
   }
 
   return newQuestion;
@@ -917,19 +861,6 @@ export function addProgramDoubtAnswer(params: {
           }
         ])
         .then(() => {}, () => {});
-
-      updateCurrentUserPublicManifest(
-        sb,
-        params.author.id,
-        prev => ({
-          ...prev,
-          programDoubtAnswers: [
-            answer,
-            ...(prev.programDoubtAnswers || []).filter(a => a.id !== answer.id)
-          ]
-        }),
-        params.author.name
-      ).catch(() => {});
     }
 
     return answer;
@@ -970,14 +901,6 @@ export function markAcceptedProgramAnswer(
         .eq('id', questionId)
         .eq('author_id', activeUserId!)
         .then(() => {}, () => {});
-
-      updateCurrentUserPublicManifest(sb, activeUserId!, prev => ({
-        ...prev,
-        acceptedAnswers: {
-          ...(prev.acceptedAnswers || {}),
-          [questionId]: answerId
-        }
-      })).catch(() => {});
     }
 
     return true;
@@ -998,15 +921,10 @@ export async function syncProgramsFromSupabase(
   if (!sb) return;
 
   try {
-    const aggregated = await fetchAggregatedPublicPlatformData(sb);
-
-    // 1. Merge custom programs from public manifests & dedicated table
+    // 1. Merge custom programs from canonical academic_programs table
     const storedCustom = getStoredSystemPrograms();
     const customById = new Map<string, AcademicProgram>();
     storedCustom.forEach(p => customById.set(p.id, p));
-    aggregated.customPrograms.forEach(p => {
-      if (!customById.has(p.id)) customById.set(p.id, p);
-    });
 
     try {
       const { data: dbProgs } = await sb.from('academic_programs').select('*').limit(200);
@@ -1037,18 +955,8 @@ export async function syncProgramsFromSupabase(
 
     saveStoredSystemPrograms(Array.from(customById.values()));
 
-    // 2. Sync student enrollments per program across all users
+    // 2. Sync student enrollments per program from public.academic_information
     const studentMap = getStudentProgramMap();
-    for (const ep of aggregated.enrolledPrograms) {
-      if (ep.userId && ep.programId) {
-        studentMap[ep.userId] = ep.programId;
-      } else if (ep.userId && ep.programName) {
-        const matched = findProgramByNameOrFuzzy(ep.programName, ep.degreeTier as DegreeTier);
-        if (matched) studentMap[ep.userId] = matched.id;
-      }
-    }
-
-    // Also inspect public.academic_information if readable across users
     try {
       const { data: acadRows } = await sb
         .from('academic_information')
@@ -1104,20 +1012,13 @@ export async function syncProgramsFromSupabase(
     }
     saveProgramEnrollmentMap(enrollmentCounts);
 
-    // 3. Merge Program Discussions & Comments
+    // 3. Merge Program Discussions & Comments from canonical tables
     const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     const localDiscs: ProgramDiscussionPost[] = rawDisc
       ? JSON.parse(rawDisc)
       : [...INITIAL_PROGRAM_DISCUSSIONS];
     const discById = new Map<string, ProgramDiscussionPost>();
     localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
-
-    for (const d of aggregated.programDiscussions) {
-      const existing = discById.get(d.id);
-      if (!existing) {
-        discById.set(d.id, { ...d, comments: [...(d.comments || [])] });
-      }
-    }
 
     try {
       const { data: dbDiscs } = await sb
@@ -1152,8 +1053,7 @@ export async function syncProgramsFromSupabase(
       }
     } catch {}
 
-    // Attach all cross-user comments to their parent program discussions
-    const allComments: ProgramDiscussionComment[] = [...aggregated.programDiscussionComments];
+    const allComments: ProgramDiscussionComment[] = [];
     try {
       const { data: dbComments } = await sb
         .from('program_discussion_comments')
@@ -1197,19 +1097,13 @@ export async function syncProgramsFromSupabase(
     );
     localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(mergedDiscs));
 
-    // 4. Merge Program Doubts & Answers
+    // 4. Merge Program Doubts & Answers from canonical tables
     const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
     const localDoubts: ProgramDoubtQuestion[] = rawDoubts
       ? JSON.parse(rawDoubts)
       : [...INITIAL_PROGRAM_DOUBTS];
     const doubtById = new Map<string, ProgramDoubtQuestion>();
     localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
-
-    for (const q of aggregated.programDoubts) {
-      if (!doubtById.has(q.id)) {
-        doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] });
-      }
-    }
 
     try {
       const { data: dbDoubts } = await sb
@@ -1219,7 +1113,8 @@ export async function syncProgramsFromSupabase(
         .limit(200);
       if (Array.isArray(dbDoubts)) {
         for (const row of dbDoubts) {
-          if (row?.id && !doubtById.has(row.id)) {
+          if (row?.id) {
+            const existing = doubtById.get(row.id);
             doubtById.set(row.id, {
               id: row.id,
               programId: row.program_id,
@@ -1234,17 +1129,17 @@ export async function syncProgramsFromSupabase(
               authorProgram: row.author_program || 'Student Peer',
               createdAt: row.created_at || new Date().toISOString(),
               upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: false,
+              hasUpvoted: existing?.hasUpvoted || false,
               status: row.status || 'unanswered',
-              acceptedAnswerId: row.accepted_answer_id || undefined,
-              answers: []
+              acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
+              answers: existing?.answers ? [...existing.answers] : []
             });
           }
         }
       }
     } catch {}
 
-    const allAnswers: ProgramDoubtAnswer[] = [...aggregated.programDoubtAnswers];
+    const allAnswers: ProgramDoubtAnswer[] = [];
     try {
       const { data: dbAnswers } = await sb
         .from('program_doubt_answers')
@@ -1281,18 +1176,12 @@ export async function syncProgramsFromSupabase(
           parent.answers = [...(parent.answers || []), a];
           if (parent.status === 'unanswered') parent.status = 'answered';
         }
-      }
-    }
-
-    for (const [qid, aid] of Object.entries(aggregated.acceptedAnswers)) {
-      const parent = doubtById.get(qid);
-      if (parent && aid) {
-        parent.acceptedAnswerId = aid;
-        parent.status = 'answered';
-        parent.answers = (parent.answers || []).map(a => ({
-          ...a,
-          isAccepted: a.id === aid
-        }));
+        if (parent.acceptedAnswerId) {
+          parent.answers = parent.answers.map(ans => ({
+            ...ans,
+            isAccepted: ans.id === parent.acceptedAnswerId
+          }));
+        }
       }
     }
 

@@ -116,11 +116,12 @@ alter table public.profiles enable row level security;
 alter table public.academic_information enable row level security;
 alter table public.user_settings_preferences enable row level security;
 
--- Profiles RLS Policies (Users can access and modify only their own records)
+-- Profiles RLS Policies (Public display metadata is viewable by everyone; only owners can write their own profile)
 drop policy if exists "Users can view their own profile" on public.profiles;
-create policy "Users can view their own profile"
+drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
+create policy "Public profiles are viewable by everyone"
   on public.profiles for select
-  using (auth.uid() = id);
+  using (true);
 
 drop policy if exists "Users can insert their own profile" on public.profiles;
 create policy "Users can insert their own profile"
@@ -138,11 +139,12 @@ create policy "Users can delete their own profile"
   on public.profiles for delete
   using (auth.uid() = id);
 
--- Academic Information RLS Policies
+-- Academic Information RLS Policies (Cohort major/institution is viewable for directory counts; only owners can write)
 drop policy if exists "Users can view their own academic information" on public.academic_information;
-create policy "Users can view their own academic information"
+drop policy if exists "Authenticated users can view academic cohort enrollments" on public.academic_information;
+create policy "Authenticated users can view academic cohort enrollments"
   on public.academic_information for select
-  using (auth.uid() = user_id);
+  using (true);
 
 drop policy if exists "Users can insert their own academic information" on public.academic_information;
 create policy "Users can insert their own academic information"

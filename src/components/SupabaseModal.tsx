@@ -32,7 +32,12 @@ export const SupabaseModal: React.FC<SupabaseModalProps> = ({
   const [url, setUrl] = useState(config.url);
   const [anonKey, setAnonKey] = useState(config.anonKey);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+    missingTables?: string[];
+    missingBuckets?: string[];
+  } | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
 
   if (!isOpen) return null;
@@ -196,7 +201,24 @@ export const SupabaseModal: React.FC<SupabaseModalProps> = ({
               ) : (
                 <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
               )}
-              <span className="leading-snug">{testResult.message}</span>
+              <div className="flex-1 space-y-1.5">
+                <span className="leading-snug block">{testResult.message}</span>
+                {((testResult.missingTables && testResult.missingTables.length > 0) ||
+                  (testResult.missingBuckets && testResult.missingBuckets.length > 0)) && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenCodeDrawer();
+                      }}
+                      className="px-2.5 py-1 bg-red-700 text-white font-semibold rounded hover:bg-red-800 transition-colors cursor-pointer"
+                    >
+                      Open Complete SQL Migration Script
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

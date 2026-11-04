@@ -853,6 +853,91 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert or update of email_confirmed_at on auth.users
   for each row execute function public.handle_new_user();
+
+create or replace function public.check_username_available(
+  p_username text,
+  p_exclude_user_id uuid default null
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_normalized text;
+  v_exists boolean;
+begin
+  v_normalized := lower(trim(coalesce(p_username, '')));
+  if v_normalized = '' then
+    return false;
+  end if;
+
+  select exists (
+    select 1
+    from public.profiles
+    where lower(username) = v_normalized
+      and (p_exclude_user_id is null or id <> p_exclude_user_id)
+  ) into v_exists;
+
+  return not v_exists;
+end;
+$$;
+
+grant execute on function public.check_username_available(text, uuid) to anon, authenticated;
+
+-- Clean any legacy <!--XEUSAR_PUBLIC_SYNC:...--> payloads stored in profiles.full_name
+update public.profiles
+set
+  full_name = trim(regexp_replace(full_name, '<!--XEUSAR_PUBLIC_SYNC:[A-Za-z0-9+/=_-]+-->', '', 'g')),
+  display_name = coalesce(
+    nullif(trim(display_name), ''),
+    nullif(trim(regexp_replace(full_name, '<!--XEUSAR_PUBLIC_SYNC:[A-Za-z0-9+/=_-]+-->', '', 'g')), '')
+  ),
+  updated_at = now()
+where full_name like '%<!--XEUSAR_PUBLIC_SYNC:%';
+
+-- Enable Realtime on shared public tables
+do $$
+declare
+  v_table text;
+  v_tables text[] := array[
+    'study_notes',
+    'note_upvotes',
+    'forum_topics',
+    'forum_posts',
+    'forum_comments',
+    'forum_votes',
+    'academic_programs',
+    'program_discussions',
+    'program_discussion_comments',
+    'program_doubts',
+    'program_doubt_answers',
+    'universities',
+    'university_discussions',
+    'university_discussion_comments',
+    'university_doubts',
+    'university_doubt_answers'
+  ];
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach v_table in array v_tables loop
+      if not exists (
+        select 1
+        from pg_publication_tables
+        where pubname = 'supabase_realtime'
+          and schemaname = 'public'
+          and tablename = v_table
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', v_table);
+      end if;
+    end loop;
+  end if;
+exception
+  when others then
+    null;
+end $$;
+
+notify pgrst, 'reload schema';
 `
   },
   {

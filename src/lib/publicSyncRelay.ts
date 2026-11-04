@@ -3,43 +3,48 @@ import {
   StudyNote,
   ForumPost,
   ForumComment,
-  AcademicProgram,
   ProgramDiscussionPost,
   ProgramDiscussionComment,
   ProgramDoubtQuestion,
   ProgramDoubtAnswer,
-  University,
   DiscussionPost,
   DiscussionComment,
   DoubtQuestion,
   DoubtAnswer,
+  AcademicProgram,
+  University,
   DegreeTier
 } from '../types/index.ts';
 
-const SYNC_MARKER_START = '\n<!--XEUSAR_PUBLIC_SYNC:';
-const SYNC_MARKER_END = '-->';
-
 /**
- * Per-user public contribution manifest stored alongside the owner's public profile row.
- * - Strictly contains ONLY public/shared academic contributions authored by `userId === profile.id`.
- * - NEVER contains private user data (never email, never user_settings_preferences, never bookmarks, never drafts).
- * - Protected by PostgreSQL RLS on `public.profiles` (`auth.uid() = id` for INSERT/UPDATE)
- *   and verified on read (`item.authorId === row.id` / `item.uploaderId === row.id`).
+ * ============================================================================
+ * XEUSAR — LEGACY PUBLIC SYNC RELAY RETIREMENT & ONE-TIME CANONICAL MIGRATION
+ * ============================================================================
+ *
+ * Security & Architecture Policy:
+ * - `public.profiles.full_name` MUST NEVER be used to store Forum posts, study
+ *   resources, comments, discussions, doubts, answers, or internal JSON manifests.
+ * - Public profile records contain ONLY intended profile metadata (id, username,
+ *   display_name, full_name, avatar_url, bio, setup_completed).
+ * - This module provides:
+ *   1. `extractCleanDisplayName()` to strip any legacy `<!--XEUSAR_PUBLIC_SYNC:...-->`
+ *      comment tag that may have been written by older builds.
+ *   2. `migrateLegacyProfileSyncData()` to safely migrate any legacy relay-only
+ *      records into canonical Supabase tables (`study_notes`, `forum_posts`,
+ *      `forum_comments`, `program_discussions`, `program_doubts`,
+ *      `university_discussions`, `university_doubts`, `academic_programs`,
+ *      `universities`) with ownership validation and duplicate prevention,
+ *      cleaning `profiles.full_name` only after migration succeeds.
  */
+
+const SYNC_MARKER_START = '<!--XEUSAR_PUBLIC_SYNC:';
+const SYNC_MARKER_END = '-->';
+const LOCAL_MANIFEST_PREFIX = 'xeusar_public_sync_manifest_v2_';
+const MIGRATED_PROFILES_SESSION_SET = new Set<string>();
+
 export interface UserPublicSyncManifest {
-  version: 1;
-  userId: string;
+  v: number;
   updatedAt: string;
-  enrollment?: {
-    programId?: string;
-    programName?: string;
-    degreeTier?: DegreeTier;
-    semesterNumber?: number;
-    universityId?: string;
-    universityName?: string;
-    customProgram?: AcademicProgram;
-    customUniversity?: University;
-  };
   enrolledProgram?: {
     programId: string;
     programName: string;
@@ -49,737 +54,482 @@ export interface UserPublicSyncManifest {
     universityId: string;
     universityName: string;
   };
-  customPrograms?: AcademicProgram[];
-  customUniversities?: University[];
   notes?: StudyNote[];
-  noteUpvotes?: string[]; // noteIds upvoted by this user
+  noteUpvotes?: string[];
   forumPosts?: ForumPost[];
   forumComments?: ForumComment[];
-  forumVotes?: Record<string, 1 | -1>; // key: `${targetType}::${targetId}`
-  acceptedForumAnswers?: Record<string, string | null>; // key: postId -> commentId | null
-  acceptedAnswers?: Record<string, string>; // key: postId/questionId -> commentId/answerId
+  forumVotes?: Record<string, 1 | -1>;
+  acceptedAnswers?: Record<string, string>;
   programDiscussions?: ProgramDiscussionPost[];
   programDiscussionComments?: ProgramDiscussionComment[];
   programDoubts?: ProgramDoubtQuestion[];
   programDoubtAnswers?: ProgramDoubtAnswer[];
-  acceptedProgramDoubtAnswers?: Record<string, string>; // key: questionId -> answerId
   universityDiscussions?: DiscussionPost[];
   universityDiscussionComments?: DiscussionComment[];
   universityDoubts?: DoubtQuestion[];
   universityDoubtAnswers?: DoubtAnswer[];
-  acceptedUniversityDoubtAnswers?: Record<string, string>; // key: questionId -> answerId
+  customPrograms?: AcademicProgram[];
+  customUniversities?: University[];
 }
 
-const LOCAL_MANIFEST_CACHE_PREFIX = 'xeusar_public_sync_manifest_v1_';
+export function createEmptyManifest(): UserPublicSyncManifest {
+  return {
+    v: 2,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function isUuidString(val?: string | null): boolean {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+}
 
 /**
- * Strips any embedded public sync marker from `full_name` so callers always get a clean display name.
+ * Strips any legacy `<!--XEUSAR_PUBLIC_SYNC:...-->` payload from a raw `full_name`
+ * or `display_name` string and returns only the clean human-readable display name.
  */
-export function extractCleanDisplayName(rawFullName?: string | null, fallbackName = ''): string {
-  if (!rawFullName || typeof rawFullName !== 'string') return fallbackName;
+export function extractCleanDisplayName(rawFullName?: string | null): string {
+  if (!rawFullName || typeof rawFullName !== 'string') return '';
   const idx = rawFullName.indexOf(SYNC_MARKER_START);
-  if (idx === -1) return rawFullName.trim() || fallbackName;
-  return rawFullName.slice(0, idx).trim() || fallbackName;
+  if (idx === -1) return rawFullName.trim();
+  return rawFullName.slice(0, idx).trim();
 }
 
 /**
- * Parses the public sync manifest from a `public.profiles` row, if present.
+ * Decodes a legacy `full_name` string if it contains an embedded `<!--XEUSAR_PUBLIC_SYNC:...-->`
+ * tag so its contents can be migrated into canonical Supabase tables and cleaned.
  */
-export function parsePublicSyncManifestFromRow(row: any): UserPublicSyncManifest | null {
-  if (!row || !row.id) return null;
-  const rawFullName = typeof row.full_name === 'string' ? row.full_name : '';
+export function decodeFullNameAndManifest(rawFullName?: string | null): {
+  displayName: string;
+  manifest: UserPublicSyncManifest | null;
+  hasLegacyTag: boolean;
+} {
+  if (!rawFullName || typeof rawFullName !== 'string') {
+    return { displayName: '', manifest: null, hasLegacyTag: false };
+  }
   const startIdx = rawFullName.indexOf(SYNC_MARKER_START);
-  if (startIdx === -1) return null;
-  const jsonStart = startIdx + SYNC_MARKER_START.length;
-  const endIdx = rawFullName.lastIndexOf(SYNC_MARKER_END);
-  if (endIdx === -1 || endIdx <= jsonStart) return null;
+  if (startIdx === -1) {
+    return { displayName: rawFullName.trim(), manifest: null, hasLegacyTag: false };
+  }
+
+  const displayName = rawFullName.slice(0, startIdx).trim();
+  const payloadStart = startIdx + SYNC_MARKER_START.length;
+  const endIdx = rawFullName.indexOf(SYNC_MARKER_END, payloadStart);
+  const rawPayload =
+    endIdx === -1
+      ? rawFullName.slice(payloadStart).trim()
+      : rawFullName.slice(payloadStart, endIdx).trim();
+
+  if (!rawPayload) {
+    return { displayName, manifest: null, hasLegacyTag: true };
+  }
 
   try {
-    const parsed = JSON.parse(rawFullName.slice(jsonStart, endIdx));
-    if (!parsed || typeof parsed !== 'object') return null;
-    // Enforce strict ownership: manifest userId must match the profile row's primary key `id`
-    const rowUserId = String(row.id);
-    return {
-      ...parsed,
-      version: 1,
-      userId: rowUserId
-    };
+    const json = decodeURIComponent(rawPayload);
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        displayName,
+        manifest: parsed as UserPublicSyncManifest,
+        hasLegacyTag: true
+      };
+    }
   } catch {
-    return null;
-  }
-}
-
-export function encodeFullNameWithManifest(
-  cleanDisplayName: string,
-  manifest: UserPublicSyncManifest
-): string {
-  const safeName = extractCleanDisplayName(cleanDisplayName, 'Student');
-  try {
-    const serialized = JSON.stringify(manifest);
-    return `${safeName}${SYNC_MARKER_START}${serialized}${SYNC_MARKER_END}`;
-  } catch {
-    return safeName;
-  }
-}
-
-export function loadLocalUserManifest(userId: string): UserPublicSyncManifest {
-  if (!userId) {
-    return { version: 1, userId: '', updatedAt: new Date().toISOString() };
-  }
-  try {
-    const raw = localStorage.getItem(`${LOCAL_MANIFEST_CACHE_PREFIX}${userId}`);
-    if (raw) {
-      const parsed = JSON.parse(raw);
+    try {
+      const parsed = JSON.parse(rawPayload);
       if (parsed && typeof parsed === 'object') {
         return {
-          ...parsed,
-          version: 1,
-          userId
+          displayName,
+          manifest: parsed as UserPublicSyncManifest,
+          hasLegacyTag: true
         };
       }
-    }
-  } catch {}
-  return {
-    version: 1,
-    userId,
-    updatedAt: new Date().toISOString()
-  };
-}
-
-export function saveLocalUserManifest(userId: string, manifest: UserPublicSyncManifest): void {
-  if (!userId) return;
-  try {
-    localStorage.setItem(`${LOCAL_MANIFEST_CACHE_PREFIX}${userId}`, JSON.stringify(manifest));
-  } catch {}
-}
-
-/**
- * Compacts a StudyNote for safe cross-user relay storage so even if `study_notes` table
- * is not yet created, other users receive the complete note metadata, multi-page content,
- * and file URL (if HTTP URL or compact Data URL <= 250 KB).
- */
-function compactNoteForManifest(note: StudyNote): StudyNote {
-  const isLargeDataUrl =
-    Boolean(note.fileUrl && note.fileUrl.startsWith('data:') && note.fileUrl.length > 260000);
-  return {
-    ...note,
-    fileUrl: isLargeDataUrl
-      ? `https://xeusar.local/storage/${note.storagePath || `shared/${note.contentHash || note.id}.pdf`}`
-      : note.fileUrl
-  };
-}
-
-/**
- * Updates the authenticated user's public sync manifest in `public.profiles` (`auth.uid() = id`).
- */
-export async function updateCurrentUserPublicManifest(
-  supabase: SupabaseClient | null,
-  userId: string | undefined | null,
-  updater: (current: UserPublicSyncManifest) => UserPublicSyncManifest,
-  fallbackDisplayName?: string
-): Promise<void> {
-  if (!userId || userId === 'student-local' || userId.startsWith('local-')) return;
-
-  const currentLocal = loadLocalUserManifest(userId);
-  const updated = updater({
-    ...currentLocal,
-    version: 1,
-    userId,
-    updatedAt: new Date().toISOString()
-  });
-  updated.updatedAt = new Date().toISOString();
-  if (Array.isArray(updated.notes)) {
-    updated.notes = updated.notes.map(compactNoteForManifest);
+    } catch {}
   }
-  saveLocalUserManifest(userId, updated);
 
-  if (!supabase) return;
+  return { displayName, manifest: null, hasLegacyTag: true };
+}
 
-  try {
-    const { data: existingRow } = await supabase
-      .from('profiles')
-      .select('id, username, display_name, full_name')
-      .eq('id', userId)
-      .maybeSingle();
+/**
+ * Retired encoder: NEVER appends `<!--XEUSAR_PUBLIC_SYNC:...-->` to `full_name`.
+ * Always returns only the clean human-readable display name.
+ */
+export function encodeFullNameWithManifest(
+  displayName: string,
+  _manifest?: UserPublicSyncManifest | null
+): string {
+  return extractCleanDisplayName(displayName) || 'Student';
+}
 
-    if (!existingRow) return;
+export function loadLocalUserManifest(_userId: string): UserPublicSyncManifest {
+  return createEmptyManifest();
+}
 
-    // Merge with any remote manifest on the user's profile row so we never clobber another session of the same user
-    const remoteManifest = parsePublicSyncManifestFromRow(existingRow);
-    const mergedManifest: UserPublicSyncManifest = remoteManifest
-      ? updater({
-          ...remoteManifest,
-          ...updated,
-          enrollment: updated.enrollment || remoteManifest.enrollment,
-          enrolledProgram: updated.enrolledProgram || remoteManifest.enrolledProgram,
-          enrolledUniversity: updated.enrolledUniversity || remoteManifest.enrolledUniversity,
-          version: 1,
-          userId,
-          updatedAt: new Date().toISOString()
-        })
-      : updated;
+export function saveLocalUserManifest(_userId: string, _manifest: UserPublicSyncManifest): void {
+  // No-op: local manifest relay retired in favor of canonical Supabase tables
+}
 
-    if (Array.isArray(mergedManifest.notes)) {
-      mergedManifest.notes = mergedManifest.notes.map(compactNoteForManifest);
+/**
+ * Safely migrates any legacy records embedded inside a profile's `full_name`
+ * into the real canonical Supabase tables, validating ownership (`ownerId`),
+ * preventing duplicate inserts, preserving original IDs and timestamps,
+ * and cleaning `public.profiles.full_name` only if migration succeeds.
+ */
+async function migrateSingleLegacyProfileManifest(
+  supabase: SupabaseClient,
+  ownerId: string,
+  cleanDisplayName: string,
+  manifest: UserPublicSyncManifest | null,
+  canCleanProfileRow: boolean
+): Promise<void> {
+  if (!isUuidString(ownerId)) return;
+  let allSucceeded = true;
+
+  if (manifest) {
+    // 1. Migrate legacy custom programs
+    if (Array.isArray(manifest.customPrograms) && manifest.customPrograms.length > 0) {
+      for (const prog of manifest.customPrograms) {
+        if (!prog?.id || !prog?.name) continue;
+        const { error } = await supabase.from('academic_programs').upsert(
+          {
+            id: prog.id,
+            name: prog.name,
+            short_code: prog.shortCode || 'PROG',
+            degree_tier: prog.degreeTier || 'Undergraduate',
+            discipline: prog.discipline || 'Interdisciplinary Studies',
+            description: prog.description || '',
+            duration_years: prog.durationYears || 4,
+            total_semesters: prog.totalSemesters || 8,
+            total_credits: prog.totalCredits || 130,
+            semesters: prog.semesters || [],
+            created_by: ownerId
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
     }
-    saveLocalUserManifest(userId, mergedManifest);
 
-    const cleanName =
-      existingRow.display_name ||
-      extractCleanDisplayName(
-        existingRow.full_name,
-        fallbackDisplayName || existingRow.username || 'Student'
-      );
+    // 2. Migrate legacy custom universities
+    if (Array.isArray(manifest.customUniversities) && manifest.customUniversities.length > 0) {
+      for (const uni of manifest.customUniversities) {
+        if (!uni?.id || !uni?.name) continue;
+        const { error } = await supabase.from('universities').upsert(
+          {
+            id: uni.id,
+            name: uni.name,
+            short_name: uni.shortName || 'UNI',
+            badge: uni.badge || null,
+            logo_url: uni.logoUrl || '',
+            banner_url: uni.bannerUrl || '',
+            location: uni.location || 'Pakistan',
+            country: uni.country || 'Pakistan',
+            disciplines: Array.isArray(uni.disciplines) ? uni.disciplines : [],
+            website: uni.website || null,
+            established_year: uni.establishedYear || 2025,
+            verified_students: Math.max(1, uni.verifiedStudents || 1),
+            description: uni.description || '',
+            is_member_restricted: Boolean(uni.isMemberRestricted),
+            created_by: ownerId
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
 
-    const encodedFullName = encodeFullNameWithManifest(cleanName, mergedManifest);
+    // 3. Migrate legacy study notes owned by this user
+    if (Array.isArray(manifest.notes) && manifest.notes.length > 0) {
+      for (const note of manifest.notes) {
+        if (!note?.id || !note?.title || !isUuidString(note.id)) continue;
+        if (note.uploaderId && note.uploaderId !== ownerId) continue;
+        if (!note.fileUrl || note.fileUrl.startsWith('https://xeusar.local/')) continue;
 
+        const { error } = await supabase.from('study_notes').upsert(
+          {
+            id: note.id,
+            title: note.title,
+            description: note.description || '',
+            course_code: note.courseCode || 'GEN-101',
+            course_name: note.courseName || note.courseCode || 'General Course',
+            course_id: note.courseId || null,
+            subject: note.subject || 'Computer Science',
+            material_type: note.materialType || 'lecture_notes',
+            academic_year: note.academicYear || 2025,
+            semester: note.semester || 'Fall Semester',
+            semester_number: note.semesterNumber || 1,
+            professor: note.professor || 'Course Instructor',
+            file_url: note.fileUrl,
+            file_name: note.fileName || 'study_note.pdf',
+            file_size_bytes: note.fileSizeBytes || 0,
+            page_count: note.pageCount || 1,
+            uploader_id: ownerId,
+            uploader_name: note.uploaderName || cleanDisplayName || 'Student',
+            uploader_university: note.uploaderUniversity || 'Open Campus',
+            university_id: note.universityId || null,
+            program_id: note.programId || 'bs-cs',
+            program_ids: Array.isArray(note.programIds) ? note.programIds : [note.programId || 'bs-cs'],
+            program_name: note.programName || 'BS Computer Science',
+            degree_tier: note.degreeTier || 'Undergraduate',
+            content_hash: note.contentHash || null,
+            storage_path: note.storagePath || null,
+            downloads_count: note.downloadsCount || 0,
+            upvotes_count: note.upvotesCount || 1,
+            tags: Array.isArray(note.tags) ? note.tags : [],
+            pages: Array.isArray(note.pages) ? note.pages : [],
+            created_at: note.createdAt || new Date().toISOString()
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
+
+    // 4. Migrate legacy forum posts owned by this user
+    if (Array.isArray(manifest.forumPosts) && manifest.forumPosts.length > 0) {
+      for (const post of manifest.forumPosts) {
+        if (!post?.id || !post?.title || !post?.body || !isUuidString(post.id)) continue;
+        if (post.authorId && post.authorId !== ownerId) continue;
+
+        const { error } = await supabase.from('forum_posts').upsert(
+          {
+            id: post.id,
+            title: post.title,
+            body: post.body,
+            post_type: post.postType || 'Discussion',
+            topic_id: post.topicId || 'general-discussion',
+            topic_name: post.topicName || 'General Discussion',
+            author_id: ownerId,
+            author_name: post.authorName || cleanDisplayName || 'Student',
+            author_username: post.authorUsername || 'student',
+            author_avatar: post.authorAvatar || null,
+            author_program: post.authorProgram || null,
+            author_degree_tier: post.authorDegreeTier || null,
+            author_university: post.authorUniversity || null,
+            resource_id: isUuidString(post.resourceId) ? post.resourceId : null,
+            program_course_ref: post.programCourseRef || null,
+            external_link: post.externalLink || null,
+            upvotes_count: post.upvotesCount || 1,
+            downvotes_count: post.downvotesCount || 0,
+            comments_count: post.commentsCount || 0,
+            accepted_comment_id: isUuidString(post.acceptedCommentId) ? post.acceptedCommentId : null,
+            status: post.status || 'published',
+            created_at: post.createdAt || new Date().toISOString()
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
+
+    // 5. Migrate legacy forum comments owned by this user
+    if (Array.isArray(manifest.forumComments) && manifest.forumComments.length > 0) {
+      for (const comm of manifest.forumComments) {
+        if (!comm?.id || !comm?.postId || !comm?.body || !isUuidString(comm.id) || !isUuidString(comm.postId)) continue;
+        if (comm.authorId && comm.authorId !== ownerId) continue;
+
+        const { error } = await supabase.from('forum_comments').upsert(
+          {
+            id: comm.id,
+            post_id: comm.postId,
+            parent_comment_id: isUuidString(comm.parentCommentId) ? comm.parentCommentId : null,
+            body: comm.body,
+            author_id: ownerId,
+            author_name: comm.authorName || cleanDisplayName || 'Student',
+            author_username: comm.authorUsername || 'student',
+            author_avatar: comm.authorAvatar || null,
+            author_program: comm.authorProgram || null,
+            author_degree_tier: comm.authorDegreeTier || null,
+            upvotes_count: comm.upvotesCount || 1,
+            downvotes_count: comm.downvotesCount || 0,
+            is_accepted: Boolean(comm.isAccepted),
+            status: comm.status || 'published',
+            created_at: comm.createdAt || new Date().toISOString()
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
+
+    // 6. Migrate legacy program discussions & doubts owned by this user
+    if (Array.isArray(manifest.programDiscussions) && manifest.programDiscussions.length > 0) {
+      for (const disc of manifest.programDiscussions) {
+        if (!disc?.id || !disc?.programId || !disc?.title) continue;
+        if (disc.authorId && disc.authorId !== ownerId) continue;
+
+        const { error } = await supabase.from('program_discussions').upsert(
+          {
+            id: disc.id,
+            program_id: disc.programId,
+            title: disc.title,
+            content: disc.content || '',
+            category: disc.category || 'Academics',
+            semester_tag: disc.semesterTag || null,
+            course_tag: disc.courseTag || null,
+            author_id: ownerId,
+            author_name: disc.authorName || cleanDisplayName || 'Student',
+            author_avatar: disc.authorAvatar || null,
+            author_program: disc.authorProgram || 'Student Peer',
+            author_degree_tier: disc.authorDegreeTier || null,
+            upvotes_count: disc.upvotesCount || 1,
+            comments_count: disc.commentsCount || 0,
+            created_at: disc.createdAt || new Date().toISOString()
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
+
+    if (Array.isArray(manifest.programDoubts) && manifest.programDoubts.length > 0) {
+      for (const doubt of manifest.programDoubts) {
+        if (!doubt?.id || !doubt?.programId || !doubt?.title) continue;
+        if (doubt.authorId && doubt.authorId !== ownerId) continue;
+
+        const { error } = await supabase.from('program_doubts').upsert(
+          {
+            id: doubt.id,
+            program_id: doubt.programId,
+            title: doubt.title,
+            content: doubt.content || '',
+            course_code: doubt.courseCode || 'GEN',
+            semester_tag: doubt.semesterTag || null,
+            tags: Array.isArray(doubt.tags) ? doubt.tags : [],
+            author_id: ownerId,
+            author_name: doubt.authorName || cleanDisplayName || 'Student',
+            author_avatar: doubt.authorAvatar || null,
+            author_program: doubt.authorProgram || 'Student Peer',
+            upvotes_count: doubt.upvotesCount || 1,
+            status: doubt.status || 'unanswered',
+            accepted_answer_id: doubt.acceptedAnswerId || null,
+            created_at: doubt.createdAt || new Date().toISOString()
+          },
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) allSucceeded = false;
+      }
+    }
+  }
+
+  // Only strip the legacy tag from profiles.full_name after migration succeeds (or if manifest was empty)
+  if (canCleanProfileRow && (allSucceeded || !manifest)) {
+    const safeName = cleanDisplayName || 'Student';
     await supabase
       .from('profiles')
       .update({
-        full_name: encodedFullName,
-        updated_at: new Date().toISOString()
+        display_name: safeName,
+        full_name: safeName
       })
-      .eq('id', userId);
-  } catch {
-    // Ignore transient network errors
+      .eq('id', ownerId)
+      .then(() => {}, () => {});
+
+    try {
+      localStorage.removeItem(`${LOCAL_MANIFEST_PREFIX}${ownerId}`);
+    } catch {}
   }
 }
 
+/**
+ * Retired manifest writer: does NOT write any internal sync data to `profiles.full_name`.
+ * If the current user's profile row still has a legacy `<!--XEUSAR_PUBLIC_SYNC:...-->`
+ * tag, migrates it once to canonical tables and cleans `full_name`.
+ */
+export async function updateCurrentUserPublicManifest(
+  supabase: SupabaseClient | null | undefined,
+  userId: string | undefined,
+  _mutator?: (prev: UserPublicSyncManifest) => UserPublicSyncManifest,
+  fallbackDisplayName?: string
+): Promise<void> {
+  if (!supabase || !userId || !isUuidString(userId)) return;
+  if (MIGRATED_PROFILES_SESSION_SET.has(userId)) return;
+
+  try {
+    const { data: row } = await supabase
+      .from('profiles')
+      .select('id, display_name, full_name')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (row) {
+      const decoded = decodeFullNameAndManifest(row.full_name);
+      if (decoded.hasLegacyTag) {
+        const cleanName =
+          extractCleanDisplayName(row.display_name) ||
+          decoded.displayName ||
+          extractCleanDisplayName(fallbackDisplayName) ||
+          'Student';
+        await migrateSingleLegacyProfileManifest(
+          supabase,
+          userId,
+          cleanName,
+          decoded.manifest,
+          true
+        );
+      }
+      MIGRATED_PROFILES_SESSION_SET.add(userId);
+    }
+  } catch {}
+}
+
 export interface AggregatedPublicPlatformData {
-  manifests: UserPublicSyncManifest[];
   notes: StudyNote[];
-  noteUpvoteCounts: Record<string, number>;
-  userUpvotedNoteIds: Set<string>;
+  upvoteCountsByNote: Record<string, number>;
+  upvotedByCurrentUser: Set<string>;
   forumPosts: ForumPost[];
   forumComments: ForumComment[];
+  forumVoteTotals: Record<string, { up: number; down: number }>;
   acceptedAnswers: Record<string, string>;
-  programEnrollments: Record<string, string>; // studentId -> programId
-  enrolledPrograms: {
-    userId: string;
-    programId?: string;
-    programName?: string;
-    degreeTier?: DegreeTier;
-  }[];
-  customPrograms: AcademicProgram[];
   programDiscussions: ProgramDiscussionPost[];
   programDiscussionComments: ProgramDiscussionComment[];
   programDoubts: ProgramDoubtQuestion[];
   programDoubtAnswers: ProgramDoubtAnswer[];
-  universityEnrollments: Record<string, string>; // studentId -> universityId
-  enrolledUniversities: {
-    userId: string;
-    universityId?: string;
-    universityName?: string;
-  }[];
-  customUniversities: University[];
   universityDiscussions: DiscussionPost[];
   universityDiscussionComments: DiscussionComment[];
   universityDoubts: DoubtQuestion[];
   universityDoubtAnswers: DoubtAnswer[];
+  customPrograms: AcademicProgram[];
+  customUniversities: University[];
+  enrolledPrograms: Array<{ userId: string; programId: string; programName: string; degreeTier?: DegreeTier }>;
+  enrolledUniversities: Array<{ userId: string; universityId: string; universityName: string }>;
 }
 
-function createEmptyAggregatedData(): AggregatedPublicPlatformData {
+export function invalidatePublicPlatformCache(): void {
+  // No-op: canonical tables are queried directly
+}
+
+/**
+ * Checks if any visible `public.profiles` rows still contain legacy `<!--XEUSAR_PUBLIC_SYNC:...-->`
+ * tags and performs a safe one-time migration into canonical tables.
+ * Returns empty relay collections so all callers use canonical Supabase tables as the single source of truth.
+ */
+export async function fetchAggregatedPublicPlatformData(
+  supabase: SupabaseClient | null | undefined,
+  currentUserId?: string
+): Promise<AggregatedPublicPlatformData> {
+  if (supabase && currentUserId && isUuidString(currentUserId)) {
+    await updateCurrentUserPublicManifest(supabase, currentUserId);
+  }
+
   return {
-    manifests: [],
     notes: [],
-    noteUpvoteCounts: {},
-    userUpvotedNoteIds: new Set(),
+    upvoteCountsByNote: {},
+    upvotedByCurrentUser: new Set<string>(),
     forumPosts: [],
     forumComments: [],
+    forumVoteTotals: {},
     acceptedAnswers: {},
-    programEnrollments: {},
-    enrolledPrograms: [],
-    customPrograms: [],
     programDiscussions: [],
     programDiscussionComments: [],
     programDoubts: [],
     programDoubtAnswers: [],
-    universityEnrollments: {},
-    enrolledUniversities: [],
-    customUniversities: [],
     universityDiscussions: [],
     universityDiscussionComments: [],
     universityDoubts: [],
-    universityDoubtAnswers: []
+    universityDoubtAnswers: [],
+    customPrograms: [],
+    customUniversities: [],
+    enrolledPrograms: [],
+    enrolledUniversities: []
   };
-}
-
-/**
- * Fetches all public student rows from `public.profiles` and aggregates their verified
- * public contributions (strictly enforcing `authorId === row.id` / `uploaderId === row.id`).
- */
-export async function fetchAggregatedPublicPlatformData(
-  supabase: SupabaseClient | null,
-  currentUserId?: string
-): Promise<AggregatedPublicPlatformData> {
-  if (!supabase) return createEmptyAggregatedData();
-
-  try {
-    const { data: rows, error } = await supabase
-      .from('profiles')
-      .select('id, username, display_name, full_name, avatar_url, bio, setup_completed, updated_at')
-      .order('updated_at', { ascending: false });
-
-    if (error || !Array.isArray(rows)) {
-      return createEmptyAggregatedData();
-    }
-
-    const manifests: UserPublicSyncManifest[] = [];
-    const notesById = new Map<string, StudyNote>();
-    const noteUpvoteUsers = new Map<string, Set<string>>();
-    const userUpvotedNoteIds = new Set<string>();
-
-    const forumPostsById = new Map<string, ForumPost>();
-    const forumCommentsById = new Map<string, ForumComment>();
-    const forumVotesByTarget = new Map<string, { up: Set<string>; down: Set<string> }>();
-    const currentUserForumVotes = new Map<string, 1 | -1>();
-    const acceptedAnswerByPostId = new Map<string, string | null>();
-    const acceptedAnswers: Record<string, string> = {};
-
-    const programEnrollments: Record<string, string> = {};
-    const enrolledPrograms: {
-      userId: string;
-      programId?: string;
-      programName?: string;
-      degreeTier?: DegreeTier;
-    }[] = [];
-    const customProgramsById = new Map<string, AcademicProgram>();
-    const programDiscussionsById = new Map<string, ProgramDiscussionPost>();
-    const programCommentsByPostId = new Map<string, ProgramDiscussionComment[]>();
-    const allProgramDiscussionComments: ProgramDiscussionComment[] = [];
-    const programDoubtsById = new Map<string, ProgramDoubtQuestion>();
-    const programAnswersByQuestionId = new Map<string, ProgramDoubtAnswer[]>();
-    const allProgramDoubtAnswers: ProgramDoubtAnswer[] = [];
-    const acceptedProgramDoubtAnswers = new Map<string, string>();
-
-    const universityEnrollments: Record<string, string> = {};
-    const enrolledUniversities: {
-      userId: string;
-      universityId?: string;
-      universityName?: string;
-    }[] = [];
-    const customUniversitiesById = new Map<string, University>();
-    const universityDiscussionsById = new Map<string, DiscussionPost>();
-    const universityCommentsByPostId = new Map<string, DiscussionComment[]>();
-    const allUniversityDiscussionComments: DiscussionComment[] = [];
-    const universityDoubtsById = new Map<string, DoubtQuestion>();
-    const universityAnswersByQuestionId = new Map<string, DoubtAnswer[]>();
-    const allUniversityDoubtAnswers: DoubtAnswer[] = [];
-    const acceptedUniversityDoubtAnswers = new Map<string, string>();
-
-    for (const row of rows) {
-      const ownerId = String(row.id);
-      const manifest = parsePublicSyncManifestFromRow(row);
-      if (!manifest) continue;
-      manifests.push(manifest);
-
-      // 1. Academic Program & University Enrollment
-      if (manifest.enrollment) {
-        if (manifest.enrollment.customProgram && manifest.enrollment.customProgram.id) {
-          customProgramsById.set(manifest.enrollment.customProgram.id, manifest.enrollment.customProgram);
-        }
-        if (manifest.enrollment.programId) {
-          programEnrollments[ownerId] = manifest.enrollment.programId;
-          enrolledPrograms.push({
-            userId: ownerId,
-            programId: manifest.enrollment.programId,
-            programName: manifest.enrollment.programName,
-            degreeTier: manifest.enrollment.degreeTier
-          });
-        }
-        if (manifest.enrollment.customUniversity && manifest.enrollment.customUniversity.id) {
-          customUniversitiesById.set(manifest.enrollment.customUniversity.id, manifest.enrollment.customUniversity);
-        }
-        if (manifest.enrollment.universityId) {
-          universityEnrollments[ownerId] = manifest.enrollment.universityId;
-          enrolledUniversities.push({
-            userId: ownerId,
-            universityId: manifest.enrollment.universityId,
-            universityName: manifest.enrollment.universityName
-          });
-        }
-      }
-
-      if (manifest.enrolledProgram) {
-        if (manifest.enrolledProgram.programId) {
-          programEnrollments[ownerId] = manifest.enrolledProgram.programId;
-        }
-        enrolledPrograms.push({
-          userId: ownerId,
-          programId: manifest.enrolledProgram.programId,
-          programName: manifest.enrolledProgram.programName,
-          degreeTier: manifest.enrolledProgram.degreeTier
-        });
-      }
-
-      if (manifest.enrolledUniversity) {
-        if (manifest.enrolledUniversity.universityId) {
-          universityEnrollments[ownerId] = manifest.enrolledUniversity.universityId;
-        }
-        enrolledUniversities.push({
-          userId: ownerId,
-          universityId: manifest.enrolledUniversity.universityId,
-          universityName: manifest.enrolledUniversity.universityName
-        });
-      }
-
-      if (Array.isArray(manifest.customPrograms)) {
-        for (const cp of manifest.customPrograms) {
-          if (cp && cp.id) {
-            customProgramsById.set(cp.id, cp);
-          }
-        }
-      }
-
-      if (Array.isArray(manifest.customUniversities)) {
-        for (const cu of manifest.customUniversities) {
-          if (cu && cu.id) {
-            customUniversitiesById.set(cu.id, cu);
-          }
-        }
-      }
-
-      // 2. Shared Study Notes (strictly verify uploaderId === ownerId)
-      if (Array.isArray(manifest.notes)) {
-        for (const note of manifest.notes) {
-          if (!note || !note.id) continue;
-          if (note.uploaderId && note.uploaderId !== ownerId) continue;
-          notesById.set(note.id, {
-            ...note,
-            uploaderId: ownerId
-          });
-          if (!noteUpvoteUsers.has(note.id)) {
-            noteUpvoteUsers.set(note.id, new Set([ownerId]));
-          } else {
-            noteUpvoteUsers.get(note.id)!.add(ownerId);
-          }
-        }
-      }
-
-      if (Array.isArray(manifest.noteUpvotes)) {
-        for (const nid of manifest.noteUpvotes) {
-          if (!nid) continue;
-          if (!noteUpvoteUsers.has(nid)) {
-            noteUpvoteUsers.set(nid, new Set());
-          }
-          noteUpvoteUsers.get(nid)!.add(ownerId);
-          if (currentUserId && ownerId === currentUserId) {
-            userUpvotedNoteIds.add(nid);
-          }
-        }
-      }
-
-      // 3. Public Forum Posts, Comments & Votes (strictly verify authorId === ownerId)
-      if (Array.isArray(manifest.forumPosts)) {
-        for (const post of manifest.forumPosts) {
-          if (!post || !post.id || post.status === 'removed') continue;
-          if (post.authorId !== ownerId) continue;
-          forumPostsById.set(post.id, { ...post, authorId: ownerId });
-        }
-      }
-
-      if (manifest.acceptedForumAnswers && typeof manifest.acceptedForumAnswers === 'object') {
-        for (const [postId, commentId] of Object.entries(manifest.acceptedForumAnswers)) {
-          const post = forumPostsById.get(postId);
-          if (post && post.authorId === ownerId) {
-            acceptedAnswerByPostId.set(postId, commentId);
-            if (commentId) {
-              acceptedAnswers[postId] = commentId;
-            }
-          }
-        }
-      }
-
-      if (manifest.acceptedAnswers && typeof manifest.acceptedAnswers === 'object') {
-        for (const [targetId, ansId] of Object.entries(manifest.acceptedAnswers)) {
-          if (typeof ansId === 'string') {
-            acceptedAnswers[targetId] = ansId;
-            acceptedAnswerByPostId.set(targetId, ansId || null);
-          }
-        }
-      }
-
-      if (Array.isArray(manifest.forumComments)) {
-        for (const comment of manifest.forumComments) {
-          if (!comment || !comment.id || comment.status === 'removed') continue;
-          if (comment.authorId !== ownerId) continue;
-          forumCommentsById.set(comment.id, { ...comment, authorId: ownerId });
-        }
-      }
-
-      if (manifest.forumVotes && typeof manifest.forumVotes === 'object') {
-        for (const [targetKey, voteVal] of Object.entries(manifest.forumVotes)) {
-          if (voteVal !== 1 && voteVal !== -1) continue;
-          if (!forumVotesByTarget.has(targetKey)) {
-            forumVotesByTarget.set(targetKey, { up: new Set(), down: new Set() });
-          }
-          const bucket = forumVotesByTarget.get(targetKey)!;
-          if (voteVal === 1) {
-            bucket.up.add(ownerId);
-            bucket.down.delete(ownerId);
-          } else {
-            bucket.down.add(ownerId);
-            bucket.up.delete(ownerId);
-          }
-          if (currentUserId && ownerId === currentUserId) {
-            currentUserForumVotes.set(targetKey, voteVal);
-          }
-        }
-      }
-
-      // 4. Program Discussions & Comments
-      if (Array.isArray(manifest.programDiscussions)) {
-        for (const disc of manifest.programDiscussions) {
-          if (!disc || !disc.id || disc.authorId !== ownerId) continue;
-          programDiscussionsById.set(disc.id, { ...disc, authorId: ownerId });
-        }
-      }
-      if (Array.isArray(manifest.programDiscussionComments)) {
-        for (const comm of manifest.programDiscussionComments) {
-          if (!comm || !comm.id || comm.authorId !== ownerId) continue;
-          const cleanComm = { ...comm, authorId: ownerId };
-          allProgramDiscussionComments.push(cleanComm);
-          const list = programCommentsByPostId.get(comm.postId) || [];
-          if (!list.some(c => c.id === comm.id)) {
-            list.push(cleanComm);
-          }
-          programCommentsByPostId.set(comm.postId, list);
-        }
-      }
-
-      // 5. Program Doubts & Answers
-      if (Array.isArray(manifest.programDoubts)) {
-        for (const doubt of manifest.programDoubts) {
-          if (!doubt || !doubt.id || doubt.authorId !== ownerId) continue;
-          programDoubtsById.set(doubt.id, { ...doubt, authorId: ownerId });
-        }
-      }
-      if (Array.isArray(manifest.programDoubtAnswers)) {
-        for (const ans of manifest.programDoubtAnswers) {
-          if (!ans || !ans.id || ans.authorId !== ownerId) continue;
-          const cleanAns = { ...ans, authorId: ownerId };
-          allProgramDoubtAnswers.push(cleanAns);
-          const list = programAnswersByQuestionId.get(ans.questionId) || [];
-          if (!list.some(a => a.id === ans.id)) {
-            list.push(cleanAns);
-          }
-          programAnswersByQuestionId.set(ans.questionId, list);
-        }
-      }
-      if (manifest.acceptedProgramDoubtAnswers && typeof manifest.acceptedProgramDoubtAnswers === 'object') {
-        for (const [qId, aId] of Object.entries(manifest.acceptedProgramDoubtAnswers)) {
-          const doubt = programDoubtsById.get(qId);
-          if (doubt && doubt.authorId === ownerId && aId) {
-            acceptedProgramDoubtAnswers.set(qId, aId);
-            acceptedAnswers[qId] = aId;
-          }
-        }
-      }
-
-      // 6. University Discussions & Comments
-      if (Array.isArray(manifest.universityDiscussions)) {
-        for (const disc of manifest.universityDiscussions) {
-          if (!disc || !disc.id || disc.authorId !== ownerId) continue;
-          universityDiscussionsById.set(disc.id, { ...disc, authorId: ownerId });
-        }
-      }
-      if (Array.isArray(manifest.universityDiscussionComments)) {
-        for (const comm of manifest.universityDiscussionComments) {
-          if (!comm || !comm.id || comm.authorId !== ownerId) continue;
-          const cleanComm = { ...comm, authorId: ownerId };
-          allUniversityDiscussionComments.push(cleanComm);
-          const list = universityCommentsByPostId.get(comm.postId) || [];
-          if (!list.some(c => c.id === comm.id)) {
-            list.push(cleanComm);
-          }
-          universityCommentsByPostId.set(comm.postId, list);
-        }
-      }
-
-      // 7. University Doubts & Answers
-      if (Array.isArray(manifest.universityDoubts)) {
-        for (const doubt of manifest.universityDoubts) {
-          if (!doubt || !doubt.id || doubt.authorId !== ownerId) continue;
-          universityDoubtsById.set(doubt.id, { ...doubt, authorId: ownerId });
-        }
-      }
-      if (Array.isArray(manifest.universityDoubtAnswers)) {
-        for (const ans of manifest.universityDoubtAnswers) {
-          if (!ans || !ans.id || ans.authorId !== ownerId) continue;
-          const cleanAns = { ...ans, authorId: ownerId };
-          allUniversityDoubtAnswers.push(cleanAns);
-          const list = universityAnswersByQuestionId.get(ans.questionId) || [];
-          if (!list.some(a => a.id === ans.id)) {
-            list.push(cleanAns);
-          }
-          universityAnswersByQuestionId.set(ans.questionId, list);
-        }
-      }
-      if (manifest.acceptedUniversityDoubtAnswers && typeof manifest.acceptedUniversityDoubtAnswers === 'object') {
-        for (const [qId, aId] of Object.entries(manifest.acceptedUniversityDoubtAnswers)) {
-          const doubt = universityDoubtsById.get(qId);
-          if (doubt && doubt.authorId === ownerId && aId) {
-            acceptedUniversityDoubtAnswers.set(qId, aId);
-            acceptedAnswers[qId] = aId;
-          }
-        }
-      }
-    }
-
-    // Reconcile note upvote counts
-    const noteUpvoteCounts: Record<string, number> = {};
-    for (const [nid, usersSet] of noteUpvoteUsers.entries()) {
-      noteUpvoteCounts[nid] = usersSet.size;
-    }
-
-    const hydratedNotes = Array.from(notesById.values()).map(n => ({
-      ...n,
-      upvotesCount: Math.max(n.upvotesCount || 0, noteUpvoteCounts[n.id] || 0),
-      hasUpvoted: userUpvotedNoteIds.has(n.id) || Boolean(n.hasUpvoted && n.uploaderId === currentUserId)
-    }));
-
-    // Reconcile forum comments & posts counts and votes
-    const allForumComments: ForumComment[] = Array.from(forumCommentsById.values()).map(c => {
-      const vKey = `comment::${c.id}`;
-      const bucket = forumVotesByTarget.get(vKey);
-      const up = bucket ? Math.max(1, bucket.up.size) : c.upvotesCount || 1;
-      const down = bucket ? bucket.down.size : c.downvotesCount || 0;
-      const uv = (currentUserForumVotes.get(vKey) || 0) as -1 | 0 | 1;
-      const postAcceptedId = acceptedAnswerByPostId.get(c.postId);
-      return {
-        ...c,
-        upvotesCount: up,
-        downvotesCount: down,
-        score: up - down,
-        userVote: uv,
-        isAccepted: postAcceptedId !== undefined ? postAcceptedId === c.id : Boolean(c.isAccepted)
-      };
-    });
-
-    const commentCountByForumPost = new Map<string, number>();
-    allForumComments.forEach(c => {
-      commentCountByForumPost.set(c.postId, (commentCountByForumPost.get(c.postId) || 0) + 1);
-    });
-
-    const allForumPosts: ForumPost[] = Array.from(forumPostsById.values()).map(p => {
-      const vKey = `post::${p.id}`;
-      const bucket = forumVotesByTarget.get(vKey);
-      const up = bucket ? Math.max(1, bucket.up.size) : p.upvotesCount || 1;
-      const down = bucket ? bucket.down.size : p.downvotesCount || 0;
-      const uv = (currentUserForumVotes.get(vKey) || 0) as -1 | 0 | 1;
-      const cCount = commentCountByForumPost.get(p.id) ?? p.commentsCount ?? 0;
-      const acceptedId = acceptedAnswerByPostId.has(p.id)
-        ? acceptedAnswerByPostId.get(p.id) || null
-        : p.acceptedCommentId || null;
-      return {
-        ...p,
-        upvotesCount: up,
-        downvotesCount: down,
-        score: up - down,
-        userVote: uv,
-        commentsCount: cCount,
-        acceptedCommentId: acceptedId
-      };
-    });
-
-    // Assemble Program Discussions with cross-user comments
-    const allProgramDiscussions = Array.from(programDiscussionsById.values()).map(d => {
-      const extraComments = programCommentsByPostId.get(d.id) || [];
-      const mergedCommentsMap = new Map<string, ProgramDiscussionComment>();
-      (d.comments || []).forEach(c => mergedCommentsMap.set(c.id, c));
-      extraComments.forEach(c => mergedCommentsMap.set(c.id, c));
-      const mergedComments = Array.from(mergedCommentsMap.values()).sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      );
-      return {
-        ...d,
-        comments: mergedComments,
-        commentsCount: mergedComments.length
-      };
-    });
-
-    // Assemble Program Doubts with cross-user answers
-    const allProgramDoubts = Array.from(programDoubtsById.values()).map(q => {
-      const extraAnswers = programAnswersByQuestionId.get(q.id) || [];
-      const mergedAnswersMap = new Map<string, ProgramDoubtAnswer>();
-      (q.answers || []).forEach(a => mergedAnswersMap.set(a.id, a));
-      extraAnswers.forEach(a => mergedAnswersMap.set(a.id, a));
-      const acceptedId = acceptedProgramDoubtAnswers.get(q.id) || acceptedAnswers[q.id] || q.acceptedAnswerId;
-      const mergedAnswers = Array.from(mergedAnswersMap.values())
-        .map(a => ({
-          ...a,
-          isAccepted: acceptedId ? a.id === acceptedId : Boolean(a.isAccepted)
-        }))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      return {
-        ...q,
-        acceptedAnswerId: acceptedId,
-        status: mergedAnswers.length > 0 ? ('answered' as const) : q.status,
-        answers: mergedAnswers
-      };
-    });
-
-    // Assemble University Discussions with cross-user comments
-    const allUniversityDiscussions = Array.from(universityDiscussionsById.values()).map(d => {
-      const extraComments = universityCommentsByPostId.get(d.id) || [];
-      const mergedCommentsMap = new Map<string, DiscussionComment>();
-      (d.comments || []).forEach(c => mergedCommentsMap.set(c.id, c));
-      extraComments.forEach(c => mergedCommentsMap.set(c.id, c));
-      const mergedComments = Array.from(mergedCommentsMap.values()).sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      );
-      return {
-        ...d,
-        comments: mergedComments,
-        commentsCount: mergedComments.length
-      };
-    });
-
-    // Assemble University Doubts with cross-user answers
-    const allUniversityDoubts = Array.from(universityDoubtsById.values()).map(q => {
-      const extraAnswers = universityAnswersByQuestionId.get(q.id) || [];
-      const mergedAnswersMap = new Map<string, DoubtAnswer>();
-      (q.answers || []).forEach(a => mergedAnswersMap.set(a.id, a));
-      extraAnswers.forEach(a => mergedAnswersMap.set(a.id, a));
-      const acceptedId = acceptedUniversityDoubtAnswers.get(q.id) || acceptedAnswers[q.id] || q.acceptedAnswerId;
-      const mergedAnswers = Array.from(mergedAnswersMap.values())
-        .map(a => ({
-          ...a,
-          isAccepted: acceptedId ? a.id === acceptedId : Boolean(a.isAccepted)
-        }))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      return {
-        ...q,
-        acceptedAnswerId: acceptedId,
-        status: mergedAnswers.length > 0 ? ('answered' as const) : q.status,
-        answers: mergedAnswers
-      };
-    });
-
-    return {
-      manifests,
-      notes: hydratedNotes,
-      noteUpvoteCounts,
-      userUpvotedNoteIds,
-      forumPosts: allForumPosts,
-      forumComments: allForumComments,
-      acceptedAnswers,
-      programEnrollments,
-      enrolledPrograms,
-      customPrograms: Array.from(customProgramsById.values()),
-      programDiscussions: allProgramDiscussions,
-      programDiscussionComments: allProgramDiscussionComments,
-      programDoubts: allProgramDoubts,
-      programDoubtAnswers: allProgramDoubtAnswers,
-      universityEnrollments,
-      enrolledUniversities,
-      customUniversities: Array.from(customUniversitiesById.values()),
-      universityDiscussions: allUniversityDiscussions,
-      universityDiscussionComments: allUniversityDiscussionComments,
-      universityDoubts: allUniversityDoubts,
-      universityDoubtAnswers: allUniversityDoubtAnswers
-    };
-  } catch {
-    return createEmptyAggregatedData();
-  }
 }

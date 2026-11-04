@@ -1,15 +1,14 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { StudyNote, SupabaseConfig } from '../types/index.ts';
 import { INITIAL_STUDY_NOTES } from '../data/seedData.ts';
-import {
-  fetchAggregatedPublicPlatformData,
-  updateCurrentUserPublicManifest
-} from './publicSyncRelay.ts';
+import { updateCurrentUserPublicManifest } from './publicSyncRelay.ts';
 
 const STORAGE_KEY_CONFIG = 'xeusar_supabase_config_v2';
 const STORAGE_KEY_NOTES = 'xeusar_local_notes_v2';
 const STORAGE_KEY_UPVOTES = 'xeusar_user_upvotes_v2';
 const STORAGE_KEY_DELETED_NOTE_IDS = 'xeusar_deleted_note_ids_v1';
+
+const SEED_NOTE_IDS = new Set<string>(INITIAL_STUDY_NOTES.map(n => n.id));
 
 // Helper to strictly validate HTTP/HTTPS URLs
 export function isValidHttpUrl(urlString: string | null | undefined): boolean {
@@ -18,8 +17,11 @@ export function isValidHttpUrl(urlString: string | null | undefined): boolean {
   if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
     return false;
   }
-  // Reject placeholder domains that aren't real Supabase projects
-  if (trimmed.includes('your-project') || trimmed.includes('xyzcompany') || trimmed.includes('example.com')) {
+  if (
+    trimmed.includes('your-project') ||
+    trimmed.includes('xyzcompany') ||
+    trimmed.includes('example.com')
+  ) {
     return false;
   }
   try {
@@ -28,6 +30,79 @@ export function isValidHttpUrl(urlString: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+export function classifySupabaseError(
+  error: any,
+  tableName?: string
+): {
+  category: 'missing_schema' | 'missing_column' | 'permission_denied' | 'foreign_key' | 'other';
+  isMissingSchema: boolean;
+  isPermissionDenied: boolean;
+  isForeignKeyViolation: boolean;
+  code: string;
+  userMessage: string;
+} {
+  if (!error) {
+    return {
+      category: 'other',
+      isMissingSchema: false,
+      isPermissionDenied: false,
+      isForeignKeyViolation: false,
+      code: '',
+      userMessage: ''
+    };
+  }
+  const code = String(error.code || '').toUpperCase();
+  const msg = String(error.message || '');
+  const lower = msg.toLowerCase();
+
+  const isMissingColumn =
+    code === '42703' ||
+    code === 'PGRST204' ||
+    lower.includes('could not find the column');
+
+  const isMissingSchema =
+    isMissingColumn ||
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    lower.includes('could not find the table') ||
+    (lower.includes('relation') && lower.includes('does not exist'));
+
+  const isPermissionDenied =
+    code === '42501' ||
+    lower.includes('row-level security') ||
+    lower.includes('permission denied');
+
+  const isForeignKeyViolation =
+    code === '23503' || lower.includes('foreign key constraint');
+
+  const tableLabel = tableName ? ` (${tableName})` : '';
+  let category: 'missing_schema' | 'missing_column' | 'permission_denied' | 'foreign_key' | 'other' = 'other';
+  let userMessage = msg || 'Database operation failed.';
+
+  if (isMissingColumn) {
+    category = 'missing_column';
+    userMessage = `Required Supabase column${tableLabel} is missing (${code || 'PGRST204'}: ${msg}). Run the complete SQL migration in your Supabase SQL Editor to enable cross-user synchronization.`;
+  } else if (isMissingSchema) {
+    category = 'missing_schema';
+    userMessage = `Required Supabase table${tableLabel} is missing (${code || 'PGRST205'}: ${msg}). Run the complete SQL migration in your Supabase SQL Editor to enable cross-user synchronization.`;
+  } else if (isPermissionDenied) {
+    category = 'permission_denied';
+    userMessage = `Supabase RLS permission denied${tableLabel} (${code || '42501'}: ${msg}). Verify you are signed in with the owning account and that RLS policies are applied.`;
+  } else if (isForeignKeyViolation) {
+    category = 'foreign_key';
+    userMessage = `Database reference check failed${tableLabel} (${code || '23503'}: ${msg}).`;
+  }
+
+  return {
+    category,
+    isMissingSchema,
+    isPermissionDenied,
+    isForeignKeyViolation,
+    code,
+    userMessage
+  };
 }
 
 const DEFAULT_SUPABASE_URL = 'https://mfyngivzwyjgcnzhodud.supabase.co';
@@ -53,7 +128,6 @@ export function getSavedSupabaseConfig(): SupabaseConfig {
     // Ignore storage parse issues
   }
 
-  // Check if environment variables are provided, otherwise use the configured Xeusar Supabase project
   const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
   const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
 
@@ -78,7 +152,6 @@ export function saveSupabaseConfig(config: SupabaseConfig): void {
   }
 }
 
-// Create client instance if configured with valid HTTP/HTTPS url
 let cachedClient: SupabaseClient | null = null;
 let cachedConfigSignature = '';
 
@@ -109,11 +182,17 @@ export function getSupabaseInstance(config?: SupabaseConfig): SupabaseClient | n
   }
 }
 
-// Test live Supabase connection
+// Test live Supabase connection and verify required tables + storage buckets
 export async function testSupabaseConnection(
   url: string,
   key: string
-): Promise<{ success: boolean; message: string; missingTables?: string[] }> {
+): Promise<{
+  success: boolean;
+  schemaReady?: boolean;
+  message: string;
+  missingTables?: string[];
+  missingBuckets?: string[];
+}> {
   if (!url || !key) {
     return { success: false, message: 'URL and Anon Key are required.' };
   }
@@ -121,7 +200,8 @@ export async function testSupabaseConnection(
   if (!isValidHttpUrl(url)) {
     return {
       success: false,
-      message: 'Invalid Supabase URL. Please enter a valid HTTP or HTTPS URL (e.g. https://yourprojectid.supabase.co).'
+      message:
+        'Invalid Supabase URL. Please enter a valid HTTP or HTTPS URL (e.g. https://yourprojectid.supabase.co).'
     };
   }
 
@@ -135,39 +215,71 @@ export async function testSupabaseConnection(
       'academic_information',
       'user_settings_preferences',
       'study_notes',
+      'note_upvotes',
+      'forum_topics',
       'forum_posts',
       'forum_comments',
+      'forum_votes',
+      'forum_bookmarks',
+      'academic_programs',
       'program_discussions',
+      'program_discussion_comments',
       'program_doubts',
-      'universities'
+      'program_doubt_answers',
+      'universities',
+      'university_discussions',
+      'university_discussion_comments',
+      'university_doubts',
+      'university_doubt_answers'
     ];
 
     const missingTables: string[] = [];
     for (const table of coreTables) {
       const { error } = await testClient.from(table).select('*').limit(1);
-      if (
-        error &&
-        (error.code === '42P01' ||
-          error.code === 'PGRST205' ||
-          error.message.includes('does not exist') ||
-          error.message.includes('schema cache'))
-      ) {
-        missingTables.push(table);
+      if (error) {
+        const classified = classifySupabaseError(error);
+        if (classified.isMissingSchema) {
+          missingTables.push(table);
+        }
       }
     }
 
-    if (missingTables.length > 0) {
+    const missingBuckets: string[] = [];
+    const probeBlob = new Blob(['probe'], { type: 'application/pdf' });
+    const { error: bucketErr } = await testClient.storage
+      .from('study-materials')
+      .upload('__schema_probe__.pdf', probeBlob, { upsert: true });
+
+    if (bucketErr && bucketErr.message.toLowerCase().includes('bucket not found')) {
+      missingBuckets.push('study-materials');
+    } else if (!bucketErr) {
+      await testClient.storage.from('study-materials').remove(['__schema_probe__.pdf']).catch(() => {});
+    }
+
+    if (missingTables.length > 0 || missingBuckets.length > 0) {
+      const missingSummary = [
+        missingTables.length > 0 ? `Missing tables (${missingTables.length}): ${missingTables.join(', ')}` : '',
+        missingBuckets.length > 0 ? `Missing storage buckets: ${missingBuckets.join(', ')}` : ''
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
       return {
         success: true,
+        schemaReady: false,
         missingTables,
-        message: `Connected to Supabase! (${coreTables.length - missingTables.length}/${coreTables.length} core tables active. Run the updated SQL Migration Script in your Supabase SQL Editor to create: ${missingTables.join(', ')}).`
+        missingBuckets,
+        message: `Connected to Supabase endpoint, but cross-user sync requires applying the production SQL migration in Supabase SQL Editor. ${missingSummary}`
       };
     }
 
     return {
       success: true,
+      schemaReady: true,
       missingTables: [],
-      message: 'Connected to Supabase! All core database tables and policies are active.'
+      missingBuckets: [],
+      message:
+        'Connected to Supabase! All 20 canonical database tables, RLS policies, and Storage buckets (study-materials, avatars) are active.'
     };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Could not reach Supabase endpoint.' };
@@ -183,6 +295,33 @@ function getActiveUserIdFromStorage(): string | undefined {
     }
   } catch {}
   return undefined;
+}
+
+/**
+ * Clears all user-specific private state and unsynced user-scoped caches on sign-out or account switch
+ * so stale user data never leaks across sessions.
+ */
+export function clearUserSpecificLocalState(userId?: string): void {
+  try {
+    localStorage.removeItem('studyvault_active_user');
+    localStorage.removeItem(STORAGE_KEY_UPVOTES);
+    if (userId) {
+      localStorage.removeItem(`${STORAGE_KEY_UPVOTES}_${userId}`);
+      localStorage.removeItem(`xeusar_profile_setup_draft_${userId}`);
+      localStorage.removeItem(`xeusar_forum_post_draft_v1_${userId}`);
+    }
+    // Remove any local-only unsynced notes that belonged to the signed-out user
+    const rawNotes = localStorage.getItem(STORAGE_KEY_NOTES);
+    if (rawNotes) {
+      const parsed: StudyNote[] = JSON.parse(rawNotes);
+      if (Array.isArray(parsed)) {
+        const cleaned = parsed
+          .filter(n => !n.isUnsynced)
+          .map(n => ({ ...n, hasUpvoted: false }));
+        localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(cleaned));
+      }
+    }
+  } catch {}
 }
 
 export function getDeletedNoteIds(): Set<string> {
@@ -204,7 +343,6 @@ export function recordDeletedNoteId(noteId: string): void {
   } catch {}
 }
 
-// Local Storage Fallback Data Manager
 export function getLocalNotes(): StudyNote[] {
   const deletedIds = getDeletedNoteIds();
   try {
@@ -264,7 +402,10 @@ function saveUpvotedIds(upvotes: Set<string>, userId?: string): void {
   } catch {}
 }
 
-export function toggleUpvoteLocal(noteId: string, userId?: string): { upvoted: boolean; count: number } {
+export function toggleUpvoteLocal(
+  noteId: string,
+  userId?: string
+): { upvoted: boolean; count: number } {
   const effectiveUser = userId || getActiveUserIdFromStorage();
   const upvotes = getUpvotedIds(effectiveUser);
   const isUpvoted = upvotes.has(noteId);
@@ -289,7 +430,6 @@ export function toggleUpvoteLocal(noteId: string, userId?: string): { upvoted: b
     setLocalNotes(notes);
   }
 
-  // Sync upvote with Supabase in the background
   const supabase = getSupabaseInstance();
   if (supabase) {
     syncNoteUpvoteToSupabase(supabase, noteId, effectiveUser, !isUpvoted, newCount).catch(() => {});
@@ -308,44 +448,40 @@ export async function syncNoteUpvoteToSupabase(
   if (!supabase) return;
   try {
     if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(userId)) {
-      // Update public sync manifest for cross-user upvote tally
-      await updateCurrentUserPublicManifest(supabase, userId, current => {
-        const set = new Set<string>(current.noteUpvotes || []);
-        if (upvoted) {
-          set.add(noteId);
-        } else {
-          set.delete(noteId);
-        }
-        return {
-          ...current,
-          noteUpvotes: Array.from(set)
-        };
-      });
-
-      // Sync to note_upvotes table if present
       if (upvoted) {
-        await supabase
+        const { error } = await supabase
           .from('note_upvotes')
-          .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'note_id,user_id' })
-          .then(() => {}, () => {});
+          .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'user_id,note_id' });
+        if (error && classifySupabaseError(error).isMissingSchema) {
+          await supabase
+            .from('study_note_upvotes')
+            .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'user_id,note_id' })
+            .then(() => {}, () => {});
+        }
       } else {
-        await supabase
+        const { error } = await supabase
           .from('note_upvotes')
           .delete()
           .eq('note_id', noteId)
-          .eq('user_id', userId)
-          .then(() => {}, () => {});
+          .eq('user_id', userId);
+        if (error && classifySupabaseError(error).isMissingSchema) {
+          await supabase
+            .from('study_note_upvotes')
+            .delete()
+            .eq('note_id', noteId)
+            .eq('user_id', userId)
+            .then(() => {}, () => {});
+        }
       }
     }
 
-    // Update study_notes counter if table is present
     await supabase
       .from('study_notes')
       .update({ upvotes_count: newCount })
       .eq('id', noteId)
       .then(() => {}, () => {});
   } catch {
-    // Ignore network or unmigrated table errors
+    // Ignore transient network errors
   }
 }
 
@@ -393,20 +529,21 @@ export function addLocalNote(newNote: StudyNote): void {
   setLocalNotes(notes);
 }
 
-/**
- * Extracts lossless extended metadata embedded in `row.pages[0]._xeusarMeta` when
- * `study_notes` in Supabase only has the base columns.
- */
 function extractEmbeddedMetaFromPages(pagesRaw: any): Record<string, any> {
   if (!Array.isArray(pagesRaw) || pagesRaw.length === 0) return {};
   const firstPage = pagesRaw[0];
-  if (firstPage && typeof firstPage === 'object' && firstPage._xeusarMeta && typeof firstPage._xeusarMeta === 'object') {
+  if (
+    firstPage &&
+    typeof firstPage === 'object' &&
+    firstPage._xeusarMeta &&
+    typeof firstPage._xeusarMeta === 'object'
+  ) {
     return firstPage._xeusarMeta;
   }
   return {};
 }
 
-// Unified Service to fetch notes (Supabase study_notes + Public Sync Relay + Local)
+// Fetch shared notes from canonical `public.study_notes` table
 export async function fetchAllNotes(
   supabaseClient: SupabaseClient | null,
   currentUserId?: string
@@ -414,6 +551,7 @@ export async function fetchAllNotes(
   notes: StudyNote[];
   isFromSupabase: boolean;
   error?: string;
+  schemaMissing?: boolean;
 }> {
   const effectiveUserId = currentUserId || getActiveUserIdFromStorage();
   const deletedIds = getDeletedNoteIds();
@@ -425,9 +563,15 @@ export async function fetchAllNotes(
     return { notes: localNotes, isFromSupabase: false };
   }
 
+  // Trigger one-time legacy profile cleanup/migration for the active user if needed
+  if (effectiveUserId) {
+    updateCurrentUserPublicManifest(supabaseClient, effectiveUserId).catch(() => {});
+  }
+
   const upvotes = getUpvotedIds(effectiveUserId);
   let studyNotesTableRows: StudyNote[] | null = null;
   let tableErrorMsg: string | undefined;
+  let schemaMissing = false;
 
   try {
     // 1. Fetch user's remote note_upvotes if authenticated
@@ -442,83 +586,135 @@ export async function fetchAllNotes(
           if (r.note_id) upvotes.add(String(r.note_id));
         });
         saveUpvotedIds(upvotes, effectiveUserId);
+      } else if (upvoteErr && classifySupabaseError(upvoteErr).isMissingSchema) {
+        const { data: aliasRows, error: aliasErr } = await supabaseClient
+          .from('study_note_upvotes')
+          .select('note_id')
+          .eq('user_id', effectiveUserId);
+        if (!aliasErr && Array.isArray(aliasRows)) {
+          aliasRows.forEach((r: any) => {
+            if (r.note_id) upvotes.add(String(r.note_id));
+          });
+          saveUpvotedIds(upvotes, effectiveUserId);
+        }
       }
     }
 
-    // 2. Query dedicated `study_notes` table
+    // 2. Query canonical `public.study_notes` table
     const { data, error } = await supabaseClient
       .from('study_notes')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (error) {
-      tableErrorMsg = error.message;
+      const classified = classifySupabaseError(error);
+      tableErrorMsg = classified.userMessage;
+      schemaMissing = classified.isMissingSchema;
     } else if (Array.isArray(data)) {
       studyNotesTableRows = data
-        .filter((row: any) => row && row.id && !deletedIds.has(String(row.id)))
+        .filter(
+          (row: any) =>
+            row &&
+            row.id &&
+            row.status !== 'removed' &&
+            !deletedIds.has(String(row.id))
+        )
         .map((row: any) => {
           const id = String(row.id);
           const localMatch = localById.get(id);
           const embeddedMeta = extractEmbeddedMetaFromPages(row.pages);
 
           const resolvedProgramId =
-            row.program_id || embeddedMeta.programId || localMatch?.programId;
+            row.program_id || embeddedMeta.programId || localMatch?.programId || 'bs-cs';
           const resolvedProgramIds =
             Array.isArray(row.program_ids) && row.program_ids.length > 0
               ? row.program_ids
               : Array.isArray(embeddedMeta.programIds) && embeddedMeta.programIds.length > 0
               ? embeddedMeta.programIds
-              : localMatch?.programIds || (resolvedProgramId ? [resolvedProgramId] : undefined);
+              : localMatch?.programIds || [resolvedProgramId];
           const resolvedSemesterNum =
             typeof row.semester_number === 'number'
               ? row.semester_number
               : typeof embeddedMeta.semesterNumber === 'number'
               ? embeddedMeta.semesterNumber
-              : localMatch?.semesterNumber;
+              : localMatch?.semesterNumber || 1;
 
           return {
             id,
             title: row.title,
             description: row.description || '',
             courseCode: row.course_code,
-            courseName: row.course_name || embeddedMeta.courseName || localMatch?.courseName || row.subject,
+            courseName:
+              row.course_name ||
+              embeddedMeta.courseName ||
+              localMatch?.courseName ||
+              row.subject,
             courseId: row.course_id || embeddedMeta.courseId || localMatch?.courseId,
             subject: row.subject,
             materialType: row.material_type,
             academicYear: row.academic_year || new Date().getFullYear(),
             semester: row.semester || localMatch?.semester || 'Current Semester',
             semesterNumber: resolvedSemesterNum,
-            semesterId: resolvedSemesterNum ? `sem-${resolvedSemesterNum}` : localMatch?.semesterId,
+            semesterId: resolvedSemesterNum
+              ? `sem-${resolvedSemesterNum}`
+              : localMatch?.semesterId,
             professor: row.professor || 'Instructor',
             fileUrl: row.file_url,
             fileName: row.file_name,
             fileSizeBytes: Number(row.file_size_bytes) || 2048000,
             pageCount: Number(row.page_count) || 10,
-            uploaderId: row.uploader_id || embeddedMeta.uploaderId || localMatch?.uploaderId,
+            uploaderId:
+              row.uploader_id ||
+              row.user_id ||
+              embeddedMeta.uploaderId ||
+              localMatch?.uploaderId,
             uploaderName: row.uploader_name || 'Student Contributor',
             uploaderUniversity: row.uploader_university || 'Open Campus',
-            universityId: row.university_id || embeddedMeta.universityId || localMatch?.universityId,
+            universityId:
+              row.university_id ||
+              embeddedMeta.universityId ||
+              localMatch?.universityId,
             programId: resolvedProgramId,
             programIds: resolvedProgramIds,
-            programName: row.program_name || embeddedMeta.programName || localMatch?.programName,
-            degreeTier: row.degree_tier || embeddedMeta.degreeTier || localMatch?.degreeTier,
-            contentHash: row.content_hash || embeddedMeta.contentHash || localMatch?.contentHash,
-            storagePath: row.storage_path || embeddedMeta.storagePath || localMatch?.storagePath,
+            programName:
+              row.program_name ||
+              embeddedMeta.programName ||
+              localMatch?.programName,
+            degreeTier:
+              row.degree_tier || embeddedMeta.degreeTier || localMatch?.degreeTier,
+            contentHash:
+              row.content_hash ||
+              embeddedMeta.contentHash ||
+              localMatch?.contentHash,
+            storagePath:
+              row.storage_path ||
+              embeddedMeta.storagePath ||
+              localMatch?.storagePath,
+            isRestricted: Boolean(row.is_restricted),
+            isUnsynced: false,
             downloadsCount: Number(row.downloads_count) || 0,
             upvotesCount: Number(row.upvotes_count) || 0,
             hasUpvoted: upvotes.has(id),
             createdAt: row.created_at,
-            tags: Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : [row.subject, row.course_code],
-            pages: Array.isArray(row.pages) && row.pages.length > 0
-              ? row.pages
-              : localMatch?.pages || [
-                  {
-                    pageNumber: 1,
-                    sectionTitle: `${row.title} - Overview`,
-                    content: row.description || 'Uploaded study guide and lecture notes.',
-                    keyFormulasOrPoints: ['Verified peer study material', 'Complete syllabus coverage']
-                  }
-                ]
+            updatedAt: row.updated_at || row.created_at,
+            tags:
+              Array.isArray(row.tags) && row.tags.length > 0
+                ? row.tags
+                : [row.subject, row.course_code].filter(Boolean),
+            pages:
+              Array.isArray(row.pages) && row.pages.length > 0
+                ? row.pages
+                : localMatch?.pages || [
+                    {
+                      pageNumber: 1,
+                      sectionTitle: `${row.title} - Overview`,
+                      content: row.description || 'Uploaded study guide and lecture notes.',
+                      keyFormulasOrPoints: [
+                        'Verified peer study material',
+                        'Complete syllabus coverage'
+                      ]
+                    }
+                  ]
           };
         });
     }
@@ -526,45 +722,20 @@ export async function fetchAllNotes(
     tableErrorMsg = err?.message;
   }
 
-  // 3. Also fetch cross-user public sync relay data (covers unmigrated study_notes table or cross-user metadata)
-  const aggregatedRelay = await fetchAggregatedPublicPlatformData(supabaseClient, effectiveUserId);
-  const relayNotes = (aggregatedRelay?.notes || []).filter(n => !deletedIds.has(n.id));
-
-  if (studyNotesTableRows !== null || relayNotes.length > 0) {
+  // When `public.study_notes` succeeded, use it as the authoritative source of shared notes
+  if (studyNotesTableRows !== null) {
     const mergedById = new Map<string, StudyNote>();
 
-    // First add remote study_notes rows (highest authority)
-    if (studyNotesTableRows) {
-      studyNotesTableRows.forEach(n => mergedById.set(n.id, n));
-    }
+    studyNotesTableRows.forEach(n => mergedById.set(n.id, n));
 
-    // Next add verified cross-user notes from public sync relay
-    relayNotes.forEach(rn => {
-      if (!mergedById.has(rn.id)) {
-        mergedById.set(rn.id, {
-          ...rn,
-          hasUpvoted: upvotes.has(rn.id) || Boolean(rn.hasUpvoted)
-        });
-      } else {
-        const existing = mergedById.get(rn.id)!;
-        mergedById.set(rn.id, {
-          ...existing,
-          programId: existing.programId || rn.programId,
-          programIds: existing.programIds || rn.programIds,
-          programName: existing.programName || rn.programName,
-          degreeTier: existing.degreeTier || rn.degreeTier,
-          semesterNumber: existing.semesterNumber ?? rn.semesterNumber,
-          semesterId: existing.semesterId || rn.semesterId,
-          courseId: existing.courseId || rn.courseId,
-          universityId: existing.universityId || rn.universityId,
-          upvotesCount: Math.max(existing.upvotesCount || 0, rn.upvotesCount || 0)
-        });
-      }
-    });
-
-    // Preserve local seed notes + any local notes uploaded in this browser that haven't been deleted
+    // Preserve built-in seed notes and any explicitly unsynced notes created by the active user
     localNotes.forEach(ln => {
-      if (!deletedIds.has(ln.id) && !mergedById.has(ln.id)) {
+      if (deletedIds.has(ln.id) || mergedById.has(ln.id)) return;
+      const isSeed = SEED_NOTE_IDS.has(ln.id) || ln.id.startsWith('seed-');
+      const isOwnUnsynced = Boolean(
+        ln.isUnsynced && effectiveUserId && ln.uploaderId === effectiveUserId
+      );
+      if (isSeed || isOwnUnsynced) {
         mergedById.set(ln.id, {
           ...ln,
           hasUpvoted: upvotes.has(ln.id)
@@ -579,5 +750,21 @@ export async function fetchAllNotes(
     return { notes: finalNotes, isFromSupabase: true };
   }
 
-  return { notes: localNotes, isFromSupabase: false, error: tableErrorMsg };
+  // If `study_notes` table is missing or errored, mark non-seed local notes as unsynced
+  const fallbackNotes = localNotes.map(ln => {
+    const isSeed = SEED_NOTE_IDS.has(ln.id) || ln.id.startsWith('seed-');
+    if (isSeed) return ln;
+    return {
+      ...ln,
+      isUnsynced: true,
+      syncError: ln.syncError || tableErrorMsg
+    };
+  });
+
+  return {
+    notes: fallbackNotes,
+    isFromSupabase: false,
+    error: tableErrorMsg,
+    schemaMissing
+  };
 }

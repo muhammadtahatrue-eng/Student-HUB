@@ -21,7 +21,8 @@ import {
   syncNoteUpvoteToSupabase,
   incrementDownloadCountLocal,
   syncNoteDownloadToSupabase,
-  isValidHttpUrl
+  isValidHttpUrl,
+  clearUserSpecificLocalState
 } from './lib/supabaseClient.ts';
 import { LightRays, RaysOrigin } from './components/LightRays.tsx';
 import { Navbar } from './components/Navbar.tsx';
@@ -902,10 +903,8 @@ export default function App() {
               );
             }
           } else if (event === 'SIGNED_OUT') {
+            clearUserSpecificLocalState();
             setUser(null);
-            try {
-              localStorage.removeItem('studyvault_active_user');
-            } catch {}
           }
         });
 
@@ -1258,6 +1257,13 @@ export default function App() {
     const supabase = getSupabaseInstance(supabaseConfig);
     syncProgramsFromSupabase(supabase, [newNote, ...notes.filter(n => n.id !== newNote.id)]).catch(() => {});
     syncUniversitiesFromSupabase(supabase, [newNote, ...notes.filter(n => n.id !== newNote.id)]).catch(() => {});
+    if (newNote.isUnsynced) {
+      triggerToast(
+        newNote.syncError ||
+          `"${newNote.title}" saved locally only — run the Supabase SQL migration to share across accounts.`
+      );
+      return;
+    }
     if (uploadPrefill.programId) {
       setSelectedProgramId(uploadPrefill.programId);
       setProgramSubTab('materials');
@@ -1375,6 +1381,22 @@ export default function App() {
         window.history.replaceState({}, document.title, '#about');
       } else if (targetTab === 'landing') {
         window.history.replaceState({}, document.title, window.location.pathname || '/');
+      }
+    }
+
+    if (
+      targetTab === 'browse' ||
+      targetTab === 'explore' ||
+      targetTab === 'program' ||
+      targetTab === 'university'
+    ) {
+      const supabase = getSupabaseInstance(supabaseConfig);
+      if (supabase) {
+        fetchAllNotes(supabase, user?.id).then((res) => {
+          setNotes(res.notes);
+          syncProgramsFromSupabase(supabase, res.notes).catch(() => {});
+          syncUniversitiesFromSupabase(supabase, res.notes).catch(() => {});
+        }).catch(() => {});
       }
     }
 
@@ -1510,6 +1532,7 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    const previousUserId = user?.id;
     try {
       const supabase = getSupabaseInstance(supabaseConfig);
       if (supabase) {
@@ -1518,9 +1541,7 @@ export default function App() {
     } catch {
       // Ignore network errors on logout
     }
-    try {
-      localStorage.removeItem('studyvault_active_user');
-    } catch {}
+    clearUserSpecificLocalState(previousUserId);
     setUser(null);
     setCurrentTab('login');
     triggerToast('Signed out of Xeusar account');

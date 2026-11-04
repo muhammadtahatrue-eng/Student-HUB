@@ -16,12 +16,7 @@ import {
   ensureSystemProgramForRegisteredStudent,
   unenrollStudentFromProgram
 } from './programStore.ts';
-import {
-  extractCleanDisplayName,
-  encodeFullNameWithManifest,
-  loadLocalUserManifest,
-  updateCurrentUserPublicManifest
-} from './publicSyncRelay.ts';
+import { extractCleanDisplayName } from './publicSyncRelay.ts';
 
 const SETUP_DRAFT_PREFIX = 'xeusar_profile_setup_draft_';
 
@@ -109,13 +104,18 @@ export function isIgnorableSchemaOrTableError(error: any): boolean {
   const msg = String(error.message || '').toLowerCase();
   const details = String(error.details || '').toLowerCase();
 
+  // Do NOT treat 42501 (permission denied / RLS policy violation) or 23503 (FK violation)
+  // as missing schema/table errors.
+  if (code === '42501' || code === '23503' || msg.includes('row-level security') || msg.includes('permission denied')) {
+    return false;
+  }
+
   if (
     code === '42P01' ||
     code === '42703' ||
     code === 'PGRST204' ||
     code === 'PGRST205' ||
-    code === 'PGRST202' ||
-    code === '42501'
+    code === 'PGRST202'
   ) {
     return true;
   }
@@ -124,8 +124,6 @@ export function isIgnorableSchemaOrTableError(error: any): boolean {
     msg.includes('does not exist') ||
     msg.includes('schema cache') ||
     msg.includes('could not find the') ||
-    msg.includes('not found') ||
-    msg.includes('row-level security') ||
     details.includes('schema cache')
   ) {
     return true;
@@ -428,7 +426,6 @@ export async function fetchAuthenticatedUserProfile(
         }
       } else if (!profileRow && displayName && username && emailConfirmed) {
         profilesTableAvailable = true;
-        const manifest = loadLocalUserManifest(userId);
         // Ensure initial profile row exists only after email verification is confirmed
         await supabase
           .from('profiles')
@@ -436,7 +433,7 @@ export async function fetchAuthenticatedUserProfile(
             {
               id: userId,
               display_name: displayName,
-              full_name: encodeFullNameWithManifest(displayName, manifest),
+              full_name: displayName,
               username,
               avatar_url: avatarUrl || null,
               bio: bio || null,
@@ -566,30 +563,6 @@ export async function fetchAuthenticatedUserProfile(
           degreeTier
         })
       : undefined;
-
-  if (emailConfirmed && (systemProgram || matchedUni || institution)) {
-    updateCurrentUserPublicManifest(
-      supabase,
-      userId,
-      prev => ({
-        ...prev,
-        enrolledProgram: systemProgram
-          ? {
-              programId: systemProgram.id,
-              programName: systemProgram.name,
-              degreeTier: systemProgram.degreeTier
-            }
-          : prev.enrolledProgram,
-        enrolledUniversity: matchedUni || institution
-          ? {
-              universityId: matchedUni?.id || `uni-custom-${(institution || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-              universityName: matchedUni?.name || institution || ''
-            }
-          : prev.enrolledUniversity
-      }),
-      displayName || 'Student'
-    ).catch(() => {});
-  }
 
   const studentUser: StudentUser = {
     id: userId,
@@ -814,33 +787,14 @@ export async function saveUserProfileToSupabase(
     registerStudentToUniversity(matchedUniEarly.id, userId);
   }
 
-  const currentManifest = loadLocalUserManifest(userId);
-  currentManifest.enrolledProgram = earlyProgram
-    ? {
-        programId: earlyProgram.id,
-        programName: earlyProgram.name,
-        degreeTier: earlyProgram.degreeTier
-      }
-    : undefined;
-  currentManifest.enrolledUniversity =
-    matchedUniEarly || cleanInstitution
-      ? {
-          universityId:
-            matchedUniEarly?.id ||
-            `uni-custom-${(cleanInstitution || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-          universityName: matchedUniEarly?.name || cleanInstitution || ''
-        }
-      : undefined;
-  const encodedFullName = encodeFullNameWithManifest(cleanDisplayName, currentManifest);
-
-  // 3. Upsert public.profiles (with resilient fallback if display_name column or table is not yet in schema cache)
+  // 3. Upsert public.profiles with clean display_name and full_name (no comment-tag payloads)
   if (profilesTableAvailable !== false) {
     const { error: profileError } = await supabase.from('profiles').upsert(
       {
         id: userId,
         username: cleanUsername,
         display_name: cleanDisplayName,
-        full_name: encodedFullName,
+        full_name: cleanDisplayName,
         avatar_url: cleanAvatar,
         bio: cleanBio,
         setup_completed: payload.setupCompleted
@@ -869,7 +823,7 @@ export async function saveUserProfileToSupabase(
             {
               id: userId,
               username: cleanUsername,
-              full_name: encodedFullName,
+              full_name: cleanDisplayName,
               avatar_url: cleanAvatar
             },
             { onConflict: 'id' }
@@ -994,17 +948,6 @@ export async function saveUserProfileToSupabase(
   const matchedUni = matchedUniEarly;
   const degreeTier = degreeTierEarly;
   const systemProgram = earlyProgram;
-
-  updateCurrentUserPublicManifest(
-    supabase,
-    userId,
-    prev => ({
-      ...prev,
-      enrolledProgram: currentManifest.enrolledProgram,
-      enrolledUniversity: currentManifest.enrolledUniversity
-    }),
-    cleanDisplayName
-  ).catch(() => {});
 
   const updatedUser: StudentUser = {
     id: userId,

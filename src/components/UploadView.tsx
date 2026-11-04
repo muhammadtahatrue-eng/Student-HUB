@@ -48,6 +48,7 @@ export const UploadView: React.FC<UploadViewProps> = ({
   onSuccess,
   supabaseConfig,
   user,
+  onOpenSupabaseModal,
   initialUniversity,
   initialCourseCode,
   initialProgramId,
@@ -179,6 +180,8 @@ export const UploadView: React.FC<UploadViewProps> = ({
     deduplicated: boolean;
     wasCompressed: boolean;
     savedBytes: number;
+    syncedToSupabase?: boolean;
+    syncWarning?: string;
   } | null>(null);
 
   const handleDrag = (e: React.DragEvent) => {
@@ -345,7 +348,9 @@ export const UploadView: React.FC<UploadViewProps> = ({
       setLastUploadMeta({
         deduplicated: result.deduplicated,
         wasCompressed: result.wasCompressed || wasCompressed,
-        savedBytes: Math.max(0, (originalFileSize || result.originalSizeBytes) - result.finalSizeBytes)
+        savedBytes: Math.max(0, (originalFileSize || result.originalSizeBytes) - result.finalSizeBytes),
+        syncedToSupabase: result.syncedToSupabase,
+        syncWarning: result.syncWarning
       });
       setSuccessNote(result.note);
       onSuccess(result.note);
@@ -391,16 +396,32 @@ export const UploadView: React.FC<UploadViewProps> = ({
           </p>
         </div>
 
-        {/* Success Banner if uploaded */}
+        {/* Success / Unsynced Warning Banner if uploaded */}
         {successNote && (
-          <div className="mb-6 p-4 bg-emerald-950/60 border border-emerald-500/40 rounded-2xl flex items-start gap-3">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div
+            className={`mb-6 p-4 rounded-2xl flex items-start gap-3 border ${
+              successNote.isUnsynced
+                ? 'bg-amber-950/60 border-amber-500/40'
+                : 'bg-emerald-950/60 border-emerald-500/40'
+            }`}
+          >
+            {successNote.isUnsynced ? (
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            )}
             <div className="flex-1 text-xs">
-              <p className="font-bold text-emerald-200 mb-1">
-                Study Material Published to Study Library &amp; {successNote.programName || 'My Program'}!
+              <p className={`font-bold mb-1 ${successNote.isUnsynced ? 'text-amber-200' : 'text-emerald-200'}`}>
+                {successNote.isUnsynced
+                  ? 'Saved Locally Only — Supabase Database / Bucket Migration Required'
+                  : `Study Material Published to Study Library & ${successNote.programName || 'My Program'}!`}
               </p>
-              <p className="text-emerald-300/80 mb-2">
-                "{successNote.title}" ({formatBytesReadable(successNote.fileSizeBytes)}) is now live across both sections via a single shared record.
+              <p className={`mb-2 ${successNote.isUnsynced ? 'text-amber-300/90' : 'text-emerald-300/80'}`}>
+                {successNote.isUnsynced
+                  ? lastUploadMeta?.syncWarning ||
+                    successNote.syncError ||
+                    `"${successNote.title}" is saved in this browser only until the Supabase SQL migration is applied.`
+                  : `"${successNote.title}" (${formatBytesReadable(successNote.fileSizeBytes)}) is now live across both sections via a single shared record.`}
               </p>
               {lastUploadMeta && (lastUploadMeta.deduplicated || lastUploadMeta.wasCompressed) && (
                 <p className="text-[11px] text-cyan-300 font-jetbrains mb-3">
@@ -409,13 +430,22 @@ export const UploadView: React.FC<UploadViewProps> = ({
                     : `✓ Safely compressed before upload (saved ${formatBytesReadable(lastUploadMeta.savedBytes)}).`}
                 </p>
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={onBack}
                   className="px-4 py-2 text-xs font-bold text-black bg-white hover:bg-white/90 rounded-full transition-colors cursor-pointer"
                 >
                   View in Library
                 </button>
+                {successNote.isUnsynced && (
+                  <button
+                    type="button"
+                    onClick={onOpenSupabaseModal}
+                    className="px-4 py-2 text-xs font-bold text-amber-200 bg-amber-500/20 border border-amber-400/40 rounded-full hover:bg-amber-500/30 transition-colors cursor-pointer"
+                  >
+                    Open Supabase Setup &amp; SQL Migration
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     setSuccessNote(null);

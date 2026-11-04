@@ -50,6 +50,8 @@ export interface StudyNote {
   wasCompressed?: boolean; // True if file was safely compressed prior to storage
   deduplicated?: boolean; // True if physical file was reused via SHA-256 match
   idempotencyKey?: string; // Prevents duplicate records on retry/double-submit
+  isUnsynced?: boolean; // True if record exists only in local browser cache because Supabase persistence failed
+  syncError?: string; // Exact database/storage error reason if unsynced
   updatedAt?: string;
   downloadsCount: number;
   upvotesCount: number;
@@ -496,6 +498,8 @@ export interface ForumPost {
   acceptedCommentId?: string | null;
   status: ForumContentStatus;
   idempotencyKey?: string;
+  isUnsynced?: boolean;
+  syncError?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -517,6 +521,8 @@ export interface ForumComment {
   userVote?: 1 | -1 | 0;
   isAccepted?: boolean;
   status: ForumContentStatus;
+  isUnsynced?: boolean;
+  syncError?: string;
   createdAt: string;
   updatedAt?: string;
 }
