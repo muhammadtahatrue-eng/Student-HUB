@@ -198,12 +198,12 @@ values (
   'study-materials',
   'study-materials',
   true,
-  26214400,
+  5242880,
   array['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
 )
 on conflict (id) do update set
   public = true,
-  file_size_limit = 26214400,
+  file_size_limit = 5242880,
   allowed_mime_types = array['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -416,7 +416,7 @@ create table if not exists public.university_discussions (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
-create table if not exists public.discussion_comments (
+create table if not exists public.university_discussion_comments (
   id text primary key,
   post_id text not null references public.university_discussions(id) on delete cascade,
   author_id uuid references auth.users(id) on delete set null,
@@ -447,7 +447,7 @@ create table if not exists public.university_doubts (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
-create table if not exists public.doubt_answers (
+create table if not exists public.university_doubt_answers (
   id text primary key,
   question_id text not null references public.university_doubts(id) on delete cascade,
   author_id uuid references auth.users(id) on delete set null,
@@ -472,9 +472,9 @@ alter table public.universities enable row level security;
 alter table public.departments enable row level security;
 alter table public.courses enable row level security;
 alter table public.university_discussions enable row level security;
-alter table public.discussion_comments enable row level security;
+alter table public.university_discussion_comments enable row level security;
 alter table public.university_doubts enable row level security;
-alter table public.doubt_answers enable row level security;
+alter table public.university_doubt_answers enable row level security;
 alter table public.university_follows enable row level security;
 
 drop policy if exists "Anyone can read universities" on public.universities;
@@ -488,23 +488,23 @@ drop policy if exists "Anyone can read courses" on public.courses;
 create policy "Anyone can read courses" on public.courses for select using (true);
 drop policy if exists "Anyone can read discussions" on public.university_discussions;
 create policy "Anyone can read discussions" on public.university_discussions for select using (true);
-drop policy if exists "Anyone can read comments" on public.discussion_comments;
-create policy "Anyone can read comments" on public.discussion_comments for select using (true);
+drop policy if exists "Anyone can read comments" on public.university_discussion_comments;
+create policy "Anyone can read comments" on public.university_discussion_comments for select using (true);
 drop policy if exists "Anyone can read doubts" on public.university_doubts;
 create policy "Anyone can read doubts" on public.university_doubts for select using (true);
-drop policy if exists "Anyone can read answers" on public.doubt_answers;
-create policy "Anyone can read answers" on public.doubt_answers for select using (true);
+drop policy if exists "Anyone can read answers" on public.university_doubt_answers;
+create policy "Anyone can read answers" on public.university_doubt_answers for select using (true);
 
 drop policy if exists "Students can post discussions" on public.university_discussions;
 create policy "Students can post discussions" on public.university_discussions for insert with check (auth.uid() = author_id and public.is_email_verified());
-drop policy if exists "Students can comment" on public.discussion_comments;
-create policy "Students can comment" on public.discussion_comments for insert with check (auth.uid() = author_id and public.is_email_verified());
+drop policy if exists "Students can comment" on public.university_discussion_comments;
+create policy "Students can comment" on public.university_discussion_comments for insert with check (auth.uid() = author_id and public.is_email_verified());
 drop policy if exists "Students can ask doubts" on public.university_doubts;
 create policy "Students can ask doubts" on public.university_doubts for insert with check (auth.uid() = author_id and public.is_email_verified());
 drop policy if exists "Question authors can update university doubts" on public.university_doubts;
 create policy "Question authors can update university doubts" on public.university_doubts for update using (auth.uid() = author_id);
-drop policy if exists "Students can post answers" on public.doubt_answers;
-create policy "Students can post answers" on public.doubt_answers for insert with check (auth.uid() = author_id and public.is_email_verified());
+drop policy if exists "Students can post answers" on public.university_doubt_answers;
+create policy "Students can post answers" on public.university_doubt_answers for insert with check (auth.uid() = author_id and public.is_email_verified());
 
 -- ==============================================================================
 -- 5. TEXT-FIRST PUBLIC FORUM SCHEMA & ROW-LEVEL SECURITY
@@ -792,18 +792,13 @@ create policy "Verified users can update own profile"
   using (auth.uid() = id and public.is_email_verified())
   with check (auth.uid() = id and public.is_email_verified());
 
--- Academic cohort info is readable by authenticated students so program/university directories reflect active enrollments,
--- while only the account owner can insert/update/delete their own academic_information row.
+-- Private academic_information is strictly restricted to the owning user (auth.uid() = user_id)
 drop policy if exists "Authenticated users can view academic cohort enrollments" on public.academic_information;
-create policy "Authenticated users can view academic cohort enrollments"
-  on public.academic_information for select
-  using (true);
-
 drop policy if exists "Verified users can read and manage own academic information" on public.academic_information;
 create policy "Verified users can read and manage own academic information"
   on public.academic_information for all
-  using (auth.uid() = user_id and public.is_email_verified())
-  with check (auth.uid() = user_id and public.is_email_verified());
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- Private settings & preferences are strictly restricted to the owner (auth.uid() = user_id)
 drop policy if exists "Verified users can read and manage own settings and preferences" on public.user_settings_preferences;

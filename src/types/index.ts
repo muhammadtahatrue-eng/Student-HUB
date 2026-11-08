@@ -166,6 +166,8 @@ export interface StudentUser {
   fieldOfStudy?: string;
   bio?: string;
   avatarUrl?: string;
+  isModerator?: boolean;
+  moderatorRole?: 'moderator' | 'admin' | null;
   isGuest?: boolean;
 }
 

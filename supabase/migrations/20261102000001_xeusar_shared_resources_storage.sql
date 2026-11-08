@@ -114,17 +114,23 @@ create policy "study_notes_select_public"
 drop policy if exists "study_notes_insert_public" on public.study_notes;
 create policy "study_notes_insert_public"
   on public.study_notes for insert
-  with check (file_size_bytes <= 5242880);
+  with check (
+    auth.role() = 'authenticated'
+    and uploader_id is not null
+    and auth.uid() = uploader_id
+    and file_size_bytes <= 5242880
+  );
 
 drop policy if exists "study_notes_update_owner" on public.study_notes;
 create policy "study_notes_update_owner"
   on public.study_notes for update
-  using (uploader_id is null or auth.uid() = uploader_id);
+  using (uploader_id is not null and auth.uid() = uploader_id)
+  with check (uploader_id is not null and auth.uid() = uploader_id);
 
 drop policy if exists "study_notes_delete_owner" on public.study_notes;
 create policy "study_notes_delete_owner"
   on public.study_notes for delete
-  using (uploader_id is null or auth.uid() = uploader_id);
+  using (uploader_id is not null and auth.uid() = uploader_id);
 
 drop policy if exists "stored_files_select_public" on public.stored_files;
 create policy "stored_files_select_public"

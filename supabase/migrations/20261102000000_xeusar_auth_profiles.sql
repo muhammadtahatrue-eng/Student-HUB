@@ -139,12 +139,13 @@ create policy "Users can delete their own profile"
   on public.profiles for delete
   using (auth.uid() = id);
 
--- Academic Information RLS Policies (Cohort major/institution is viewable for directory counts; only owners can write)
-drop policy if exists "Users can view their own academic information" on public.academic_information;
+-- Academic Information RLS Policies (Strictly private to the owning user; public cohort counts use get_public_cohort_counts RPC)
 drop policy if exists "Authenticated users can view academic cohort enrollments" on public.academic_information;
-create policy "Authenticated users can view academic cohort enrollments"
+drop policy if exists "Public academic cohort info is viewable by everyone" on public.academic_information;
+drop policy if exists "Users can view their own academic information" on public.academic_information;
+create policy "Users can view their own academic information"
   on public.academic_information for select
-  using (true);
+  using (auth.uid() = user_id);
 
 drop policy if exists "Users can insert their own academic information" on public.academic_information;
 create policy "Users can insert their own academic information"
@@ -273,34 +274,33 @@ begin
     values (new.id)
     on conflict (user_id) do nothing;
   exception when others then
-    -- Never block auth.users signup if profile table schema differs
-    null;
+    -- Log warning without blocking auth.users signup
+    raise warning 'handle_new_xeusar_user failed for user % (SQLSTATE %): %', new.id, SQLSTATE, SQLERRM;
   end;
 
   return new;
 end;
 $$;
 
--- Drop any legacy starter trigger that might fail on missing columns
-drop trigger if exists on_auth_user_created on auth.users;
+-- Only manage Xeusar's own trigger; never drop unrelated triggers on auth.users
 drop trigger if exists on_auth_user_created_xeusar on auth.users;
 create trigger on_auth_user_created_xeusar
   after insert on auth.users
   for each row execute function public.handle_new_xeusar_user();
 
--- 8. SUPABASE STORAGE BUCKET & RLS POLICIES FOR PROFILE PICTURES
+-- 8. SUPABASE STORAGE BUCKET & RLS POLICIES FOR PROFILE PICTURES (5 MB limit, no SVG)
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'avatars',
   'avatars',
   true,
   5242880, -- 5 MB limit
-  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 )
 on conflict (id) do update set
   public = true,
   file_size_limit = 5242880,
-  allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
+  allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 drop policy if exists "Avatar images are publicly accessible" on storage.objects;
 create policy "Avatar images are publicly accessible"

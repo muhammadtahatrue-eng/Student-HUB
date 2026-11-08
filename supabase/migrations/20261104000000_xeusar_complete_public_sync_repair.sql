@@ -1,549 +1,574 @@
--- ==============================================================================
--- XEUSAR PLATFORM — COMPLETE IDEMPOTENT PRODUCTION MIGRATION & PUBLIC SYNC REPAIR
--- File: supabase/migrations/20261104000000_xeusar_complete_public_sync_repair.sql
+-- ============================================================================
+-- XEUSAR — COMPLETE PUBLIC DATA SYNCHRONIZATION, SECURITY & SCHEMA RECONCILIATION
+-- Migration: 20261104000000_xeusar_complete_public_sync_repair.sql
 --
--- Purpose:
---   1. Creates and reconciles all canonical tables, columns, constraints, indexes,
---      triggers, and RPC functions for:
---        - User Profiles, Academic Information & Private Preferences
---        - Study Library & Shared Study Materials (study_notes, note_upvotes, stored_files)
---        - Public Forum (forum_topics, forum_posts, forum_comments, forum_votes, forum_bookmarks, forum_reports)
---        - Academic Programs & Cohort Community (academic_programs, program_discussions, program_discussion_comments, program_doubts, program_doubt_answers)
---        - University Directory & Campus Community (universities, departments, courses, university_discussions, university_discussion_comments, discussion_comments, university_doubts, university_doubt_answers, doubt_answers, university_follows)
---   2. Configures Row-Level Security (RLS) policies so shared/public educational content
---      is genuinely visible across all users, accounts, browsers, and devices while
---      keeping private user data (preferences, bookmarks, unverified drafts) protected
---      and restricting edits/deletions to the content owner or moderator.
---   3. Provisions and secures the 'study-materials' and 'avatars' Storage buckets.
---   4. Cleans any legacy <!--XEUSAR_PUBLIC_SYNC:...--> payloads out of public.profiles.full_name.
---   5. Reloads the PostgREST schema cache and runs verification queries.
---
--- Safe to run multiple times (100% idempotent).
--- ==============================================================================
+-- What this migration does:
+-- 1. Reconciles every table and column queried by the Xeusar frontend
+--    (profileService, resourceService, pdfViewerService, forumService,
+--    programStore, universityStore, supabaseClient) with idempotent
+--    CREATE TABLE IF NOT EXISTS and ALTER TABLE ... ADD COLUMN IF NOT EXISTS.
+-- 2. Safely converts legacy UUID columns to TEXT on hybrid-ID tables without
+--    dropping data, and backfills legacy votes/comments/notes/counters.
+-- 3. Dynamically drops all legacy/conflicting RLS policies on canonical tables
+--    via pg_policies before recreating least-privilege RLS policies.
+-- 4. Protects user emails by restricting direct SELECT on public.profiles to
+--    the profile owner or moderators, while exposing public.public_student_profiles
+--    for safe public profile lookups.
+-- 5. Prevents self-moderation and privilege escalation by locking moderator_roles
+--    to platform admins and adding BEFORE UPDATE triggers that protect counters,
+--    ownership, pin/lock flags, and answer bodies.
+-- 6. Replaces untrusted counter RPCs with user-bound vote persistence in
+--    public.community_item_votes and visibility-validated increment_downloads.
+-- ============================================================================
 
-create extension if not exists "pgcrypto";
+begin;
 
--- ==============================================================================
--- 0. HELPER FUNCTIONS & TRIGGERS
--- ==============================================================================
+create extension if not exists pgcrypto;
 
-create or replace function public.set_current_timestamp_updated_at()
+-- ============================================================================
+-- 0. SHARED UPDATED_AT TRIGGER FUNCTION
+-- ============================================================================
+
+create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+security definer
+set search_path = public
 as $$
 begin
-  new.updated_at = timezone('utc'::text, now());
+  new.updated_at = now();
   return new;
 end;
 $$;
 
-create or replace function public.is_email_verified()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public, auth
-as $$
-  select coalesce(
-    (auth.jwt() ->> 'email_confirmed_at') is not null,
-    exists (
-      select 1 from auth.users
-      where id = auth.uid() and email_confirmed_at is not null
-    ),
-    false
-  );
-$$;
+-- ============================================================================
+-- 1. MODERATOR ROLES & AUTHORIZATION HELPERS (NO SELF-ASSIGNMENT)
+-- ============================================================================
 
-create or replace function public.is_forum_moderator()
+create table if not exists public.moderator_roles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null default 'moderator' check (role in ('moderator', 'admin')),
+  granted_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.moderator_roles enable row level security;
+
+-- Only server-controlled app_metadata or an existing admin row in moderator_roles
+-- can grant platform admin privileges. Never trust raw_user_meta_data.
+create or replace function public.is_platform_admin()
 returns boolean
 language sql
 stable
 security definer
-set search_path = public, auth
+set search_path = public
 as $$
-  select exists (
-    select 1 from auth.users u
-    left join public.profiles p on p.id = u.id
-    where u.id = auth.uid()
-      and (
-        lower(coalesce(u.email, '')) = 'muhammadtahatrue@gmail.com'
-        or lower(coalesce(u.email, '')) like '%@xeusar.edu'
-        or lower(coalesce(p.username, '')) in ('admin', 'moderator', 'muhammadtahatrue')
+  select
+    auth.uid() is not null
+    and (
+      exists (
+        select 1
+        from public.moderator_roles mr
+        where mr.user_id = auth.uid()
+          and mr.role = 'admin'
       )
-  );
+      or coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') in ('admin', 'super_admin')
+    );
 $$;
 
-grant execute on function public.is_email_verified() to anon, authenticated;
-grant execute on function public.is_forum_moderator() to anon, authenticated;
+create or replace function public.is_moderator()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    auth.uid() is not null
+    and (
+      exists (
+        select 1
+        from public.moderator_roles mr
+        where mr.user_id = auth.uid()
+          and mr.role in ('moderator', 'admin')
+      )
+      or coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') in ('moderator', 'admin', 'super_admin')
+    );
+$$;
 
--- ==============================================================================
--- 1. PROFILES, ACADEMIC INFORMATION & PRIVATE SETTINGS
--- ==============================================================================
+-- ============================================================================
+-- 2. PROFILES, ACADEMIC INFORMATION & USER SETTINGS (PRIVATE vs PUBLIC)
+-- ============================================================================
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  username text not null,
-  display_name text not null,
-  full_name text,
-  avatar_url text,
-  bio text,
-  setup_completed boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  updated_at timestamptz not null default timezone('utc'::text, now())
+  email text,
+  full_name text not null default 'Student Scholar',
+  username text unique,
+  avatar_url text default '',
+  bio text default '',
+  role text not null default 'student' check (role in ('student', 'verified_contributor', 'moderator', 'admin')),
+  points integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
+alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists full_name text not null default 'Student Scholar';
 alter table public.profiles add column if not exists username text;
-alter table public.profiles add column if not exists display_name text;
-alter table public.profiles add column if not exists full_name text;
-alter table public.profiles add column if not exists avatar_url text;
-alter table public.profiles add column if not exists bio text;
-alter table public.profiles add column if not exists setup_completed boolean not null default false;
-alter table public.profiles add column if not exists created_at timestamptz not null default timezone('utc'::text, now());
-alter table public.profiles add column if not exists updated_at timestamptz not null default timezone('utc'::text, now());
-
--- Strip any legacy <!--XEUSAR_PUBLIC_SYNC:...--> comment payload from full_name and display_name
-update public.profiles
-set full_name = trim(regexp_replace(coalesce(full_name, ''), '<!--XEUSAR_PUBLIC_SYNC:[\s\S]*?-->', '', 'g'))
-where full_name like '%<!--XEUSAR_PUBLIC_SYNC:%';
-
-update public.profiles
-set display_name = trim(regexp_replace(coalesce(display_name, ''), '<!--XEUSAR_PUBLIC_SYNC:[\s\S]*?-->', '', 'g'))
-where display_name like '%<!--XEUSAR_PUBLIC_SYNC:%';
-
-update public.profiles
-set display_name = coalesce(nullif(trim(display_name), ''), nullif(trim(full_name), ''), 'Student')
-where display_name is null or trim(display_name) = '';
-
-update public.profiles
-set full_name = display_name
-where full_name is null or trim(full_name) = '';
-
-update public.profiles
-set username = 'user_' || substr(replace(id::text, '-', ''), 1, 8)
-where username is null or trim(username) = '';
-
-alter table public.profiles drop constraint if exists profiles_username_length;
-alter table public.profiles add constraint profiles_username_length
-  check (char_length(trim(username)) >= 3 and char_length(trim(username)) <= 30);
-
-alter table public.profiles drop constraint if exists profiles_username_format;
-alter table public.profiles add constraint profiles_username_format
-  check (username ~ '^[a-zA-Z0-9_.-]+$');
-
-alter table public.profiles drop constraint if exists profiles_display_name_not_empty;
-alter table public.profiles add constraint profiles_display_name_not_empty
-  check (char_length(trim(display_name)) >= 1);
+alter table public.profiles add column if not exists avatar_url text default '';
+alter table public.profiles add column if not exists bio text default '';
+alter table public.profiles add column if not exists role text not null default 'student';
+alter table public.profiles add column if not exists points integer not null default 0;
+alter table public.profiles add column if not exists created_at timestamptz not null default now();
+alter table public.profiles add column if not exists updated_at timestamptz not null default now();
 
 create unique index if not exists idx_profiles_username_lower
-  on public.profiles (lower(username));
+  on public.profiles (lower(username))
+  where username is not null;
+
+-- Prevent non-moderators from escalating role, points, email, or id on profiles
+create or replace function public.protect_profile_privileged_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+    new.id := old.id;
+    new.email := old.email;
+    new.points := old.points;
+    new.created_at := old.created_at;
+    if new.role is distinct from old.role then
+      raise exception 'Role changes require moderator authorization.';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_protect_profile_role on public.profiles;
+drop trigger if exists trg_protect_profile_privileged_columns on public.profiles;
+create trigger trg_protect_profile_privileged_columns
+before update on public.profiles
+for each row execute function public.protect_profile_privileged_columns();
+
+drop trigger if exists set_profiles_updated_at on public.profiles;
+create trigger set_profiles_updated_at
+before update on public.profiles
+for each row execute function public.set_updated_at();
+
+-- Safe public view that NEVER exposes profiles.email.
+-- Uses security_invoker = false (definer privileges) so anon & authenticated users
+-- can read public student profiles while direct SELECT on public.profiles is restricted.
+create or replace view public.public_student_profiles
+with (security_invoker = false)
+as
+select
+  id,
+  full_name,
+  username,
+  avatar_url,
+  bio,
+  role,
+  points,
+  created_at,
+  updated_at
+from public.profiles;
+
+grant select on public.public_student_profiles to anon, authenticated;
 
 create table if not exists public.academic_information (
-  user_id uuid primary key references public.profiles(id) on delete cascade,
-  education_level text check (
-    education_level is null or education_level in ('undergraduate', 'bachelors', 'masters', 'phd')
-  ),
-  academic_stage text check (
-    academic_stage is null or academic_stage in ('high_school', 'college')
-  ),
-  major text,
-  institution_name text,
-  academic_year text,
-  semester text,
-  updated_at timestamptz not null default timezone('utc'::text, now())
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  institution_name text default '',
+  university_id text default '',
+  degree_program text default '',
+  program_id text default '',
+  major text default '',
+  current_semester text default '',
+  academic_year text default '',
+  student_id_number text default '',
+  graduation_year integer,
+  updated_at timestamptz not null default now()
 );
 
-create index if not exists idx_academic_information_institution
-  on public.academic_information (institution_name);
-create index if not exists idx_academic_information_major
-  on public.academic_information (major);
+alter table public.academic_information add column if not exists institution_name text default '';
+alter table public.academic_information add column if not exists university_id text default '';
+alter table public.academic_information add column if not exists degree_program text default '';
+alter table public.academic_information add column if not exists program_id text default '';
+alter table public.academic_information add column if not exists major text default '';
+alter table public.academic_information add column if not exists current_semester text default '';
+alter table public.academic_information add column if not exists academic_year text default '';
+alter table public.academic_information add column if not exists student_id_number text default '';
+alter table public.academic_information add column if not exists graduation_year integer;
+alter table public.academic_information add column if not exists updated_at timestamptz not null default now();
+
+drop trigger if exists set_academic_information_updated_at on public.academic_information;
+create trigger set_academic_information_updated_at
+before update on public.academic_information
+for each row execute function public.set_updated_at();
 
 create table if not exists public.user_settings_preferences (
-  user_id uuid primary key references public.profiles(id) on delete cascade,
-  account_settings jsonb not null default '{}'::jsonb,
-  privacy_settings jsonb not null default '{"public_badge_enabled": true, "show_uni_on_notes": true}'::jsonb,
-  notification_settings jsonb not null default '{}'::jsonb,
-  appearance_settings jsonb not null default '{"flare_locked": true, "ray_color": "#9ca3af", "ray_origin": "top-center", "ray_brightness": 0.5}'::jsonb,
-  preferred_subjects text[] not null default array[]::text[],
-  study_preferences jsonb not null default '{"study_style": "", "session_length": "", "collaboration_mode": ""}'::jsonb,
-  preferred_language text not null default 'en',
-  theme_preference text not null default 'dark',
-  content_discovery_preferences jsonb not null default '{"prioritize_verified_notes": true, "prioritize_my_institution": true, "include_past_exams": true}'::jsonb,
-  updated_at timestamptz not null default timezone('utc'::text, now())
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email_notifications boolean not null default true,
+  forum_Notifications boolean not null default true,
+  resource_alerts boolean not null default true,
+  public_profile boolean not null default true,
+  show_academic_info boolean not null default true,
+  theme text not null default 'dark',
+  updated_at timestamptz not null default now()
 );
 
-drop trigger if exists trg_profiles_updated_at on public.profiles;
-create trigger trg_profiles_updated_at
-  before update on public.profiles
-  for each row execute function public.set_current_timestamp_updated_at();
+alter table public.user_settings_preferences add column if not exists email_notifications boolean not null default true;
+alter table public.user_settings_preferences add column if not exists forum_notifications boolean not null default true;
+alter table public.user_settings_preferences add column if not exists resource_alerts boolean not null default true;
+alter table public.user_settings_preferences add column if not exists public_profile boolean not null default true;
+alter table public.user_settings_preferences add column if not exists show_academic_info boolean not null default true;
+alter table public.user_settings_preferences add column if not exists theme text not null default 'dark';
+alter table public.user_settings_preferences add column if not exists updated_at timestamptz not null default now();
 
-drop trigger if exists trg_academic_information_updated_at on public.academic_information;
-create trigger trg_academic_information_updated_at
-  before update on public.academic_information
-  for each row execute function public.set_current_timestamp_updated_at();
+drop trigger if exists set_user_settings_preferences_updated_at on public.user_settings_preferences;
+create trigger set_user_settings_preferences_updated_at
+before update on public.user_settings_preferences
+for each row execute function public.set_updated_at();
 
-drop trigger if exists trg_user_settings_preferences_updated_at on public.user_settings_preferences;
-create trigger trg_user_settings_preferences_updated_at
-  before update on public.user_settings_preferences
-  for each row execute function public.set_current_timestamp_updated_at();
-
-alter table public.profiles enable row level security;
-alter table public.academic_information enable row level security;
-alter table public.user_settings_preferences enable row level security;
-
--- Public profile metadata (username, display_name, avatar_url, bio) is readable by everyone
--- so author attribution works across users, while only the account owner can write their profile.
-drop policy if exists "Users can view their own profile" on public.profiles;
-drop policy if exists "Anyone can view public student profiles" on public.profiles;
-drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
-create policy "Public profiles are viewable by everyone"
-  on public.profiles for select
-  using (true);
-
-drop policy if exists "Users can insert their own profile" on public.profiles;
-drop policy if exists "Verified users can insert own profile" on public.profiles;
-create policy "Users can insert their own profile"
-  on public.profiles for insert
-  to authenticated
-  with check (auth.uid() = id);
-
-drop policy if exists "Users can update their own profile" on public.profiles;
-drop policy if exists "Verified users can update own profile" on public.profiles;
-create policy "Users can update their own profile"
-  on public.profiles for update
-  to authenticated
-  using (auth.uid() = id)
-  with check (auth.uid() = id);
-
-drop policy if exists "Users can delete their own profile" on public.profiles;
-create policy "Users can delete their own profile"
-  on public.profiles for delete
-  to authenticated
-  using (auth.uid() = id);
-
--- Academic cohort info (major & institution) is readable so program/university directories reflect real student counts,
--- while only the user can insert/update/delete their own academic_information record.
-drop policy if exists "Users can view their own academic information" on public.academic_information;
-drop policy if exists "Authenticated users can view academic cohort enrollments" on public.academic_information;
-create policy "Authenticated users can view academic cohort enrollments"
-  on public.academic_information for select
-  using (true);
-
-drop policy if exists "Users can insert their own academic information" on public.academic_information;
-create policy "Users can insert their own academic information"
-  on public.academic_information for insert
-  to authenticated
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Users can update their own academic information" on public.academic_information;
-create policy "Users can update their own academic information"
-  on public.academic_information for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Users can delete their own academic information" on public.academic_information;
-drop policy if exists "Verified users can read and manage own academic information" on public.academic_information;
-create policy "Users can delete their own academic information"
-  on public.academic_information for delete
-  to authenticated
-  using (auth.uid() = user_id);
-
--- Private user settings & preferences are strictly owner-only (auth.uid() = user_id)
-drop policy if exists "Users can view their own settings and preferences" on public.user_settings_preferences;
-drop policy if exists "Verified users can read and manage own settings and preferences" on public.user_settings_preferences;
-create policy "Users can view their own settings and preferences"
-  on public.user_settings_preferences for select
-  to authenticated
-  using (auth.uid() = user_id);
-
-drop policy if exists "Users can insert their own settings and preferences" on public.user_settings_preferences;
-create policy "Users can insert their own settings and preferences"
-  on public.user_settings_preferences for insert
-  to authenticated
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Users can update their own settings and preferences" on public.user_settings_preferences;
-create policy "Users can update their own settings and preferences"
-  on public.user_settings_preferences for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Users can delete their own settings and preferences" on public.user_settings_preferences;
-create policy "Users can delete their own settings and preferences"
-  on public.user_settings_preferences for delete
-  to authenticated
-  using (auth.uid() = user_id);
-
--- Case-insensitive username check RPC
-create or replace function public.check_username_available(
-  candidate_username text,
-  current_user_id uuid default null
-)
-returns boolean
+-- Automatic profile & preferences bootstrap on Auth signup
+create or replace function public.handle_new_user()
+returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  normalized text;
-  exists_count integer;
+  v_username text;
+  v_full_name text;
 begin
-  normalized := lower(trim(coalesce(candidate_username, '')));
-  if char_length(normalized) < 3 or char_length(normalized) > 30 then
-    return false;
+  v_full_name := coalesce(
+    nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),
+    nullif(trim(new.raw_user_meta_data ->> 'name'), ''),
+    split_part(coalesce(new.email, 'scholar@xeusar.edu'), '@', 1)
+  );
+  v_username := lower(regexp_replace(
+    coalesce(
+      nullif(trim(new.raw_user_meta_data ->> 'username'), ''),
+      split_part(coalesce(new.email, 'scholar'), '@', 1)
+    ),
+    '[^a-z0-9_]', '_', 'g'
+  ));
+  if length(v_username) < 3 then
+    v_username := 'student_' || substr(replace(new.id::text, '-', ''), 1, 6);
   end if;
 
-  select count(*)
-    into exists_count
-    from public.profiles p
-   where lower(p.username) = normalized
-     and (current_user_id is null or p.id <> current_user_id);
+  insert into public.profiles (id, email, full_name, username, avatar_url, role)
+  values (
+    new.id,
+    new.email,
+    v_full_name,
+    v_username || '_' || substr(replace(new.id::text, '-', ''), 1, 4),
+    coalesce(new.raw_user_meta_data ->> 'avatar_url', ''),
+    'student'
+  )
+  on conflict (id) do update
+  set email = excluded.email,
+      full_name = coalesce(nullif(public.profiles.full_name, ''), excluded.full_name),
+      updated_at = now();
 
-  return exists_count = 0;
-end;
-$$;
+  insert into public.academic_information (
+    user_id,
+    institution_name,
+    degree_program,
+    major,
+    current_semester,
+    academic_year
+  )
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'institution_name', new.raw_user_meta_data ->> 'university', ''),
+    coalesce(new.raw_user_meta_data ->> 'degree_program', new.raw_user_meta_data ->> 'degree_tier', ''),
+    coalesce(new.raw_user_meta_data ->> 'major', new.raw_user_meta_data ->> 'program', ''),
+    coalesce(new.raw_user_meta_data ->> 'current_semester', ''),
+    coalesce(new.raw_user_meta_data ->> 'academic_year', '')
+  )
+  on conflict (user_id) do nothing;
 
-grant execute on function public.check_username_available(text, uuid) to anon, authenticated;
+  insert into public.user_settings_preferences (user_id)
+  values (new.id)
+  on conflict (user_id) do nothing;
 
--- ==============================================================================
--- 2. STUDY LIBRARY & SHARED ACADEMIC RESOURCES
---    (stored_files, study_notes, note_upvotes, study_note_upvotes)
--- ==============================================================================
-
-create table if not exists public.stored_files (
-  content_hash text primary key,
-  storage_path text not null,
-  file_url text not null,
-  mime_type text not null default 'application/pdf',
-  size_bytes bigint not null default 0 check (size_bytes >= 0 and size_bytes <= 26214400),
-  created_by uuid references auth.users(id) on delete set null,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-alter table public.stored_files add column if not exists created_by uuid references auth.users(id) on delete set null;
-
-create table if not exists public.study_notes (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  description text not null default '',
-  course_code text not null,
-  course_name text not null default '',
-  course_id text,
-  subject text not null default 'Computer Science',
-  material_type text not null default 'lecture_notes' check (
-    material_type in ('lecture_notes', 'past_exam', 'cheat_sheet', 'lab_manual', 'summary', 'assignment', 'other')
-  ),
-  academic_year integer not null default extract(year from current_date),
-  semester text not null default 'Fall Semester',
-  semester_number integer not null default 1,
-  professor text not null default 'Course Instructor',
-  file_url text not null,
-  file_name text not null,
-  file_size_bytes bigint not null default 0 check (file_size_bytes >= 0 and file_size_bytes <= 26214400),
-  page_count integer not null default 1,
-  uploader_id uuid references auth.users(id) on delete set null,
-  user_id uuid references auth.users(id) on delete set null,
-  uploader_name text not null default 'Anonymous Student',
-  uploader_university text not null default 'Open Campus',
-  university_id text,
-  program_id text default 'bs-cs',
-  program_ids text[] not null default array['bs-cs']::text[],
-  program_name text default 'BS Computer Science',
-  degree_tier text default 'Undergraduate',
-  content_hash text,
-  storage_path text,
-  downloads_count integer not null default 0,
-  upvotes_count integer not null default 0,
-  is_restricted boolean not null default false,
-  status text not null default 'published' check (status in ('published', 'draft', 'removed')),
-  tags text[] not null default array[]::text[],
-  pages jsonb not null default '[]'::jsonb,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  updated_at timestamptz not null default timezone('utc'::text, now())
-);
-
--- Ensure all columns exist if study_notes was created by an earlier migration
-alter table public.study_notes add column if not exists description text not null default '';
-alter table public.study_notes add column if not exists course_name text not null default '';
-alter table public.study_notes add column if not exists course_id text;
-alter table public.study_notes add column if not exists semester text not null default 'Fall Semester';
-alter table public.study_notes add column if not exists semester_number integer not null default 1;
-alter table public.study_notes add column if not exists professor text not null default 'Course Instructor';
-alter table public.study_notes add column if not exists uploader_id uuid references auth.users(id) on delete set null;
-alter table public.study_notes add column if not exists user_id uuid references auth.users(id) on delete set null;
-alter table public.study_notes add column if not exists uploader_name text not null default 'Anonymous Student';
-alter table public.study_notes add column if not exists uploader_university text not null default 'Open Campus';
-alter table public.study_notes add column if not exists university_id text;
-alter table public.study_notes add column if not exists program_id text default 'bs-cs';
-alter table public.study_notes add column if not exists program_ids text[] not null default array['bs-cs']::text[];
-alter table public.study_notes add column if not exists program_name text default 'BS Computer Science';
-alter table public.study_notes add column if not exists degree_tier text default 'Undergraduate';
-alter table public.study_notes add column if not exists content_hash text;
-alter table public.study_notes add column if not exists storage_path text;
-alter table public.study_notes add column if not exists downloads_count integer not null default 0;
-alter table public.study_notes add column if not exists upvotes_count integer not null default 0;
-alter table public.study_notes add column if not exists is_restricted boolean not null default false;
-alter table public.study_notes add column if not exists status text not null default 'published';
-alter table public.study_notes add column if not exists tags text[] not null default array[]::text[];
-alter table public.study_notes add column if not exists pages jsonb not null default '[]'::jsonb;
-alter table public.study_notes add column if not exists created_at timestamptz not null default timezone('utc'::text, now());
-alter table public.study_notes add column if not exists updated_at timestamptz not null default timezone('utc'::text, now());
-
--- Keep uploader_id and user_id synchronized automatically
-create or replace function public.sync_study_notes_owner_columns()
-returns trigger
-language plpgsql
-as $$
-begin
-  if new.uploader_id is null and new.user_id is not null then
-    new.uploader_id := new.user_id;
-  elsif new.user_id is null and new.uploader_id is not null then
-    new.user_id := new.uploader_id;
-  elsif new.uploader_id is null and new.user_id is null and auth.uid() is not null then
-    new.uploader_id := auth.uid();
-    new.user_id := auth.uid();
-  end if;
-  new.updated_at := timezone('utc'::text, now());
   return new;
 end;
 $$;
 
-drop trigger if exists trg_sync_study_notes_owner on public.study_notes;
-create trigger trg_sync_study_notes_owner
-  before insert or update on public.study_notes
-  for each row execute function public.sync_study_notes_owner_columns();
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+after insert on auth.users
+for each row execute function public.handle_new_user();
 
-create index if not exists idx_study_notes_course_code on public.study_notes(course_code);
-create index if not exists idx_study_notes_subject on public.study_notes(subject);
-create index if not exists idx_study_notes_program_id on public.study_notes(program_id);
-create index if not exists idx_study_notes_semester_number on public.study_notes(semester_number);
-create index if not exists idx_study_notes_material_type on public.study_notes(material_type);
-create index if not exists idx_study_notes_content_hash on public.study_notes(content_hash);
-create index if not exists idx_study_notes_uploader_id on public.study_notes(uploader_id);
-create index if not exists idx_study_notes_created_at on public.study_notes(created_at desc);
+-- ============================================================================
+-- 3. STUDY LIBRARY: STORED FILES, STUDY NOTES & UPVOTES
+-- ============================================================================
 
--- Canonical note_upvotes table + alias study_note_upvotes table
-create table if not exists public.note_upvotes (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  note_id uuid not null references public.study_notes(id) on delete cascade,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, note_id)
+create table if not exists public.stored_files (
+  id uuid primary key default gen_random_uuid(),
+  sha256_hash text not null unique,
+  storage_bucket text not null default 'study-materials',
+  storage_path text not null,
+  original_filename text not null default '',
+  mime_type text not null default 'application/pdf',
+  size_bytes bigint not null default 0 check (size_bytes >= 0 and size_bytes <= 5242880),
+  uploaded_by uuid references auth.users(id) on delete set null,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now()
 );
 
-create table if not exists public.study_note_upvotes (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  note_id uuid not null references public.study_notes(id) on delete cascade,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, note_id)
-);
+alter table public.stored_files add column if not exists sha256_hash text;
+alter table public.stored_files add column if not exists storage_bucket text not null default 'study-materials';
+alter table public.stored_files add column if not exists storage_path text not null default '';
+alter table public.stored_files add column if not exists original_filename text not null default '';
+alter table public.stored_files add column if not exists mime_type text not null default 'application/pdf';
+alter table public.stored_files add column if not exists size_bytes bigint not null default 0;
+alter table public.stored_files add column if not exists uploaded_by uuid references auth.users(id) on delete set null;
+alter table public.stored_files add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.stored_files add column if not exists created_at timestamptz not null default now();
 
-alter table public.stored_files enable row level security;
-alter table public.study_notes enable row level security;
-alter table public.note_upvotes enable row level security;
-alter table public.study_note_upvotes enable row level security;
-
--- Stored files policies
-drop policy if exists "stored_files_select_public" on public.stored_files;
-drop policy if exists "Anyone can read stored files" on public.stored_files;
-create policy "Anyone can read stored files"
-  on public.stored_files for select
-  using (true);
-
-drop policy if exists "stored_files_insert_public" on public.stored_files;
-drop policy if exists "Verified users can register stored files" on public.stored_files;
-create policy "Authenticated users can register stored files"
-  on public.stored_files for insert
-  to authenticated
-  with check (size_bytes <= 26214400);
-
-drop policy if exists "Owners can delete stored files" on public.stored_files;
-create policy "Owners can delete stored files"
-  on public.stored_files for delete
-  to authenticated
-  using (created_by is null or auth.uid() = created_by or public.is_forum_moderator());
-
--- Study notes RLS policies:
--- 1. Anyone (anonymous or authenticated) can read published study notes
-drop policy if exists "study_notes_select_public" on public.study_notes;
-drop policy if exists "Anyone can read study notes" on public.study_notes;
-create policy "Anyone can read published study notes"
-  on public.study_notes for select
-  using (status = 'published' or auth.uid() = coalesce(uploader_id, user_id) or public.is_forum_moderator());
-
--- 2. Authenticated users can insert study notes they own
-drop policy if exists "study_notes_insert_public" on public.study_notes;
-drop policy if exists "Anyone can upload study notes" on public.study_notes;
-drop policy if exists "Verified users can upload study notes" on public.study_notes;
-drop policy if exists "Authenticated users can upload study notes" on public.study_notes;
-create policy "Authenticated users can upload study notes"
-  on public.study_notes for insert
-  to authenticated
-  with check (
-    (uploader_id is null or auth.uid() = uploader_id)
-    and (user_id is null or auth.uid() = user_id)
-    and file_size_bytes <= 26214400
-  );
-
--- 3. Only the uploader or moderator can update or delete a study note
-drop policy if exists "study_notes_update_owner" on public.study_notes;
-drop policy if exists "Allow students to update upvotes and download counts" on public.study_notes;
-drop policy if exists "Only uploader can update their study notes" on public.study_notes;
-create policy "Only uploader can update their study notes"
-  on public.study_notes for update
-  to authenticated
-  using (auth.uid() = coalesce(uploader_id, user_id) or public.is_forum_moderator())
-  with check (auth.uid() = coalesce(uploader_id, user_id) or public.is_forum_moderator());
-
-drop policy if exists "study_notes_delete_owner" on public.study_notes;
-drop policy if exists "Only uploader can delete their study notes" on public.study_notes;
-create policy "Only uploader can delete their study notes"
-  on public.study_notes for delete
-  to authenticated
-  using (auth.uid() = coalesce(uploader_id, user_id) or public.is_forum_moderator());
-
--- Note upvotes RLS policies
-drop policy if exists "Anyone can read note upvotes" on public.note_upvotes;
-create policy "Anyone can read note upvotes"
-  on public.note_upvotes for select
-  using (true);
-
-drop policy if exists "Verified users manage own note upvotes" on public.note_upvotes;
-drop policy if exists "Authenticated users manage own note upvotes" on public.note_upvotes;
-create policy "Authenticated users manage own note upvotes"
-  on public.note_upvotes for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Anyone can read study note upvotes" on public.study_note_upvotes;
-create policy "Anyone can read study note upvotes"
-  on public.study_note_upvotes for select
-  using (true);
-
-drop policy if exists "Authenticated users manage own study note upvotes" on public.study_note_upvotes;
-create policy "Authenticated users manage own study note upvotes"
-  on public.study_note_upvotes for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
--- Safe RPCs & triggers for download counts and upvote counts
-create or replace function public.increment_downloads(note_id uuid)
-returns void
+create or replace function public.sync_stored_files_owner_columns()
+returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
 begin
-  update public.study_notes
-  set downloads_count = coalesce(downloads_count, 0) + 1
-  where id = note_id;
+  new.uploaded_by := coalesce(new.uploaded_by, new.created_by, auth.uid());
+  new.created_by := coalesce(new.created_by, new.uploaded_by, auth.uid());
+  return new;
 end;
 $$;
 
-grant execute on function public.increment_downloads(uuid) to anon, authenticated;
+drop trigger if exists trg_sync_stored_files_owner on public.stored_files;
+create trigger trg_sync_stored_files_owner
+before insert or update on public.stored_files
+for each row execute function public.sync_stored_files_owner_columns();
 
+-- Concurrency-safe 1 GB global storage quota + 5 MB per-file enforcement
+create or replace function public.enforce_total_storage_quota()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current_bytes bigint;
+  v_max_total_bytes constant bigint := 1073741824; -- 1 GB
+  v_max_file_bytes constant bigint := 5242880;     -- 5 MB
+begin
+  perform pg_advisory_xact_lock(hashtext('xeusar_storage_quota_lock'));
+
+  if coalesce(new.size_bytes, 0) > v_max_file_bytes then
+    raise exception 'File exceeds maximum allowed size of 5 MB (5,242,880 bytes).';
+  end if;
+
+  select coalesce(sum(size_bytes), 0)
+  into v_current_bytes
+  from public.stored_files
+  where id is distinct from new.id;
+
+  if (v_current_bytes + coalesce(new.size_bytes, 0)) > v_max_total_bytes then
+    raise exception 'Platform storage quota (1 GB) reached. Cannot store additional file.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_total_storage_quota on public.stored_files;
+create trigger trg_enforce_total_storage_quota
+before insert or update on public.stored_files
+for each row execute function public.enforce_total_storage_quota();
+
+create table if not exists public.study_notes (
+  id text primary key default gen_random_uuid()::text,
+  title text not null,
+  subject text not null default 'General',
+  course_code text default '',
+  course_name text default '',
+  course_id text default '',
+  university text default '',
+  university_id text default '',
+  program_id text default '',
+  program_ids text[] default '{}',
+  program_name text default '',
+  degree_tier text default 'Undergraduate',
+  semester text default '',
+  semester_number integer,
+  academic_year text default '',
+  professor text default '',
+  description text default '',
+  content text default '',
+  preview_text text default '',
+  tags text[] default '{}',
+  file_id uuid references public.stored_files(id) on delete set null,
+  file_url text default '',
+  file_name text default '',
+  file_type text default 'pdf',
+  file_size text default '',
+  file_size_bytes bigint default 0,
+  file_sha256 text default '',
+  storage_bucket text default 'study-materials',
+  storage_path text default '',
+  resource_type text not null default 'Lecture Notes',
+  material_type text not null default 'Lecture Notes',
+  pages integer default 1,
+  upvotes integer not null default 0,
+  upvotes_count integer not null default 0,
+  downloads integer not null default 0,
+  downloads_count integer not null default 0,
+  author_id uuid references auth.users(id) on delete set null,
+  uploader_id uuid references auth.users(id) on delete set null,
+  author_name text not null default 'Student Contributor',
+  uploader_name text not null default 'Student Contributor',
+  author_username text default '',
+  author_avatar text default '',
+  author_university text default '',
+  uploader_university text default '',
+  status text not null default 'published' check (status in ('published', 'draft', 'archived', 'removed', 'pending')),
+  is_verified boolean not null default false,
+  is_public boolean not null default true,
+  is_restricted boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Reconcile all study_notes columns used by resourceService.ts and supabaseClient.ts
+alter table public.study_notes add column if not exists subject text not null default 'General';
+alter table public.study_notes add column if not exists course_code text default '';
+alter table public.study_notes add column if not exists course_name text default '';
+alter table public.study_notes add column if not exists course_id text default '';
+alter table public.study_notes add column if not exists university text default '';
+alter table public.study_notes add column if not exists university_id text default '';
+alter table public.study_notes add column if not exists program_id text default '';
+alter table public.study_notes add column if not exists program_ids text[] default '{}';
+alter table public.study_notes add column if not exists program_name text default '';
+alter table public.study_notes add column if not exists degree_tier text default 'Undergraduate';
+alter table public.study_notes add column if not exists semester text default '';
+alter table public.study_notes add column if not exists semester_number integer;
+alter table public.study_notes add column if not exists academic_year text default '';
+alter table public.study_notes add column if not exists professor text default '';
+alter table public.study_notes add column if not exists description text default '';
+alter table public.study_notes add column if not exists content text default '';
+alter table public.study_notes add column if not exists preview_text text default '';
+alter table public.study_notes add column if not exists tags text[] default '{}';
+alter table public.study_notes add column if not exists file_id uuid references public.stored_files(id) on delete set null;
+alter table public.study_notes add column if not exists file_url text default '';
+alter table public.study_notes add column if not exists file_name text default '';
+alter table public.study_notes add column if not exists file_type text default 'pdf';
+alter table public.study_notes add column if not exists file_size text default '';
+alter table public.study_notes add column if not exists file_size_bytes bigint default 0;
+alter table public.study_notes add column if not exists file_sha256 text default '';
+alter table public.study_notes add column if not exists storage_bucket text default 'study-materials';
+alter table public.study_notes add column if not exists storage_path text default '';
+alter table public.study_notes add column if not exists resource_type text not null default 'Lecture Notes';
+alter table public.study_notes add column if not exists material_type text not null default 'Lecture Notes';
+alter table public.study_notes add column if not exists pages integer default 1;
+alter table public.study_notes add column if not exists upvotes integer not null default 0;
+alter table public.study_notes add column if not exists upvotes_count integer not null default 0;
+alter table public.study_notes add column if not exists downloads integer not null default 0;
+alter table public.study_notes add column if not exists downloads_count integer not null default 0;
+alter table public.study_notes add column if not exists author_id uuid references auth.users(id) on delete set null;
+alter table public.study_notes add column if not exists uploader_id uuid references auth.users(id) on delete set null;
+alter table public.study_notes add column if not exists author_name text not null default 'Student Contributor';
+alter table public.study_notes add column if not exists uploader_name text not null default 'Student Contributor';
+alter table public.study_notes add column if not exists author_username text default '';
+alter table public.study_notes add column if not exists author_avatar text default '';
+alter table public.study_notes add column if not exists author_university text default '';
+alter table public.study_notes add column if not exists uploader_university text default '';
+alter table public.study_notes add column if not exists status text not null default 'published';
+alter table public.study_notes add column if not exists is_verified boolean not null default false;
+alter table public.study_notes add column if not exists is_public boolean not null default true;
+alter table public.study_notes add column if not exists is_restricted boolean not null default false;
+alter table public.study_notes add column if not exists created_at timestamptz not null default now();
+alter table public.study_notes add column if not exists updated_at timestamptz not null default now();
+
+-- Backfill dual-named columns on existing study_notes rows
+update public.study_notes
+set
+  author_id = coalesce(author_id, uploader_id),
+  uploader_id = coalesce(uploader_id, author_id),
+  author_name = coalesce(nullif(author_name, 'Student Contributor'), nullif(uploader_name, ''), 'Student Contributor'),
+  uploader_name = coalesce(nullif(uploader_name, 'Student Contributor'), nullif(author_name, ''), 'Student Contributor'),
+  author_university = coalesce(nullif(author_university, ''), uploader_university, university, ''),
+  uploader_university = coalesce(nullif(uploader_university, ''), author_university, university, ''),
+  resource_type = coalesce(nullif(resource_type, ''), nullif(material_type, ''), 'Lecture Notes'),
+  material_type = coalesce(nullif(material_type, ''), nullif(resource_type, ''), 'Lecture Notes'),
+  upvotes = greatest(coalesce(upvotes, 0), coalesce(upvotes_count, 0)),
+  upvotes_count = greatest(coalesce(upvotes_count, 0), coalesce(upvotes, 0)),
+  downloads = greatest(coalesce(downloads, 0), coalesce(downloads_count, 0)),
+  downloads_count = greatest(coalesce(downloads_count, 0), coalesce(downloads, 0));
+
+create or replace function public.sync_and_protect_study_notes()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.author_id := coalesce(new.author_id, new.uploader_id, auth.uid());
+    new.uploader_id := coalesce(new.uploader_id, new.author_id, auth.uid());
+    new.author_name := coalesce(nullif(new.author_name, ''), nullif(new.uploader_name, ''), 'Student Contributor');
+    new.uploader_name := coalesce(nullif(new.uploader_name, ''), nullif(new.author_name, ''), 'Student Contributor');
+    new.author_university := coalesce(nullif(new.author_university, ''), nullif(new.uploader_university, ''), new.university, '');
+    new.uploader_university := coalesce(nullif(new.uploader_university, ''), nullif(new.author_university, ''), new.university, '');
+    new.resource_type := coalesce(nullif(new.resource_type, ''), nullif(new.material_type, ''), 'Lecture Notes');
+    new.material_type := coalesce(nullif(new.material_type, ''), nullif(new.resource_type, ''), 'Lecture Notes');
+    new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+    new.upvotes_count := new.upvotes;
+    new.downloads := greatest(coalesce(new.downloads, 0), coalesce(new.downloads_count, 0));
+    new.downloads_count := new.downloads;
+    if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+      new.is_verified := false;
+    end if;
+  elsif tg_op = 'UPDATE' then
+    if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+      new.author_id := old.author_id;
+      new.uploader_id := old.uploader_id;
+      new.upvotes := old.upvotes;
+      new.upvotes_count := old.upvotes_count;
+      new.downloads := old.downloads;
+      new.downloads_count := old.downloads_count;
+      new.is_verified := old.is_verified;
+      new.created_at := old.created_at;
+    else
+      new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+      new.upvotes_count := new.upvotes;
+      new.downloads := greatest(coalesce(new.downloads, 0), coalesce(new.downloads_count, 0));
+      new.downloads_count := new.downloads;
+    end if;
+    new.resource_type := coalesce(nullif(new.resource_type, ''), nullif(new.material_type, ''), old.resource_type);
+    new.material_type := coalesce(nullif(new.material_type, ''), nullif(new.resource_type, ''), old.material_type);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_and_protect_study_notes on public.study_notes;
+create trigger trg_sync_and_protect_study_notes
+before insert or update on public.study_notes
+for each row execute function public.sync_and_protect_study_notes();
+
+drop trigger if exists set_study_notes_updated_at on public.study_notes;
+create trigger set_study_notes_updated_at
+before update on public.study_notes
+for each row execute function public.set_updated_at();
+
+create table if not exists public.study_note_upvotes (
+  note_id text not null references public.study_notes(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (note_id, user_id)
+);
+
+-- Maintain exact study_notes upvote counts via trigger
 create or replace function public.sync_study_note_upvotes_count()
 returns trigger
 language plpgsql
@@ -551,614 +576,832 @@ security definer
 set search_path = public
 as $$
 declare
-  v_note_id uuid;
+  v_note_id text;
   v_count integer;
 begin
   v_note_id := coalesce(new.note_id, old.note_id);
-  select count(*) into v_count from (
-    select user_id from public.note_upvotes where note_id = v_note_id
-    union
-    select user_id from public.study_note_upvotes where note_id = v_note_id
-  ) combined;
+  select count(*)::integer into v_count
+  from public.study_note_upvotes
+  where note_id = v_note_id;
 
   update public.study_notes
-  set upvotes_count = coalesce(v_count, 0)
+  set upvotes = v_count,
+      upvotes_count = v_count,
+      updated_at = now()
   where id = v_note_id;
 
   return coalesce(new, old);
 end;
 $$;
 
-drop trigger if exists trg_sync_study_note_upvotes on public.note_upvotes;
-create trigger trg_sync_study_note_upvotes
-  after insert or delete on public.note_upvotes
-  for each row execute function public.sync_study_note_upvotes_count();
+drop trigger if exists trg_sync_study_note_upvotes_count on public.study_note_upvotes;
+create trigger trg_sync_study_note_upvotes_count
+after insert or delete on public.study_note_upvotes
+for each row execute function public.sync_study_note_upvotes_count();
 
-drop trigger if exists trg_sync_study_note_upvotes_alias on public.study_note_upvotes;
-create trigger trg_sync_study_note_upvotes_alias
-  after insert or delete on public.study_note_upvotes
-  for each row execute function public.sync_study_note_upvotes_count();
-
--- ==============================================================================
--- 3. PUBLIC FORUM SCHEMA & RLS POLICIES
---    (forum_topics, forum_posts, forum_comments, forum_votes,
---     forum_post_votes, forum_comment_votes, forum_bookmarks, forum_reports)
--- ==============================================================================
+-- ============================================================================
+-- 4. PUBLIC FORUM: TOPICS, POSTS, COMMENTS, VOTES, BOOKMARKS & REPORTS
+-- ============================================================================
 
 create table if not exists public.forum_topics (
   id text primary key,
   name text not null,
   slug text not null unique,
-  description text not null,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  description text default '',
+  icon text default 'MessageSquare',
+  post_count integer not null default 0,
+  created_at timestamptz not null default now()
 );
 
-insert into public.forum_topics (id, name, slug, description) values
-  ('mathematics', 'Mathematics', 'mathematics', 'Calculus, linear algebra, discrete math, proofs, and problem solving.'),
-  ('physics', 'Physics', 'physics', 'Mechanics, electromagnetism, quantum physics, thermodynamics, and derivations.'),
-  ('computer-science', 'Computer Science', 'computer-science', 'Algorithms, data structures, systems programming, AI, and software design.'),
-  ('engineering', 'Engineering', 'engineering', 'Electrical, mechanical, civil, chemical, and biomedical engineering discussions.'),
-  ('business', 'Business', 'business', 'Economics, finance, accounting, management, and case study analysis.'),
-  ('english-languages', 'English & Languages', 'english-languages', 'Academic writing, literature, linguistics, rhetoric, and research citations.'),
-  ('study-tips', 'Study Tips', 'study-tips', 'Active recall, spaced repetition, note-taking workflows, and time management.'),
-  ('university-life', 'University Life', 'university-life', 'Course registration advice, research internships, and academic milestones.'),
-  ('exam-preparation', 'Exam Preparation', 'exam-preparation', 'Midterm and final exam review strategies, past paper walkthroughs, and formulas.'),
-  ('general-discussion', 'General Discussion', 'general-discussion', 'Cross-disciplinary academic conversations and open scholarly exchange.')
-on conflict (id) do update set
-  name = excluded.name,
-  slug = excluded.slug,
-  description = excluded.description;
+insert into public.forum_topics (id, name, slug, description, icon)
+values
+  ('mathematics', 'Mathematics', 'mathematics', 'Calculus, Linear Algebra, Differential Equations, and Proofs', 'Calculator'),
+  ('physics', 'Physics', 'physics', 'Mechanics, Electromagnetism, Quantum Physics, and Labs', 'Atom'),
+  ('computer-science', 'Computer Science', 'computer-science', 'Algorithms, Data Structures, Systems, AI, and Software Engineering', 'Code'),
+  ('engineering', 'Engineering', 'engineering', 'Electrical, Mechanical, Civil, Mechatronics, and Design Projects', 'Cpu'),
+  ('business', 'Business & Economics', 'business', 'Finance, Accounting, Microeconomics, Management, and Case Studies', 'Briefcase'),
+  ('english-languages', 'English & Languages', 'english-languages', 'Academic Writing, Literature, Linguistics, and Communication', 'BookOpen'),
+  ('study-tips', 'Study Tips & Productivity', 'study-tips', 'Active Recall, Spaced Repetition, Note-Taking, and Research Workflows', 'Lightbulb'),
+  ('university-life', 'University Life', 'university-life', 'Campus Guides, Societies, Hostels, Internships, and Scholarships', 'GraduationCap'),
+  ('exam-preparation', 'Exam Preparation', 'exam-preparation', 'Midterms, Finals, Past Paper Walkthroughs, and Entry Tests', 'CheckCircle'),
+  ('general-discussion', 'General Discussion', 'general-discussion', 'Open Academic Peer Discussions and Cross-Disciplinary Threads', 'MessageSquare')
+on conflict (id) do update
+set name = excluded.name,
+    slug = excluded.slug,
+    description = excluded.description;
 
 create table if not exists public.forum_posts (
-  id uuid primary key default gen_random_uuid(),
-  title text not null check (char_length(title) between 3 and 150),
-  body text not null check (char_length(body) between 1 and 10000),
-  post_type text not null default 'Discussion' check (
-    post_type in ('Discussion', 'Question', 'Study Tip', 'Resource Link', 'Announcement')
-  ),
-  topic_id text not null references public.forum_topics(id) on delete restrict,
-  topic_name text not null default 'General Discussion',
+  id text primary key default gen_random_uuid()::text,
+  topic_id text not null default 'general-discussion' references public.forum_topics(id) on delete restrict,
+  topic_name text default 'General Discussion',
+  post_type text not null default 'Discussion',
+  title text not null,
+  body text not null,
+  tags text[] default '{}',
   author_id uuid not null references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_username text not null,
-  author_avatar text,
-  author_program text,
-  author_degree_tier text,
-  author_university text,
-  author_bio text,
-  resource_id uuid references public.study_notes(id) on delete set null,
+  author_name text not null default 'Student Scholar',
+  author_username text default '',
+  author_avatar text default '',
+  author_university text default '',
+  author_program text default '',
+  author_degree_tier text default '',
+  author_bio text default '',
+  resource_id text,
   program_course_ref jsonb,
   external_link text,
-  upvotes_count integer not null default 1,
+  upvotes integer not null default 0,
+  upvotes_count integer not null default 0,
+  downvotes integer not null default 0,
   downvotes_count integer not null default 0,
+  comment_count integer not null default 0,
   comments_count integer not null default 0,
-  accepted_comment_id uuid,
-  status text not null default 'published' check (status in ('published', 'flagged', 'removed', 'draft')),
-  idempotency_key text unique,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  updated_at timestamptz not null default timezone('utc'::text, now())
+  is_pinned boolean not null default false,
+  is_locked boolean not null default false,
+  is_answered boolean not null default false,
+  accepted_comment_id text,
+  status text not null default 'published' check (status in ('published', 'removed', 'hidden', 'flagged')),
+  idempotency_key text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-alter table public.forum_posts add column if not exists author_bio text;
-alter table public.forum_posts add column if not exists resource_id uuid references public.study_notes(id) on delete set null;
+alter table public.forum_posts add column if not exists topic_id text not null default 'general-discussion';
+alter table public.forum_posts add column if not exists topic_name text default 'General Discussion';
+alter table public.forum_posts add column if not exists post_type text not null default 'Discussion';
+alter table public.forum_posts add column if not exists tags text[] default '{}';
+alter table public.forum_posts add column if not exists author_name text not null default 'Student Scholar';
+alter table public.forum_posts add column if not exists author_username text default '';
+alter table public.forum_posts add column if not exists author_avatar text default '';
+alter table public.forum_posts add column if not exists author_university text default '';
+alter table public.forum_posts add column if not exists author_program text default '';
+alter table public.forum_posts add column if not exists author_degree_tier text default '';
+alter table public.forum_posts add column if not exists author_bio text default '';
+alter table public.forum_posts add column if not exists resource_id text;
 alter table public.forum_posts add column if not exists program_course_ref jsonb;
 alter table public.forum_posts add column if not exists external_link text;
-alter table public.forum_posts add column if not exists accepted_comment_id uuid;
+alter table public.forum_posts add column if not exists upvotes integer not null default 0;
+alter table public.forum_posts add column if not exists upvotes_count integer not null default 0;
+alter table public.forum_posts add column if not exists downvotes integer not null default 0;
+alter table public.forum_posts add column if not exists downvotes_count integer not null default 0;
+alter table public.forum_posts add column if not exists comment_count integer not null default 0;
+alter table public.forum_posts add column if not exists comments_count integer not null default 0;
+alter table public.forum_posts add column if not exists is_pinned boolean not null default false;
+alter table public.forum_posts add column if not exists is_locked boolean not null default false;
+alter table public.forum_posts add column if not exists is_answered boolean not null default false;
+alter table public.forum_posts add column if not exists accepted_comment_id text;
+alter table public.forum_posts add column if not exists status text not null default 'published';
 alter table public.forum_posts add column if not exists idempotency_key text;
+alter table public.forum_posts add column if not exists created_at timestamptz not null default now();
+alter table public.forum_posts add column if not exists updated_at timestamptz not null default now();
 
-create index if not exists idx_forum_posts_topic_id on public.forum_posts(topic_id);
-create index if not exists idx_forum_posts_post_type on public.forum_posts(post_type);
-create index if not exists idx_forum_posts_created_at on public.forum_posts(created_at desc);
-create index if not exists idx_forum_posts_author_id on public.forum_posts(author_id);
+-- Relax any legacy lowercase post_type check constraint so 'Discussion', 'Question', 'Study Resource', 'Announcement' work
+alter table public.forum_posts drop constraint if exists forum_posts_post_type_check;
 
-create table if not exists public.forum_comments (
-  id uuid primary key default gen_random_uuid(),
-  post_id uuid not null references public.forum_posts(id) on delete cascade,
-  parent_comment_id uuid references public.forum_comments(id) on delete cascade,
-  body text not null check (char_length(body) between 1 and 4000),
-  author_id uuid not null references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_username text not null,
-  author_avatar text,
-  author_program text,
-  author_degree_tier text,
-  upvotes_count integer not null default 1,
-  downvotes_count integer not null default 0,
-  is_accepted boolean not null default false,
-  status text not null default 'published' check (status in ('published', 'flagged', 'removed')),
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  updated_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create index if not exists idx_forum_comments_post_id on public.forum_comments(post_id, created_at asc);
-create index if not exists idx_forum_comments_parent_id on public.forum_comments(parent_comment_id);
-
-create table if not exists public.forum_votes (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  target_type text not null check (target_type in ('post', 'comment')),
-  target_id uuid not null,
-  vote_value smallint not null check (vote_value in (-1, 1)),
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, target_type, target_id)
-);
-
--- Compatibility vote tables if queried directly
-create table if not exists public.forum_post_votes (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  post_id uuid not null references public.forum_posts(id) on delete cascade,
-  vote_value smallint not null default 1 check (vote_value in (-1, 1)),
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, post_id)
-);
-
-create table if not exists public.forum_comment_votes (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  comment_id uuid not null references public.forum_comments(id) on delete cascade,
-  vote_value smallint not null default 1 check (vote_value in (-1, 1)),
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, comment_id)
-);
-
-create table if not exists public.forum_bookmarks (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  post_id uuid not null references public.forum_posts(id) on delete cascade,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, post_id)
-);
-
-create table if not exists public.forum_reports (
-  id uuid primary key default gen_random_uuid(),
-  target_type text not null check (target_type in ('post', 'comment')),
-  target_id uuid not null,
-  post_id uuid not null references public.forum_posts(id) on delete cascade,
-  target_snippet text not null,
-  reporter_id uuid not null references auth.users(id) on delete cascade,
-  reporter_username text not null,
-  reason text not null,
-  details text,
-  status text not null default 'pending' check (status in ('pending', 'reviewed_kept', 'reviewed_removed')),
-  reviewed_by uuid references auth.users(id) on delete set null,
-  reviewed_at timestamptz,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-alter table public.forum_topics enable row level security;
-alter table public.forum_posts enable row level security;
-alter table public.forum_comments enable row level security;
-alter table public.forum_votes enable row level security;
-alter table public.forum_post_votes enable row level security;
-alter table public.forum_comment_votes enable row level security;
-alter table public.forum_bookmarks enable row level security;
-alter table public.forum_reports enable row level security;
-
-drop policy if exists "Anyone can read forum topics" on public.forum_topics;
-create policy "Anyone can read forum topics"
-  on public.forum_topics for select
-  using (true);
-
-drop policy if exists "Authenticated users can seed forum topics" on public.forum_topics;
-create policy "Authenticated users can seed forum topics"
-  on public.forum_topics for insert
-  to authenticated
-  with check (true);
-
-drop policy if exists "Public can read published forum posts" on public.forum_posts;
-create policy "Public can read published forum posts"
-  on public.forum_posts for select
-  using (status = 'published' or auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Verified users create own forum posts" on public.forum_posts;
-drop policy if exists "Authenticated users create own forum posts" on public.forum_posts;
-create policy "Authenticated users create own forum posts"
-  on public.forum_posts for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Verified authors can update own forum posts" on public.forum_posts;
-drop policy if exists "Authors can update own forum posts" on public.forum_posts;
-create policy "Authors can update own forum posts"
-  on public.forum_posts for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator())
-  with check (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Verified authors can delete own forum posts" on public.forum_posts;
-drop policy if exists "Authors can delete own forum posts" on public.forum_posts;
-create policy "Authors can delete own forum posts"
-  on public.forum_posts for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Public can read published forum comments" on public.forum_comments;
-create policy "Public can read published forum comments"
-  on public.forum_comments for select
-  using (status = 'published' or auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Verified users create own forum comments" on public.forum_comments;
-drop policy if exists "Authenticated users create own forum comments" on public.forum_comments;
-create policy "Authenticated users create own forum comments"
-  on public.forum_comments for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Verified authors can update own forum comments" on public.forum_comments;
-drop policy if exists "Authors can update own forum comments" on public.forum_comments;
-create policy "Authors can update own forum comments"
-  on public.forum_comments for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator())
-  with check (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Verified authors can delete own forum comments" on public.forum_comments;
-drop policy if exists "Authors can delete own forum comments" on public.forum_comments;
-create policy "Authors can delete own forum comments"
-  on public.forum_comments for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read forum votes" on public.forum_votes;
-create policy "Anyone can read forum votes"
-  on public.forum_votes for select
-  using (true);
-
-drop policy if exists "Verified users manage own forum votes" on public.forum_votes;
-drop policy if exists "Authenticated users manage own forum votes" on public.forum_votes;
-create policy "Authenticated users manage own forum votes"
-  on public.forum_votes for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Anyone can read forum post votes" on public.forum_post_votes;
-create policy "Anyone can read forum post votes"
-  on public.forum_post_votes for select
-  using (true);
-
-drop policy if exists "Authenticated users manage own forum post votes" on public.forum_post_votes;
-create policy "Authenticated users manage own forum post votes"
-  on public.forum_post_votes for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Anyone can read forum comment votes" on public.forum_comment_votes;
-create policy "Anyone can read forum comment votes"
-  on public.forum_comment_votes for select
-  using (true);
-
-drop policy if exists "Authenticated users manage own forum comment votes" on public.forum_comment_votes;
-create policy "Authenticated users manage own forum comment votes"
-  on public.forum_comment_votes for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
--- Bookmarks are strictly private to the owner
-drop policy if exists "Verified users manage own forum bookmarks" on public.forum_bookmarks;
-drop policy if exists "Authenticated users manage own forum bookmarks" on public.forum_bookmarks;
-create policy "Authenticated users manage own forum bookmarks"
-  on public.forum_bookmarks for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
-drop policy if exists "Verified users submit forum reports" on public.forum_reports;
-drop policy if exists "Authenticated users submit forum reports" on public.forum_reports;
-create policy "Authenticated users submit forum reports"
-  on public.forum_reports for insert
-  to authenticated
-  with check (auth.uid() = reporter_id);
-
-drop policy if exists "Reporters and moderators can view forum reports" on public.forum_reports;
-create policy "Reporters and moderators can view forum reports"
-  on public.forum_reports for select
-  to authenticated
-  using (auth.uid() = reporter_id or public.is_forum_moderator());
-
-drop policy if exists "Moderators can update forum reports" on public.forum_reports;
-create policy "Moderators can update forum reports"
-  on public.forum_reports for update
-  to authenticated
-  using (public.is_forum_moderator())
-  with check (public.is_forum_moderator());
-
--- Forum triggers for comment counts, vote totals, and accepted answers
-create or replace function public.sync_forum_post_comments_count()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_post_id uuid;
-begin
-  v_post_id := coalesce(new.post_id, old.post_id);
-  update public.forum_posts
-  set comments_count = (
-    select count(*) from public.forum_comments
-    where post_id = v_post_id and status = 'published'
-  )
-  where id = v_post_id;
-  return coalesce(new, old);
-end;
-$$;
-
-drop trigger if exists trg_sync_forum_post_comments_count on public.forum_comments;
-create trigger trg_sync_forum_post_comments_count
-  after insert or update or delete on public.forum_comments
-  for each row execute function public.sync_forum_post_comments_count();
-
-create or replace function public.sync_forum_vote_totals()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_type text;
-  v_id uuid;
-  v_up integer;
-  v_down integer;
-begin
-  v_type := coalesce(new.target_type, old.target_type);
-  v_id := coalesce(new.target_id, old.target_id);
-
-  select
-    count(*) filter (where vote_value = 1),
-    count(*) filter (where vote_value = -1)
-  into v_up, v_down
-  from public.forum_votes
-  where target_type = v_type and target_id = v_id;
-
-  if v_type = 'post' then
-    update public.forum_posts
-    set upvotes_count = coalesce(v_up, 0), downvotes_count = coalesce(v_down, 0)
-    where id = v_id;
-  elsif v_type = 'comment' then
-    update public.forum_comments
-    set upvotes_count = coalesce(v_up, 0), downvotes_count = coalesce(v_down, 0)
-    where id = v_id;
-  end if;
-
-  return coalesce(new, old);
-end;
-$$;
-
-drop trigger if exists trg_sync_forum_vote_totals on public.forum_votes;
-create trigger trg_sync_forum_vote_totals
-  after insert or update or delete on public.forum_votes
-  for each row execute function public.sync_forum_vote_totals();
-
-create or replace function public.sync_forum_accepted_comment_flag()
+create or replace function public.sync_and_protect_forum_posts()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
 begin
-  if new.accepted_comment_id is distinct from old.accepted_comment_id then
-    update public.forum_comments
-    set is_accepted = (id = new.accepted_comment_id)
-    where post_id = new.id;
+  if tg_op = 'INSERT' then
+    new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+    new.upvotes_count := new.upvotes;
+    new.downvotes := greatest(coalesce(new.downvotes, 0), coalesce(new.downvotes_count, 0));
+    new.downvotes_count := new.downvotes;
+    new.comment_count := greatest(coalesce(new.comment_count, 0), coalesce(new.comments_count, 0));
+    new.comments_count := new.comment_count;
+    if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+      new.is_pinned := false;
+      new.is_locked := false;
+    end if;
+  elsif tg_op = 'UPDATE' then
+    if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+      new.author_id := old.author_id;
+      new.upvotes := old.upvotes;
+      new.upvotes_count := old.upvotes_count;
+      new.downvotes := old.downvotes;
+      new.downvotes_count := old.downvotes_count;
+      new.comment_count := old.comment_count;
+      new.comments_count := old.comments_count;
+      new.is_pinned := old.is_pinned;
+      new.is_locked := old.is_locked;
+      new.created_at := old.created_at;
+    else
+      new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+      new.upvotes_count := new.upvotes;
+      new.downvotes := greatest(coalesce(new.downvotes, 0), coalesce(new.downvotes_count, 0));
+      new.downvotes_count := new.downvotes;
+      new.comment_count := greatest(coalesce(new.comment_count, 0), coalesce(new.comments_count, 0));
+      new.comments_count := new.comment_count;
+    end if;
   end if;
   return new;
 end;
 $$;
 
-drop trigger if exists trg_sync_forum_accepted_comment_flag on public.forum_posts;
-create trigger trg_sync_forum_accepted_comment_flag
-  after update of accepted_comment_id on public.forum_posts
-  for each row execute function public.sync_forum_accepted_comment_flag();
+drop trigger if exists trg_sync_and_protect_forum_posts on public.forum_posts;
+create trigger trg_sync_and_protect_forum_posts
+before insert or update on public.forum_posts
+for each row execute function public.sync_and_protect_forum_posts();
 
--- ==============================================================================
--- 4. ACADEMIC PROGRAMS & COHORT DISCUSSIONS / DOUBTS
--- ==============================================================================
+drop trigger if exists set_forum_posts_updated_at on public.forum_posts;
+create trigger set_forum_posts_updated_at
+before update on public.forum_posts
+for each row execute function public.set_updated_at();
+
+create table if not exists public.forum_comments (
+  id text primary key default gen_random_uuid()::text,
+  post_id text not null references public.forum_posts(id) on delete cascade,
+  parent_id text references public.forum_comments(id) on delete cascade,
+  parent_comment_id text references public.forum_comments(id) on delete cascade,
+  body text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Scholar',
+  author_username text default '',
+  author_avatar text default '',
+  author_university text default '',
+  author_program text default '',
+  author_degree_tier text default '',
+  upvotes integer not null default 0,
+  upvotes_count integer not null default 0,
+  downvotes integer not null default 0,
+  downvotes_count integer not null default 0,
+  is_accepted boolean not null default false,
+  status text not null default 'published' check (status in ('published', 'removed', 'hidden')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.forum_comments add column if not exists parent_id text;
+alter table public.forum_comments add column if not exists parent_comment_id text;
+alter table public.forum_comments add column if not exists author_name text not null default 'Student Scholar';
+alter table public.forum_comments add column if not exists author_username text default '';
+alter table public.forum_comments add column if not exists author_avatar text default '';
+alter table public.forum_comments add column if not exists author_university text default '';
+alter table public.forum_comments add column if not exists author_program text default '';
+alter table public.forum_comments add column if not exists author_degree_tier text default '';
+alter table public.forum_comments add column if not exists upvotes integer not null default 0;
+alter table public.forum_comments add column if not exists upvotes_count integer not null default 0;
+alter table public.forum_comments add column if not exists downvotes integer not null default 0;
+alter table public.forum_comments add column if not exists downvotes_count integer not null default 0;
+alter table public.forum_comments add column if not exists is_accepted boolean not null default false;
+alter table public.forum_comments add column if not exists status text not null default 'published';
+alter table public.forum_comments add column if not exists created_at timestamptz not null default now();
+alter table public.forum_comments add column if not exists updated_at timestamptz not null default now();
+
+create or replace function public.sync_and_protect_forum_comments()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.parent_id := coalesce(new.parent_id, new.parent_comment_id);
+    new.parent_comment_id := coalesce(new.parent_comment_id, new.parent_id);
+    new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+    new.upvotes_count := new.upvotes;
+    new.downvotes := greatest(coalesce(new.downvotes, 0), coalesce(new.downvotes_count, 0));
+    new.downvotes_count := new.downvotes;
+  elsif tg_op = 'UPDATE' then
+    if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+      new.author_id := old.author_id;
+      new.post_id := old.post_id;
+      new.parent_id := old.parent_id;
+      new.parent_comment_id := old.parent_comment_id;
+      new.upvotes := old.upvotes;
+      new.upvotes_count := old.upvotes_count;
+      new.downvotes := old.downvotes;
+      new.downvotes_count := old.downvotes_count;
+      new.created_at := old.created_at;
+      -- If a post author is marking someone else's comment as accepted, lock the comment body & status
+      if auth.uid() is distinct from old.author_id then
+        new.body := old.body;
+        new.status := old.status;
+      end if;
+    else
+      new.upvotes := greatest(coalesce(new.upvotes, 0), coalesce(new.upvotes_count, 0));
+      new.upvotes_count := new.upvotes;
+      new.downvotes := greatest(coalesce(new.downvotes, 0), coalesce(new.downvotes_count, 0));
+      new.downvotes_count := new.downvotes;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_and_protect_forum_comments on public.forum_comments;
+create trigger trg_sync_and_protect_forum_comments
+before insert or update on public.forum_comments
+for each row execute function public.sync_and_protect_forum_comments();
+
+drop trigger if exists set_forum_comments_updated_at on public.forum_comments;
+create trigger set_forum_comments_updated_at
+before update on public.forum_comments
+for each row execute function public.set_updated_at();
+
+create table if not exists public.forum_post_votes (
+  post_id text not null references public.forum_posts(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  vote_type smallint not null check (vote_type in (-1, 1)),
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+create table if not exists public.forum_comment_votes (
+  comment_id text not null references public.forum_comments(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  vote_type smallint not null check (vote_type in (-1, 1)),
+  created_at timestamptz not null default now(),
+  primary key (comment_id, user_id)
+);
+
+create table if not exists public.forum_bookmarks (
+  post_id text not null references public.forum_posts(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+create table if not exists public.forum_reports (
+  id text primary key default gen_random_uuid()::text,
+  target_type text not null check (target_type in ('post', 'comment')),
+  target_id text not null,
+  post_id text default '',
+  target_snippet text default '',
+  reporter_id uuid not null references auth.users(id) on delete cascade,
+  reporter_username text default '',
+  reason text not null,
+  details text default '',
+  status text not null default 'pending' check (status in ('pending', 'reviewed', 'dismissed', 'actioned', 'reviewed_removed', 'reviewed_kept')),
+  reviewed_by text,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.forum_reports add column if not exists post_id text default '';
+alter table public.forum_reports add column if not exists target_snippet text default '';
+alter table public.forum_reports add column if not exists reporter_username text default '';
+alter table public.forum_reports add column if not exists details text default '';
+alter table public.forum_reports add column if not exists status text not null default 'pending';
+alter table public.forum_reports add column if not exists reviewed_by text;
+alter table public.forum_reports add column if not exists reviewed_at timestamptz;
+alter table public.forum_reports drop constraint if exists forum_reports_status_check;
+alter table public.forum_reports add constraint forum_reports_status_check
+  check (status in ('pending', 'reviewed', 'dismissed', 'actioned', 'reviewed_removed', 'reviewed_kept'));
+
+-- Triggers to maintain exact forum counters
+create or replace function public.sync_forum_post_votes_counts()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_post_id text;
+  v_up integer;
+  v_down integer;
+begin
+  v_post_id := coalesce(new.post_id, old.post_id);
+  select
+    count(*) filter (where vote_type = 1)::integer,
+    count(*) filter (where vote_type = -1)::integer
+  into v_up, v_down
+  from public.forum_post_votes
+  where post_id = v_post_id;
+
+  update public.forum_posts
+  set upvotes = coalesce(v_up, 0),
+      upvotes_count = coalesce(v_up, 0),
+      downvotes = coalesce(v_down, 0),
+      downvotes_count = coalesce(v_down, 0)
+  where id = v_post_id;
+
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists trg_sync_forum_post_votes_counts on public.forum_post_votes;
+create trigger trg_sync_forum_post_votes_counts
+after insert or update or delete on public.forum_post_votes
+for each row execute function public.sync_forum_post_votes_counts();
+
+create or replace function public.sync_forum_comment_votes_counts()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_comment_id text;
+  v_up integer;
+  v_down integer;
+begin
+  v_comment_id := coalesce(new.comment_id, old.comment_id);
+  select
+    count(*) filter (where vote_type = 1)::integer,
+    count(*) filter (where vote_type = -1)::integer
+  into v_up, v_down
+  from public.forum_comment_votes
+  where comment_id = v_comment_id;
+
+  update public.forum_comments
+  set upvotes = coalesce(v_up, 0),
+      upvotes_count = coalesce(v_up, 0),
+      downvotes = coalesce(v_down, 0),
+      downvotes_count = coalesce(v_down, 0)
+  where id = v_comment_id;
+
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists trg_sync_forum_comment_votes_counts on public.forum_comment_votes;
+create trigger trg_sync_forum_comment_votes_counts
+after insert or update or delete on public.forum_comment_votes
+for each row execute function public.sync_forum_comment_votes_counts();
+
+create or replace function public.sync_forum_post_comment_count()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_post_id text;
+  v_count integer;
+begin
+  v_post_id := coalesce(new.post_id, old.post_id);
+  select count(*)::integer into v_count
+  from public.forum_comments
+  where post_id = v_post_id
+    and status = 'published';
+
+  update public.forum_posts
+  set comment_count = v_count,
+      comments_count = v_count
+  where id = v_post_id;
+
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists trg_sync_forum_post_comment_count on public.forum_comments;
+create trigger trg_sync_forum_post_comment_count
+after insert or update or delete on public.forum_comments
+for each row execute function public.sync_forum_post_comment_count();
+
+-- ============================================================================
+-- 5. ACADEMIC PROGRAMS, DISCUSSIONS & DOUBTS
+-- ============================================================================
 
 create table if not exists public.academic_programs (
   id text primary key,
+  code text default 'PROG',
+  short_code text default 'PROG',
   name text not null,
-  short_code text not null,
   degree_tier text not null default 'Undergraduate',
-  discipline text not null default 'Interdisciplinary Studies',
-  description text,
+  department text default 'General',
+  discipline text default 'Interdisciplinary Studies',
+  description text default '',
   duration_years integer not null default 4,
   total_semesters integer not null default 8,
   total_credits integer not null default 130,
-  semesters jsonb not null default '[]'::jsonb,
+  semesters jsonb default '[]'::jsonb,
   created_by uuid references auth.users(id) on delete set null,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  created_at timestamptz not null default now()
+);
+
+alter table public.academic_programs alter column code drop not null;
+alter table public.academic_programs alter column code set default 'PROG';
+alter table public.academic_programs add column if not exists short_code text default 'PROG';
+alter table public.academic_programs add column if not exists discipline text default 'Interdisciplinary Studies';
+alter table public.academic_programs add column if not exists department text default 'General';
+alter table public.academic_programs add column if not exists total_semesters integer not null default 8;
+alter table public.academic_programs add column if not exists semesters jsonb default '[]'::jsonb;
+alter table public.academic_programs add column if not exists created_by uuid references auth.users(id) on delete set null;
+
+create or replace function public.sync_academic_programs_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.short_code := coalesce(nullif(new.short_code, ''), nullif(new.code, ''), 'PROG');
+  new.code := coalesce(nullif(new.code, ''), new.short_code, 'PROG');
+  new.discipline := coalesce(nullif(new.discipline, ''), nullif(new.department, ''), 'Interdisciplinary Studies');
+  new.department := coalesce(nullif(new.department, ''), new.discipline, 'General');
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_academic_programs_columns on public.academic_programs;
+create trigger trg_sync_academic_programs_columns
+before insert or update on public.academic_programs
+for each row execute function public.sync_academic_programs_columns();
+
+create table if not exists public.program_enrollments (
+  program_id text not null references public.academic_programs(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  semester integer default 1,
+  created_at timestamptz not null default now(),
+  primary key (program_id, user_id)
 );
 
 create table if not exists public.program_discussions (
-  id text primary key,
+  id text primary key default gen_random_uuid()::text,
   program_id text not null,
   title text not null,
   content text not null,
-  category text not null default 'Academics',
+  category text not null default 'Course Advice',
   semester_tag text,
   course_tag text,
-  author_id uuid references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_avatar text,
-  author_program text,
-  author_degree_tier text,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Peer',
+  author_avatar text default '',
+  author_program text default '',
+  author_degree_tier text default '',
   upvotes_count integer not null default 1,
   comments_count integer not null default 0,
   is_pinned boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-create index if not exists idx_program_discussions_program_id on public.program_discussions(program_id, created_at desc);
+alter table public.program_discussions add column if not exists semester_tag text;
+alter table public.program_discussions add column if not exists course_tag text;
+alter table public.program_discussions add column if not exists author_program text default '';
+alter table public.program_discussions add column if not exists author_degree_tier text default '';
+alter table public.program_discussions add column if not exists upvotes_count integer not null default 1;
+alter table public.program_discussions add column if not exists comments_count integer not null default 0;
+alter table public.program_discussions add column if not exists is_pinned boolean not null default false;
+alter table public.program_discussions add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.program_discussion_comments (
-  id text primary key,
+  id text primary key default gen_random_uuid()::text,
   post_id text not null references public.program_discussions(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_avatar text,
-  author_program text,
-  author_degree_tier text,
   content text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Peer',
+  author_avatar text default '',
+  author_program text default '',
+  author_degree_tier text default '',
   upvotes_count integer not null default 0,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  created_at timestamptz not null default now()
 );
 
-create index if not exists idx_program_discussion_comments_post_id on public.program_discussion_comments(post_id, created_at asc);
+alter table public.program_discussion_comments add column if not exists author_program text default '';
+alter table public.program_discussion_comments add column if not exists author_degree_tier text default '';
+alter table public.program_discussion_comments add column if not exists upvotes_count integer not null default 0;
 
 create table if not exists public.program_doubts (
-  id text primary key,
+  id text primary key default gen_random_uuid()::text,
   program_id text not null,
   title text not null,
   content text not null,
-  course_code text not null,
+  course_code text default 'GEN',
   semester_tag text,
-  tags text[] not null default array[]::text[],
-  author_id uuid references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_avatar text,
-  author_program text,
+  tags text[] default '{}',
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Peer',
+  author_avatar text default '',
+  author_program text default '',
   upvotes_count integer not null default 1,
-  status text not null default 'unanswered' check (status in ('answered', 'unanswered')),
+  status text not null default 'unanswered' check (status in ('unanswered', 'answered', 'resolved')),
   accepted_answer_id text,
-  attachments jsonb not null default '[]'::jsonb,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-alter table public.program_doubts add column if not exists attachments jsonb not null default '[]'::jsonb;
-create index if not exists idx_program_doubts_program_id on public.program_doubts(program_id, created_at desc);
+alter table public.program_doubts add column if not exists course_code text default 'GEN';
+alter table public.program_doubts add column if not exists semester_tag text;
+alter table public.program_doubts add column if not exists tags text[] default '{}';
+alter table public.program_doubts add column if not exists author_program text default '';
+alter table public.program_doubts add column if not exists upvotes_count integer not null default 1;
+alter table public.program_doubts add column if not exists status text not null default 'unanswered';
+alter table public.program_doubts add column if not exists accepted_answer_id text;
+alter table public.program_doubts add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.program_doubt_answers (
-  id text primary key,
+  id text primary key default gen_random_uuid()::text,
   question_id text not null references public.program_doubts(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete cascade,
-  author_name text not null,
-  author_avatar text,
-  author_role text default 'Peer',
-  author_program text,
   content text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Peer',
+  author_avatar text default '',
+  author_role text default 'Peer',
+  author_program text default '',
   upvotes_count integer not null default 0,
   is_accepted boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now())
+  created_at timestamptz not null default now()
 );
 
-create index if not exists idx_program_doubt_answers_question_id on public.program_doubt_answers(question_id, created_at asc);
+alter table public.program_doubt_answers add column if not exists author_role text default 'Peer';
+alter table public.program_doubt_answers add column if not exists author_program text default '';
+alter table public.program_doubt_answers add column if not exists upvotes_count integer not null default 0;
+alter table public.program_doubt_answers add column if not exists is_accepted boolean not null default false;
 
-alter table public.academic_programs enable row level security;
-alter table public.program_discussions enable row level security;
-alter table public.program_discussion_comments enable row level security;
-alter table public.program_doubts enable row level security;
-alter table public.program_doubt_answers enable row level security;
+-- ============================================================================
+-- 6. UNIVERSITIES, DEPARTMENTS, COURSES, DISCUSSIONS & DOUBTS
+-- ============================================================================
 
-drop policy if exists "Anyone can read academic programs" on public.academic_programs;
-create policy "Anyone can read academic programs"
-  on public.academic_programs for select using (true);
+create table if not exists public.universities (
+  id text primary key,
+  name text not null,
+  short_name text not null default 'UNI',
+  sector text not null default 'Public',
+  province text not null default 'Federal',
+  city text not null default 'Islamabad',
+  location text default 'Pakistan',
+  country text not null default 'Pakistan',
+  badge text default 'HEC Recognized',
+  logo_url text default '',
+  banner_url text default '',
+  disciplines text[] default '{}',
+  website text default '',
+  established_year integer default 2000,
+  verified_students integer not null default 1,
+  total_courses_count integer not null default 0,
+  description text default '',
+  hec_recognized boolean not null default true,
+  is_custom boolean not null default false,
+  is_member_restricted boolean not null default false,
+  status text not null default 'verified',
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "Verified users can create academic programs" on public.academic_programs;
-drop policy if exists "Authenticated users can create academic programs" on public.academic_programs;
-create policy "Authenticated users can create academic programs"
-  on public.academic_programs for insert
-  to authenticated
-  with check (auth.role() = 'authenticated');
+alter table public.universities add column if not exists location text default 'Pakistan';
+alter table public.universities add column if not exists country text not null default 'Pakistan';
+alter table public.universities add column if not exists badge text default 'HEC Recognized';
+alter table public.universities add column if not exists banner_url text default '';
+alter table public.universities add column if not exists disciplines text[] default '{}';
+alter table public.universities add column if not exists established_year integer default 2000;
+alter table public.universities add column if not exists verified_students integer not null default 1;
+alter table public.universities add column if not exists total_courses_count integer not null default 0;
+alter table public.universities add column if not exists is_member_restricted boolean not null default false;
+alter table public.universities add column if not exists status text not null default 'verified';
+alter table public.universities add column if not exists created_by uuid references auth.users(id) on delete set null;
 
-drop policy if exists "Creators can update academic programs" on public.academic_programs;
-create policy "Creators can update academic programs"
-  on public.academic_programs for update
-  to authenticated
-  using (created_by is null or auth.uid() = created_by or public.is_forum_moderator());
+create table if not exists public.departments (
+  id text primary key,
+  university_id text not null references public.universities(id) on delete cascade,
+  name text not null,
+  code text default '',
+  description text default '',
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "Anyone can read program discussions" on public.program_discussions;
-create policy "Anyone can read program discussions"
-  on public.program_discussions for select using (true);
+create table if not exists public.courses (
+  id text primary key,
+  university_id text references public.universities(id) on delete cascade,
+  department_id text references public.departments(id) on delete set null,
+  program_id text references public.academic_programs(id) on delete set null,
+  code text not null,
+  name text not null,
+  semester integer default 1,
+  credit_hours integer default 3,
+  description text default '',
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "Verified users create program discussions" on public.program_discussions;
-drop policy if exists "Authenticated users create program discussions" on public.program_discussions;
-create policy "Authenticated users create program discussions"
-  on public.program_discussions for insert
-  to authenticated
-  with check (auth.uid() = author_id);
+create table if not exists public.university_follows (
+  university_id text not null references public.universities(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (university_id, user_id)
+);
 
-drop policy if exists "Authors update own program discussions" on public.program_discussions;
-create policy "Authors update own program discussions"
-  on public.program_discussions for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+create table if not exists public.university_discussions (
+  id text primary key default gen_random_uuid()::text,
+  university_id text not null,
+  title text not null,
+  content text not null,
+  category text not null default 'General',
+  course_tag text,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Member',
+  author_avatar text default '',
+  author_major text default '',
+  author_university text default '',
+  upvotes_count integer not null default 1,
+  comments_count integer not null default 0,
+  is_pinned boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
-drop policy if exists "Authors delete own program discussions" on public.program_discussions;
-create policy "Authors delete own program discussions"
-  on public.program_discussions for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+alter table public.university_discussions add column if not exists course_tag text;
+alter table public.university_discussions add column if not exists author_major text default '';
+alter table public.university_discussions add column if not exists author_university text default '';
+alter table public.university_discussions add column if not exists upvotes_count integer not null default 1;
+alter table public.university_discussions add column if not exists comments_count integer not null default 0;
+alter table public.university_discussions add column if not exists is_pinned boolean not null default false;
+alter table public.university_discussions add column if not exists updated_at timestamptz not null default now();
 
-drop policy if exists "Anyone can read program discussion comments" on public.program_discussion_comments;
-create policy "Anyone can read program discussion comments"
-  on public.program_discussion_comments for select using (true);
+create table if not exists public.university_discussion_comments (
+  id text primary key default gen_random_uuid()::text,
+  post_id text not null references public.university_discussions(id) on delete cascade,
+  content text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Member',
+  author_avatar text default '',
+  author_university text default '',
+  upvotes_count integer not null default 0,
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "Verified users create program discussion comments" on public.program_discussion_comments;
-drop policy if exists "Authenticated users create program discussion comments" on public.program_discussion_comments;
-create policy "Authenticated users create program discussion comments"
-  on public.program_discussion_comments for insert
-  to authenticated
-  with check (auth.uid() = author_id);
+alter table public.university_discussion_comments add column if not exists author_university text default '';
+alter table public.university_discussion_comments add column if not exists upvotes_count integer not null default 0;
 
-drop policy if exists "Authors update own program discussion comments" on public.program_discussion_comments;
-create policy "Authors update own program discussion comments"
-  on public.program_discussion_comments for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+create table if not exists public.university_doubts (
+  id text primary key default gen_random_uuid()::text,
+  university_id text not null,
+  title text not null,
+  content text not null,
+  department text default 'General',
+  course_code text default 'GEN',
+  tags text[] default '{}',
+  attachments jsonb default '[]'::jsonb,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Member',
+  author_avatar text default '',
+  author_university text default '',
+  upvotes_count integer not null default 1,
+  status text not null default 'unanswered' check (status in ('unanswered', 'answered', 'resolved')),
+  accepted_answer_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
-drop policy if exists "Authors delete own program discussion comments" on public.program_discussion_comments;
-create policy "Authors delete own program discussion comments"
-  on public.program_discussion_comments for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+alter table public.university_doubts add column if not exists department text default 'General';
+alter table public.university_doubts add column if not exists course_code text default 'GEN';
+alter table public.university_doubts add column if not exists tags text[] default '{}';
+alter table public.university_doubts add column if not exists attachments jsonb default '[]'::jsonb;
+alter table public.university_doubts add column if not exists author_university text default '';
+alter table public.university_doubts add column if not exists upvotes_count integer not null default 1;
+alter table public.university_doubts add column if not exists status text not null default 'unanswered';
+alter table public.university_doubts add column if not exists accepted_answer_id text;
+alter table public.university_doubts add column if not exists updated_at timestamptz not null default now();
 
-drop policy if exists "Anyone can read program doubts" on public.program_doubts;
-create policy "Anyone can read program doubts"
-  on public.program_doubts for select using (true);
+create table if not exists public.university_doubt_answers (
+  id text primary key default gen_random_uuid()::text,
+  question_id text not null references public.university_doubts(id) on delete cascade,
+  content text not null,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  author_name text not null default 'Student Member',
+  author_avatar text default '',
+  author_role text default 'Peer Member',
+  author_university text default '',
+  upvotes_count integer not null default 0,
+  is_accepted boolean not null default false,
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "Verified users create program doubts" on public.program_doubts;
-drop policy if exists "Authenticated users create program doubts" on public.program_doubts;
-create policy "Authenticated users create program doubts"
-  on public.program_doubts for insert
-  to authenticated
-  with check (auth.uid() = author_id);
+alter table public.university_doubt_answers add column if not exists author_role text default 'Peer Member';
+alter table public.university_doubt_answers add column if not exists author_university text default '';
+alter table public.university_doubt_answers add column if not exists upvotes_count integer not null default 0;
+alter table public.university_doubt_answers add column if not exists is_accepted boolean not null default false;
 
-drop policy if exists "Authors update own program doubts" on public.program_doubts;
-create policy "Authors update own program doubts"
-  on public.program_doubts for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+-- ============================================================================
+-- 7. COMMUNITY ITEM VOTES & PRIVILEGED COLUMN PROTECTION TRIGGERS
+-- ============================================================================
 
-drop policy if exists "Authors delete own program doubts" on public.program_doubts;
-create policy "Authors delete own program doubts"
-  on public.program_doubts for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+create table if not exists public.community_item_votes (
+  target_table text not null check (target_table in (
+    'program_discussions',
+    'program_discussion_comments',
+    'program_doubts',
+    'program_doubt_answers',
+    'university_discussions',
+    'university_discussion_comments',
+    'university_doubts',
+    'university_doubt_answers'
+  )),
+  target_id text not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (target_table, target_id, user_id)
+);
 
-drop policy if exists "Anyone can read program doubt answers" on public.program_doubt_answers;
-create policy "Anyone can read program doubt answers"
-  on public.program_doubt_answers for select using (true);
+-- Protect privileged columns on program & university discussions and doubts
+create or replace function public.protect_community_post_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+    new.author_id := old.author_id;
+    new.upvotes_count := old.upvotes_count;
+    new.created_at := old.created_at;
+    if tg_table_name in ('program_discussions', 'university_discussions') then
+      new.comments_count := old.comments_count;
+      new.is_pinned := old.is_pinned;
+    end if;
+  end if;
+  return new;
+end;
+$$;
 
-drop policy if exists "Verified users create program doubt answers" on public.program_doubt_answers;
-drop policy if exists "Authenticated users create program doubt answers" on public.program_doubt_answers;
-create policy "Authenticated users create program doubt answers"
-  on public.program_doubt_answers for insert
-  to authenticated
-  with check (auth.uid() = author_id);
+drop trigger if exists trg_protect_program_discussions on public.program_discussions;
+create trigger trg_protect_program_discussions
+before update on public.program_discussions
+for each row execute function public.protect_community_post_columns();
 
-drop policy if exists "Authors update own program doubt answers" on public.program_doubt_answers;
-create policy "Authors update own program doubt answers"
-  on public.program_doubt_answers for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+drop trigger if exists trg_protect_program_doubts on public.program_doubts;
+create trigger trg_protect_program_doubts
+before update on public.program_doubts
+for each row execute function public.protect_community_post_columns();
 
-drop policy if exists "Authors delete own program doubt answers" on public.program_doubt_answers;
-create policy "Authors delete own program doubt answers"
-  on public.program_doubt_answers for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
+drop trigger if exists trg_protect_university_discussions on public.university_discussions;
+create trigger trg_protect_university_discussions
+before update on public.university_discussions
+for each row execute function public.protect_community_post_columns();
 
--- Sync program discussion comment counts and doubt status automatically
+drop trigger if exists trg_protect_university_doubts on public.university_doubts;
+create trigger trg_protect_university_doubts
+before update on public.university_doubts
+for each row execute function public.protect_community_post_columns();
+
+-- Protect doubt answers so question authors marking is_accepted cannot alter another user's answer content
+create or replace function public.protect_doubt_answer_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if current_user in ('authenticated', 'anon') and not public.is_moderator() then
+    new.author_id := old.author_id;
+    new.question_id := old.question_id;
+    new.upvotes_count := old.upvotes_count;
+    new.created_at := old.created_at;
+    if auth.uid() is distinct from old.author_id then
+      new.content := old.content;
+      new.author_name := old.author_name;
+      new.author_avatar := old.author_avatar;
+      new.author_role := old.author_role;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_protect_program_doubt_answers on public.program_doubt_answers;
+create trigger trg_protect_program_doubt_answers
+before update on public.program_doubt_answers
+for each row execute function public.protect_doubt_answer_columns();
+
+drop trigger if exists trg_protect_university_doubt_answers on public.university_doubt_answers;
+create trigger trg_protect_university_doubt_answers
+before update on public.university_doubt_answers
+for each row execute function public.protect_doubt_answer_columns();
+
+-- Maintain comment counts on program_discussions and university_discussions
 create or replace function public.sync_program_discussion_comments_count()
 returns trigger
 language plpgsql
@@ -1167,516 +1410,1068 @@ set search_path = public
 as $$
 declare
   v_post_id text;
+  v_count integer;
 begin
   v_post_id := coalesce(new.post_id, old.post_id);
+  select count(*)::integer into v_count
+  from public.program_discussion_comments
+  where post_id = v_post_id;
+
   update public.program_discussions
-  set comments_count = (select count(*) from public.program_discussion_comments where post_id = v_post_id)
+  set comments_count = v_count,
+      updated_at = now()
   where id = v_post_id;
+
   return coalesce(new, old);
 end;
 $$;
 
 drop trigger if exists trg_sync_program_discussion_comments_count on public.program_discussion_comments;
 create trigger trg_sync_program_discussion_comments_count
-  after insert or delete on public.program_discussion_comments
-  for each row execute function public.sync_program_discussion_comments_count();
+after insert or delete on public.program_discussion_comments
+for each row execute function public.sync_program_discussion_comments_count();
 
-create or replace function public.sync_program_doubt_answer_state()
+create or replace function public.sync_university_discussion_comments_count()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  v_qid text;
+  v_post_id text;
+  v_count integer;
 begin
-  v_qid := coalesce(new.question_id, old.question_id);
-  update public.program_doubts
-  set status = case
-    when exists (select 1 from public.program_doubt_answers where question_id = v_qid) then 'answered'
-    else 'unanswered'
-  end
-  where id = v_qid;
+  v_post_id := coalesce(new.post_id, old.post_id);
+  select count(*)::integer into v_count
+  from public.university_discussion_comments
+  where post_id = v_post_id;
+
+  update public.university_discussions
+  set comments_count = v_count,
+      updated_at = now()
+  where id = v_post_id;
+
   return coalesce(new, old);
 end;
 $$;
 
-drop trigger if exists trg_sync_program_doubt_answer_state on public.program_doubt_answers;
-create trigger trg_sync_program_doubt_answer_state
-  after insert or delete on public.program_doubt_answers
-  for each row execute function public.sync_program_doubt_answer_state();
+drop trigger if exists trg_sync_university_discussion_comments_count on public.university_discussion_comments;
+create trigger trg_sync_university_discussion_comments_count
+after insert or delete on public.university_discussion_comments
+for each row execute function public.sync_university_discussion_comments_count();
 
--- ==============================================================================
--- 5. UNIVERSITY DIRECTORY & CAMPUS COMMUNITY SCHEMA
---    (universities, departments, courses, university_discussions,
---     university_discussion_comments, discussion_comments,
---     university_doubts, university_doubt_answers, doubt_answers, university_follows)
--- ==============================================================================
-
-create table if not exists public.universities (
-  id text primary key,
-  name text not null,
-  short_name text not null,
-  badge text,
-  logo_url text not null default '',
-  banner_url text not null default '',
-  location text not null default 'Pakistan',
-  country text not null default 'Pakistan',
-  disciplines text[] not null default array[]::text[],
-  website text,
-  established_year integer,
-  verified_students integer not null default 0,
-  total_courses_count integer not null default 0,
-  description text,
-  is_member_restricted boolean not null default false,
-  created_by uuid references auth.users(id) on delete set null,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-alter table public.universities add column if not exists created_by uuid references auth.users(id) on delete set null;
-
-create table if not exists public.departments (
-  id text primary key,
-  university_id text not null references public.universities(id) on delete cascade,
-  name text not null,
-  code text not null,
-  description text,
-  course_count integer not null default 0
-);
-
-create table if not exists public.courses (
-  id text primary key,
-  university_id text not null references public.universities(id) on delete cascade,
-  department_id text not null references public.departments(id) on delete cascade,
-  department_code text not null,
-  code text not null,
-  name text not null,
-  description text,
-  instructor text,
-  active_students integer not null default 0
-);
-
-create table if not exists public.university_discussions (
-  id text primary key,
-  university_id text not null,
-  title text not null,
-  content text not null,
-  category text not null default 'Academics',
-  course_tag text,
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Student Scholar',
-  author_avatar text,
-  author_major text,
-  author_university text not null default 'General Campus',
-  upvotes_count integer not null default 1,
-  comments_count integer not null default 0,
-  is_pinned boolean not null default false,
-  is_reported boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create index if not exists idx_university_discussions_uni_id on public.university_discussions(university_id, created_at desc);
-
-create table if not exists public.university_discussion_comments (
-  id text primary key,
-  post_id text not null references public.university_discussions(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Peer Contributor',
-  author_avatar text,
-  author_university text not null default 'General Campus',
-  content text not null,
-  upvotes_count integer not null default 0,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create table if not exists public.discussion_comments (
-  id text primary key,
-  post_id text not null references public.university_discussions(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Peer Contributor',
-  author_avatar text,
-  author_university text not null default 'General Campus',
-  content text not null,
-  upvotes_count integer not null default 0,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create table if not exists public.university_doubts (
-  id text primary key,
-  university_id text not null,
-  title text not null,
-  content text not null,
-  department text not null default 'General',
-  course_code text not null default 'GEN',
-  tags text[] not null default array[]::text[],
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Academic Inquirer',
-  author_avatar text,
-  author_university text not null default 'General Campus',
-  upvotes_count integer not null default 1,
-  status text not null default 'unanswered' check (status in ('answered', 'unanswered')),
-  accepted_answer_id text,
-  attachments jsonb not null default '[]'::jsonb,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create index if not exists idx_university_doubts_uni_id on public.university_doubts(university_id, created_at desc);
-
-create table if not exists public.university_doubt_answers (
-  id text primary key,
-  question_id text not null references public.university_doubts(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Peer Assistant',
-  author_avatar text,
-  author_role text default 'Peer Contributor',
-  author_university text not null default 'General Campus',
-  content text not null,
-  upvotes_count integer not null default 0,
-  is_accepted boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create table if not exists public.doubt_answers (
-  id text primary key,
-  question_id text not null references public.university_doubts(id) on delete cascade,
-  author_id uuid references auth.users(id) on delete set null,
-  author_name text not null default 'Peer Assistant',
-  author_avatar text,
-  author_role text default 'Peer Contributor',
-  author_university text not null default 'General Campus',
-  content text not null,
-  upvotes_count integer not null default 0,
-  is_accepted boolean not null default false,
-  created_at timestamptz not null default timezone('utc'::text, now())
-);
-
-create table if not exists public.university_follows (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  university_id text not null references public.universities(id) on delete cascade,
-  created_at timestamptz not null default timezone('utc'::text, now()),
-  primary key (user_id, university_id)
-);
-
-alter table public.universities enable row level security;
-alter table public.departments enable row level security;
-alter table public.courses enable row level security;
-alter table public.university_discussions enable row level security;
-alter table public.university_discussion_comments enable row level security;
-alter table public.discussion_comments enable row level security;
-alter table public.university_doubts enable row level security;
-alter table public.university_doubt_answers enable row level security;
-alter table public.doubt_answers enable row level security;
-alter table public.university_follows enable row level security;
-
-drop policy if exists "Anyone can read universities" on public.universities;
-create policy "Anyone can read universities" on public.universities for select using (true);
-
-drop policy if exists "Verified users can add universities" on public.universities;
-drop policy if exists "Authenticated users can add universities" on public.universities;
-create policy "Authenticated users can add universities"
-  on public.universities for insert
-  to authenticated
-  with check (auth.role() = 'authenticated');
-
-drop policy if exists "Creators can update universities" on public.universities;
-create policy "Creators can update universities"
-  on public.universities for update
-  to authenticated
-  using (created_by is null or auth.uid() = created_by or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read departments" on public.departments;
-create policy "Anyone can read departments" on public.departments for select using (true);
-
-drop policy if exists "Anyone can read courses" on public.courses;
-create policy "Anyone can read courses" on public.courses for select using (true);
-
-drop policy if exists "Anyone can read discussions" on public.university_discussions;
-create policy "Anyone can read discussions" on public.university_discussions for select using (true);
-
-drop policy if exists "Students can post discussions" on public.university_discussions;
-create policy "Students can post discussions"
-  on public.university_discussions for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Authors can update university discussions" on public.university_discussions;
-create policy "Authors can update university discussions"
-  on public.university_discussions for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Authors can delete university discussions" on public.university_discussions;
-create policy "Authors can delete university discussions"
-  on public.university_discussions for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read university discussion comments" on public.university_discussion_comments;
-create policy "Anyone can read university discussion comments"
-  on public.university_discussion_comments for select using (true);
-
-drop policy if exists "Students can post university discussion comments" on public.university_discussion_comments;
-create policy "Students can post university discussion comments"
-  on public.university_discussion_comments for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Authors can delete university discussion comments" on public.university_discussion_comments;
-create policy "Authors can delete university discussion comments"
-  on public.university_discussion_comments for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read comments" on public.discussion_comments;
-create policy "Anyone can read comments" on public.discussion_comments for select using (true);
-
-drop policy if exists "Students can comment" on public.discussion_comments;
-create policy "Students can comment"
-  on public.discussion_comments for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Authors can delete discussion comments" on public.discussion_comments;
-create policy "Authors can delete discussion comments"
-  on public.discussion_comments for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read doubts" on public.university_doubts;
-create policy "Anyone can read doubts" on public.university_doubts for select using (true);
-
-drop policy if exists "Students can ask doubts" on public.university_doubts;
-create policy "Students can ask doubts"
-  on public.university_doubts for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Question authors can update university doubts" on public.university_doubts;
-create policy "Question authors can update university doubts"
-  on public.university_doubts for update
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Question authors can delete university doubts" on public.university_doubts;
-create policy "Question authors can delete university doubts"
-  on public.university_doubts for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read university doubt answers" on public.university_doubt_answers;
-create policy "Anyone can read university doubt answers"
-  on public.university_doubt_answers for select using (true);
-
-drop policy if exists "Students can post university doubt answers" on public.university_doubt_answers;
-create policy "Students can post university doubt answers"
-  on public.university_doubt_answers for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Authors can delete university doubt answers" on public.university_doubt_answers;
-create policy "Authors can delete university doubt answers"
-  on public.university_doubt_answers for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Anyone can read answers" on public.doubt_answers;
-create policy "Anyone can read answers" on public.doubt_answers for select using (true);
-
-drop policy if exists "Students can post answers" on public.doubt_answers;
-create policy "Students can post answers"
-  on public.doubt_answers for insert
-  to authenticated
-  with check (auth.uid() = author_id);
-
-drop policy if exists "Authors can delete doubt answers" on public.doubt_answers;
-create policy "Authors can delete doubt answers"
-  on public.doubt_answers for delete
-  to authenticated
-  using (auth.uid() = author_id or public.is_forum_moderator());
-
-drop policy if exists "Users manage own university follows" on public.university_follows;
-create policy "Users manage own university follows"
-  on public.university_follows for all
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
--- ==============================================================================
--- 6. STORAGE BUCKETS & STORAGE.OBJECTS RLS POLICIES
---    (study-materials & avatars)
--- ==============================================================================
-
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values (
-  'study-materials',
-  'study-materials',
-  true,
-  26214400, -- 25 MB limit
-  array['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
-)
-on conflict (id) do update set
-  public = true,
-  file_size_limit = 26214400,
-  allowed_mime_types = array['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
-
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values (
-  'avatars',
-  'avatars',
-  true,
-  5242880, -- 5 MB limit
-  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']
-)
-on conflict (id) do update set
-  public = true,
-  file_size_limit = 5242880,
-  allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
-
-drop policy if exists "Public Access: Anyone can view and download PDFs" on storage.objects;
-drop policy if exists "Study materials are publicly accessible" on storage.objects;
-create policy "Study materials are publicly accessible"
-  on storage.objects for select
-  using (bucket_id = 'study-materials');
-
-drop policy if exists "Avatar images are publicly accessible" on storage.objects;
-create policy "Avatar images are publicly accessible"
-  on storage.objects for select
-  using (bucket_id = 'avatars');
-
-drop policy if exists "Public Access: Anyone can upload study PDFs" on storage.objects;
-drop policy if exists "Authenticated users can upload study materials and avatars" on storage.objects;
-drop policy if exists "Authenticated users can upload study materials" on storage.objects;
-create policy "Authenticated users can upload study materials"
-  on storage.objects for insert
-  to authenticated
-  with check (bucket_id = 'study-materials' and auth.role() = 'authenticated');
-
-drop policy if exists "Owners can update study materials" on storage.objects;
-create policy "Owners can update study materials"
-  on storage.objects for update
-  to authenticated
-  using (bucket_id = 'study-materials' and (auth.uid() = owner or public.is_forum_moderator()))
-  with check (bucket_id = 'study-materials' and (auth.uid() = owner or public.is_forum_moderator()));
-
-drop policy if exists "Owners can update or delete their storage objects" on storage.objects;
-drop policy if exists "Owners can delete study materials" on storage.objects;
-create policy "Owners can delete study materials"
-  on storage.objects for delete
-  to authenticated
-  using (bucket_id = 'study-materials' and (auth.uid() = owner or public.is_forum_moderator()));
-
-drop policy if exists "Users can upload their own avatar" on storage.objects;
-create policy "Users can upload their own avatar"
-  on storage.objects for insert
-  to authenticated
-  with check (
-    bucket_id = 'avatars'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-drop policy if exists "Users can update their own avatar" on storage.objects;
-create policy "Users can update their own avatar"
-  on storage.objects for update
-  to authenticated
-  using (
-    bucket_id = 'avatars'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  )
-  with check (
-    bucket_id = 'avatars'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-drop policy if exists "Users can delete their own avatar" on storage.objects;
-create policy "Users can delete their own avatar"
-  on storage.objects for delete
-  to authenticated
-  using (
-    bucket_id = 'avatars'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  );
-
--- ==============================================================================
--- 7. REALTIME PUBLICATIONS & SCHEMA CACHE REFRESH
--- ==============================================================================
+-- ============================================================================
+-- 8. SAFE LEGACY DATA MIGRATION & HYBRID-ID CONVERSION
+-- ============================================================================
 
 do $$
 declare
-  tbl text;
+  r record;
 begin
-  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach tbl in array array[
-      'profiles',
-      'study_notes',
-      'note_upvotes',
-      'forum_posts',
-      'forum_comments',
-      'forum_votes',
-      'academic_programs',
-      'program_discussions',
-      'program_discussion_comments',
-      'program_doubts',
-      'program_doubt_answers',
-      'universities',
-      'university_discussions',
-      'university_discussion_comments',
-      'university_doubts',
-      'university_doubt_answers'
-    ]
-    loop
-      if not exists (
-        select 1 from pg_publication_tables
-        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = tbl
-      ) then
-        execute format('alter publication supabase_realtime add table public.%I', tbl);
-      end if;
-    end loop;
+  -- Drop foreign keys that block UUID -> TEXT conversion on hybrid-ID tables, then convert & restore
+  for r in
+    select
+      tc.table_name,
+      tc.constraint_name
+    from information_schema.table_constraints tc
+    where tc.table_schema = 'public'
+      and tc.constraint_type = 'FOREIGN KEY'
+      and tc.table_name in (
+        'study_notes', 'study_note_upvotes',
+        'forum_posts', 'forum_comments', 'forum_post_votes', 'forum_comment_votes', 'forum_bookmarks', 'forum_reports',
+        'program_enrollments', 'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+        'university_follows', 'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers'
+      )
+      and exists (
+        select 1
+        from information_schema.columns c
+        where c.table_schema = 'public'
+          and c.table_name = tc.table_name
+          and c.column_name in ('id', 'note_id', 'post_id', 'parent_id', 'parent_comment_id', 'comment_id', 'program_id', 'question_id', 'university_id')
+          and c.data_type = 'uuid'
+      )
+  loop
+    execute format('alter table public.%I drop constraint if exists %I', r.table_name, r.constraint_name);
+  end loop;
+
+  for r in
+    select table_name, column_name
+    from information_schema.columns
+    where table_schema = 'public'
+      and data_type = 'uuid'
+      and (
+        (table_name = 'study_notes' and column_name = 'id')
+        or (table_name = 'study_note_upvotes' and column_name = 'note_id')
+        or (table_name = 'forum_posts' and column_name in ('id', 'accepted_comment_id', 'resource_id'))
+        or (table_name = 'forum_comments' and column_name in ('id', 'post_id', 'parent_id', 'parent_comment_id'))
+        or (table_name = 'forum_post_votes' and column_name = 'post_id')
+        or (table_name = 'forum_comment_votes' and column_name = 'comment_id')
+        or (table_name = 'forum_bookmarks' and column_name = 'post_id')
+        or (table_name = 'forum_reports' and column_name in ('id', 'target_id', 'post_id'))
+        or (table_name = 'program_discussions' and column_name in ('id', 'program_id'))
+        or (table_name = 'program_discussion_comments' and column_name in ('id', 'post_id'))
+        or (table_name = 'program_doubts' and column_name in ('id', 'program_id', 'accepted_answer_id'))
+        or (table_name = 'program_doubt_answers' and column_name in ('id', 'question_id'))
+        or (table_name = 'university_discussions' and column_name in ('id', 'university_id'))
+        or (table_name = 'university_discussion_comments' and column_name in ('id', 'post_id'))
+        or (table_name = 'university_doubts' and column_name in ('id', 'university_id', 'accepted_answer_id'))
+        or (table_name = 'university_doubt_answers' and column_name in ('id', 'question_id'))
+      )
+  loop
+    execute format('alter table public.%I alter column %I type text using %I::text', r.table_name, r.column_name, r.column_name);
+  end loop;
+
+  -- Migrate legacy note_upvotes -> study_note_upvotes if present
+  if to_regclass('public.note_upvotes') is not null then
+    insert into public.study_note_upvotes (note_id, user_id, created_at)
+    select nu.note_id::text, nu.user_id, coalesce(nu.created_at, now())
+    from public.note_upvotes nu
+    where exists (select 1 from public.study_notes sn where sn.id = nu.note_id::text)
+    on conflict (note_id, user_id) do nothing;
   end if;
-exception when others then
-  null;
-end;
-$$;
 
-notify pgrst, 'reload schema';
+  -- Migrate legacy forum_votes -> forum_post_votes and forum_comment_votes if present
+  if to_regclass('public.forum_votes') is not null then
+    insert into public.forum_post_votes (post_id, user_id, vote_type, created_at)
+    select
+      fv.target_id::text,
+      fv.user_id,
+      case when coalesce(fv.vote_value, 1) < 0 then -1 else 1 end,
+      coalesce(fv.created_at, now())
+    from public.forum_votes fv
+    where fv.target_type = 'post'
+      and exists (select 1 from public.forum_posts fp where fp.id = fv.target_id::text)
+    on conflict (post_id, user_id) do nothing;
 
--- ==============================================================================
--- 8. POST-MIGRATION VALIDATION QUERIES
---    (Returns verification summary of tables, RLS status, policies, and buckets)
--- ==============================================================================
+    insert into public.forum_comment_votes (comment_id, user_id, vote_type, created_at)
+    select
+      fv.target_id::text,
+      fv.user_id,
+      case when coalesce(fv.vote_value, 1) < 0 then -1 else 1 end,
+      coalesce(fv.created_at, now())
+    from public.forum_votes fv
+    where fv.target_type = 'comment'
+      and exists (select 1 from public.forum_comments fc where fc.id = fv.target_id::text)
+    on conflict (comment_id, user_id) do nothing;
+  end if;
 
-select
-  t.tablename as table_name,
-  t.rowsecurity as rls_enabled,
-  (select count(*) from pg_policies p where p.schemaname = 'public' and p.tablename = t.tablename) as policy_count,
-  (select count(*) from information_schema.columns c where c.table_schema = 'public' and c.table_name = t.tablename) as column_count
-from pg_tables t
-where t.schemaname = 'public'
-  and t.tablename in (
+  -- Recalculate counters after backfill
+  update public.study_notes sn
+  set upvotes = greatest(sn.upvotes, sn.upvotes_count, (select count(*)::integer from public.study_note_upvotes u where u.note_id = sn.id)),
+      upvotes_count = greatest(sn.upvotes, sn.upvotes_count, (select count(*)::integer from public.study_note_upvotes u where u.note_id = sn.id));
+
+  update public.forum_posts fp
+  set upvotes = greatest(fp.upvotes, fp.upvotes_count, (select count(*) filter (where vote_type = 1)::integer from public.forum_post_votes v where v.post_id = fp.id)),
+      upvotes_count = greatest(fp.upvotes, fp.upvotes_count, (select count(*) filter (where vote_type = 1)::integer from public.forum_post_votes v where v.post_id = fp.id)),
+      downvotes = greatest(fp.downvotes, fp.downvotes_count, (select count(*) filter (where vote_type = -1)::integer from public.forum_post_votes v where v.post_id = fp.id)),
+      downvotes_count = greatest(fp.downvotes, fp.downvotes_count, (select count(*) filter (where vote_type = -1)::integer from public.forum_post_votes v where v.post_id = fp.id)),
+      comment_count = (select count(*)::integer from public.forum_comments c where c.post_id = fp.id and c.status = 'published'),
+      comments_count = (select count(*)::integer from public.forum_comments c where c.post_id = fp.id and c.status = 'published');
+end $$;
+
+-- ============================================================================
+-- 9. DYNAMIC POLICY RESET & CANONICAL ROW LEVEL SECURITY (RLS) POLICIES
+-- ============================================================================
+
+do $$
+declare
+  t text;
+  pol record;
+  canonical_tables text[] := array[
+    'moderator_roles',
     'profiles',
     'academic_information',
     'user_settings_preferences',
     'stored_files',
     'study_notes',
-    'note_upvotes',
     'study_note_upvotes',
     'forum_topics',
     'forum_posts',
     'forum_comments',
-    'forum_votes',
+    'forum_post_votes',
+    'forum_comment_votes',
     'forum_bookmarks',
     'forum_reports',
     'academic_programs',
+    'program_enrollments',
     'program_discussions',
     'program_discussion_comments',
     'program_doubts',
     'program_doubt_answers',
     'universities',
+    'departments',
+    'courses',
+    'university_follows',
     'university_discussions',
     'university_discussion_comments',
-    'discussion_comments',
     'university_doubts',
     'university_doubt_answers',
-    'doubt_answers',
-    'university_follows'
+    'community_item_votes'
+  ];
+begin
+  foreach t in array canonical_tables loop
+    execute format('alter table public.%I enable row level security', t);
+    for pol in
+      select policyname
+      from pg_policies
+      where schemaname = 'public'
+        and tablename = t
+    loop
+      execute format('drop policy if exists %I on public.%I', pol.policyname, t);
+    end loop;
+  end loop;
+end $$;
+
+-- 9.1 moderator_roles (Platform admin only for write; self or moderator for read)
+create policy "moderator_roles_select_own_or_mod"
+  on public.moderator_roles for select
+  using (auth.uid() = user_id or public.is_moderator());
+
+create policy "moderator_roles_admin_insert"
+  on public.moderator_roles for insert
+  with check (public.is_platform_admin());
+
+create policy "moderator_roles_admin_update"
+  on public.moderator_roles for update
+  using (public.is_platform_admin())
+  with check (public.is_platform_admin());
+
+create policy "moderator_roles_admin_delete"
+  on public.moderator_roles for delete
+  using (public.is_platform_admin());
+
+-- 9.2 profiles (Owner or moderator only on base table to protect email; public reads use public_student_profiles view)
+create policy "profiles_select_own_or_mod"
+  on public.profiles for select
+  using (auth.uid() = id or public.is_moderator());
+
+create policy "profiles_insert_own"
+  on public.profiles for insert
+  with check (auth.uid() = id and role = 'student');
+
+create policy "profiles_update_own_or_mod"
+  on public.profiles for update
+  using (auth.uid() = id or public.is_moderator())
+  with check (auth.uid() = id or public.is_moderator());
+
+-- 9.3 academic_information (Strictly private to owner; public aggregates use get_public_cohort_counts RPC)
+create policy "academic_info_select_own"
+  on public.academic_information for select
+  using (auth.uid() = user_id);
+
+create policy "academic_info_insert_own"
+  on public.academic_information for insert
+  with check (auth.uid() = user_id);
+
+create policy "academic_info_update_own"
+  on public.academic_information for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "academic_info_delete_own"
+  on public.academic_information for delete
+  using (auth.uid() = user_id);
+
+-- 9.4 user_settings_preferences (Strictly private to owner)
+create policy "user_settings_select_own"
+  on public.user_settings_preferences for select
+  using (auth.uid() = user_id);
+
+create policy "user_settings_insert_own"
+  on public.user_settings_preferences for insert
+  with check (auth.uid() = user_id);
+
+create policy "user_settings_update_own"
+  on public.user_settings_preferences for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- 9.5 stored_files (Visible when linked to a visible published note, or to the uploader/moderator)
+create policy "stored_files_select_visible"
+  on public.stored_files for select
+  using (
+    auth.uid() = coalesce(uploaded_by, created_by)
+    or public.is_moderator()
+    or exists (
+      select 1
+      from public.study_notes sn
+      where (sn.file_id = stored_files.id or sn.file_sha256 = stored_files.sha256_hash)
+        and sn.status = 'published'
+        and sn.is_public = true
+        and (not sn.is_restricted or auth.uid() is not null)
+    )
+  );
+
+create policy "stored_files_insert_authenticated"
+  on public.stored_files for insert
+  with check (
+    auth.uid() is not null
+    and coalesce(uploaded_by, created_by, auth.uid()) = auth.uid()
+    and size_bytes <= 5242880
+  );
+
+create policy "stored_files_delete_own_or_mod"
+  on public.stored_files for delete
+  using (auth.uid() = coalesce(uploaded_by, created_by) or public.is_moderator());
+
+-- 9.6 study_notes & study_note_upvotes
+create policy "study_notes_select_public_or_own"
+  on public.study_notes for select
+  using (
+    (status = 'published' and is_public = true and (not is_restricted or auth.uid() is not null))
+    or auth.uid() = coalesce(author_id, uploader_id)
+    or public.is_moderator()
+  );
+
+create policy "study_notes_insert_own"
+  on public.study_notes for insert
+  with check (
+    auth.uid() is not null
+    and coalesce(author_id, uploader_id) = auth.uid()
+  );
+
+create policy "study_notes_update_own_or_mod"
+  on public.study_notes for update
+  using (auth.uid() = coalesce(author_id, uploader_id) or public.is_moderator())
+  with check (auth.uid() = coalesce(author_id, uploader_id) or public.is_moderator());
+
+create policy "study_notes_delete_own_or_mod"
+  on public.study_notes for delete
+  using (auth.uid() = coalesce(author_id, uploader_id) or public.is_moderator());
+
+create policy "study_note_upvotes_select_public"
+  on public.study_note_upvotes for select
+  using (true);
+
+create policy "study_note_upvotes_insert_own"
+  on public.study_note_upvotes for insert
+  with check (auth.uid() = user_id);
+
+create policy "study_note_upvotes_delete_own"
+  on public.study_note_upvotes for delete
+  using (auth.uid() = user_id);
+
+-- 9.7 forum_topics, forum_posts, forum_comments, votes, bookmarks, reports
+create policy "forum_topics_select_public"
+  on public.forum_topics for select
+  using (true);
+
+create policy "forum_topics_insert_authenticated"
+  on public.forum_topics for insert
+  with check (auth.uid() is not null);
+
+create policy "forum_topics_mod_write"
+  on public.forum_topics for update
+  using (public.is_moderator())
+  with check (public.is_moderator());
+
+create policy "forum_posts_select_public"
+  on public.forum_posts for select
+  using (status = 'published' or auth.uid() = author_id or public.is_moderator());
+
+create policy "forum_posts_insert_own"
+  on public.forum_posts for insert
+  with check (auth.uid() = author_id);
+
+create policy "forum_posts_update_own_or_mod"
+  on public.forum_posts for update
+  using (auth.uid() = author_id or public.is_moderator())
+  with check (auth.uid() = author_id or public.is_moderator());
+
+create policy "forum_posts_delete_own_or_mod"
+  on public.forum_posts for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "forum_comments_select_public"
+  on public.forum_comments for select
+  using (status = 'published' or auth.uid() = author_id or public.is_moderator());
+
+create policy "forum_comments_insert_own"
+  on public.forum_comments for insert
+  with check (auth.uid() = author_id);
+
+create policy "forum_comments_update_own_post_author_or_mod"
+  on public.forum_comments for update
+  using (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.forum_posts fp
+      where fp.id = forum_comments.post_id
+        and fp.author_id = auth.uid()
+    )
   )
-order by t.tablename;
+  with check (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.forum_posts fp
+      where fp.id = forum_comments.post_id
+        and fp.author_id = auth.uid()
+    )
+  );
+
+create policy "forum_comments_delete_own_or_mod"
+  on public.forum_comments for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "forum_post_votes_select_public"
+  on public.forum_post_votes for select
+  using (true);
+
+create policy "forum_post_votes_insert_own"
+  on public.forum_post_votes for insert
+  with check (auth.uid() = user_id);
+
+create policy "forum_post_votes_update_own"
+  on public.forum_post_votes for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "forum_post_votes_delete_own"
+  on public.forum_post_votes for delete
+  using (auth.uid() = user_id);
+
+create policy "forum_comment_votes_select_public"
+  on public.forum_comment_votes for select
+  using (true);
+
+create policy "forum_comment_votes_insert_own"
+  on public.forum_comment_votes for insert
+  with check (auth.uid() = user_id);
+
+create policy "forum_comment_votes_update_own"
+  on public.forum_comment_votes for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "forum_comment_votes_delete_own"
+  on public.forum_comment_votes for delete
+  using (auth.uid() = user_id);
+
+create policy "forum_bookmarks_select_own"
+  on public.forum_bookmarks for select
+  using (auth.uid() = user_id);
+
+create policy "forum_bookmarks_insert_own"
+  on public.forum_bookmarks for insert
+  with check (auth.uid() = user_id);
+
+create policy "forum_bookmarks_delete_own"
+  on public.forum_bookmarks for delete
+  using (auth.uid() = user_id);
+
+create policy "forum_reports_insert_own"
+  on public.forum_reports for insert
+  with check (auth.uid() = reporter_id);
+
+create policy "forum_reports_select_own_or_mod"
+  on public.forum_reports for select
+  using (auth.uid() = reporter_id or public.is_moderator());
+
+create policy "forum_reports_update_mod"
+  on public.forum_reports for update
+  using (public.is_moderator())
+  with check (public.is_moderator());
+
+-- 9.8 academic_programs, enrollments, discussions, doubts
+create policy "academic_programs_select_public"
+  on public.academic_programs for select
+  using (true);
+
+create policy "academic_programs_insert_authenticated"
+  on public.academic_programs for insert
+  with check (auth.uid() is not null and (created_by is null or created_by = auth.uid()));
+
+create policy "academic_programs_update_creator_or_mod"
+  on public.academic_programs for update
+  using (auth.uid() = created_by or public.is_moderator())
+  with check (auth.uid() = created_by or public.is_moderator());
+
+create policy "program_enrollments_select_public"
+  on public.program_enrollments for select
+  using (true);
+
+create policy "program_enrollments_insert_own"
+  on public.program_enrollments for insert
+  with check (auth.uid() = user_id);
+
+create policy "program_enrollments_delete_own"
+  on public.program_enrollments for delete
+  using (auth.uid() = user_id);
+
+create policy "program_discussions_select_public"
+  on public.program_discussions for select
+  using (true);
+
+create policy "program_discussions_insert_own"
+  on public.program_discussions for insert
+  with check (auth.uid() = author_id);
+
+create policy "program_discussions_update_own_or_mod"
+  on public.program_discussions for update
+  using (auth.uid() = author_id or public.is_moderator())
+  with check (auth.uid() = author_id or public.is_moderator());
+
+create policy "program_discussions_delete_own_or_mod"
+  on public.program_discussions for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "program_discussion_comments_select_public"
+  on public.program_discussion_comments for select
+  using (true);
+
+create policy "program_discussion_comments_insert_own"
+  on public.program_discussion_comments for insert
+  with check (auth.uid() = author_id);
+
+create policy "program_discussion_comments_delete_own_or_mod"
+  on public.program_discussion_comments for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "program_doubts_select_public"
+  on public.program_doubts for select
+  using (true);
+
+create policy "program_doubts_insert_own"
+  on public.program_doubts for insert
+  with check (auth.uid() = author_id);
+
+create policy "program_doubts_update_own_or_mod"
+  on public.program_doubts for update
+  using (auth.uid() = author_id or public.is_moderator())
+  with check (auth.uid() = author_id or public.is_moderator());
+
+create policy "program_doubts_delete_own_or_mod"
+  on public.program_doubts for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "program_doubt_answers_select_public"
+  on public.program_doubt_answers for select
+  using (true);
+
+create policy "program_doubt_answers_insert_own"
+  on public.program_doubt_answers for insert
+  with check (auth.uid() = author_id);
+
+create policy "program_doubt_answers_update_own_or_question_author"
+  on public.program_doubt_answers for update
+  using (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.program_doubts pd
+      where pd.id = program_doubt_answers.question_id
+        and pd.author_id = auth.uid()
+    )
+  )
+  with check (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.program_doubts pd
+      where pd.id = program_doubt_answers.question_id
+        and pd.author_id = auth.uid()
+    )
+  );
+
+create policy "program_doubt_answers_delete_own_or_mod"
+  on public.program_doubt_answers for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+-- 9.9 universities, departments, courses, follows, discussions, doubts
+create policy "universities_select_public"
+  on public.universities for select
+  using (true);
+
+create policy "universities_insert_authenticated"
+  on public.universities for insert
+  with check (auth.uid() is not null and (created_by is null or created_by = auth.uid()));
+
+create policy "universities_update_creator_or_mod"
+  on public.universities for update
+  using (auth.uid() = created_by or public.is_moderator())
+  with check (auth.uid() = created_by or public.is_moderator());
+
+create policy "departments_select_public"
+  on public.departments for select
+  using (true);
+
+create policy "departments_mod_write"
+  on public.departments for all
+  using (public.is_moderator())
+  with check (public.is_moderator());
+
+create policy "courses_select_public"
+  on public.courses for select
+  using (true);
+
+create policy "courses_mod_write"
+  on public.courses for all
+  using (public.is_moderator())
+  with check (public.is_moderator());
+
+create policy "university_follows_select_public"
+  on public.university_follows for select
+  using (true);
+
+create policy "university_follows_insert_own"
+  on public.university_follows for insert
+  with check (auth.uid() = user_id);
+
+create policy "university_follows_delete_own"
+  on public.university_follows for delete
+  using (auth.uid() = user_id);
+
+create policy "university_discussions_select_public"
+  on public.university_discussions for select
+  using (true);
+
+create policy "university_discussions_insert_own"
+  on public.university_discussions for insert
+  with check (auth.uid() = author_id);
+
+create policy "university_discussions_update_own_or_mod"
+  on public.university_discussions for update
+  using (auth.uid() = author_id or public.is_moderator())
+  with check (auth.uid() = author_id or public.is_moderator());
+
+create policy "university_discussions_delete_own_or_mod"
+  on public.university_discussions for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "university_discussion_comments_select_public"
+  on public.university_discussion_comments for select
+  using (true);
+
+create policy "university_discussion_comments_insert_own"
+  on public.university_discussion_comments for insert
+  with check (auth.uid() = author_id);
+
+create policy "university_discussion_comments_delete_own_or_mod"
+  on public.university_discussion_comments for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "university_doubts_select_public"
+  on public.university_doubts for select
+  using (true);
+
+create policy "university_doubts_insert_own"
+  on public.university_doubts for insert
+  with check (auth.uid() = author_id);
+
+create policy "university_doubts_update_own_or_mod"
+  on public.university_doubts for update
+  using (auth.uid() = author_id or public.is_moderator())
+  with check (auth.uid() = author_id or public.is_moderator());
+
+create policy "university_doubts_delete_own_or_mod"
+  on public.university_doubts for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+create policy "university_doubt_answers_select_public"
+  on public.university_doubt_answers for select
+  using (true);
+
+create policy "university_doubt_answers_insert_own"
+  on public.university_doubt_answers for insert
+  with check (auth.uid() = author_id);
+
+create policy "university_doubt_answers_update_own_or_question_author"
+  on public.university_doubt_answers for update
+  using (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.university_doubts ud
+      where ud.id = university_doubt_answers.question_id
+        and ud.author_id = auth.uid()
+    )
+  )
+  with check (
+    auth.uid() = author_id
+    or public.is_moderator()
+    or exists (
+      select 1 from public.university_doubts ud
+      where ud.id = university_doubt_answers.question_id
+        and ud.author_id = auth.uid()
+    )
+  );
+
+create policy "university_doubt_answers_delete_own_or_mod"
+  on public.university_doubt_answers for delete
+  using (auth.uid() = author_id or public.is_moderator());
+
+-- 9.10 community_item_votes
+create policy "community_item_votes_select_public"
+  on public.community_item_votes for select
+  using (true);
+
+create policy "community_item_votes_insert_own"
+  on public.community_item_votes for insert
+  with check (auth.uid() = user_id);
+
+create policy "community_item_votes_delete_own"
+  on public.community_item_votes for delete
+  using (auth.uid() = user_id);
+
+-- ============================================================================
+-- 10. STORAGE BUCKETS & STORAGE RLS POLICIES (5 MB STUDY MATERIALS, 2 MB AVATARS)
+-- ============================================================================
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'study-materials',
+  'study-materials',
+  true,
+  5242880,
+  array[
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain',
+    'text/markdown',
+    'image/png',
+    'image/jpeg',
+    'image/webp'
+  ]
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'avatars',
+  'avatars',
+  true,
+  2097152,
+  array['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "study_materials_public_read" on storage.objects;
+drop policy if exists "study_materials_auth_insert" on storage.objects;
+drop policy if exists "study_materials_owner_update" on storage.objects;
+drop policy if exists "study_materials_owner_delete" on storage.objects;
+drop policy if exists "avatars_public_read" on storage.objects;
+drop policy if exists "avatars_auth_insert" on storage.objects;
+drop policy if exists "avatars_owner_update" on storage.objects;
+drop policy if exists "avatars_owner_delete" on storage.objects;
+
+create policy "study_materials_public_read"
+  on storage.objects for select
+  using (bucket_id = 'study-materials');
+
+create policy "study_materials_auth_insert"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'study-materials'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "study_materials_owner_update"
+  on storage.objects for update
+  using (
+    bucket_id = 'study-materials'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "study_materials_owner_delete"
+  on storage.objects for delete
+  using (
+    bucket_id = 'study-materials'
+    and (
+      (auth.uid() is not null and (storage.foldername(name))[1] = auth.uid()::text)
+      or public.is_moderator()
+    )
+  );
+
+create policy "avatars_public_read"
+  on storage.objects for select
+  using (bucket_id = 'avatars');
+
+create policy "avatars_auth_insert"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "avatars_owner_update"
+  on storage.objects for update
+  using (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "avatars_owner_delete"
+  on storage.objects for delete
+  using (
+    bucket_id = 'avatars'
+    and auth.uid() is not null
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- ============================================================================
+-- 11. HARDENED RPC FUNCTIONS
+-- ============================================================================
+
+-- 11.1 Validated download counter increment
+create or replace function public.increment_downloads(row_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if row_id is null or length(trim(row_id)) = 0 then
+    return;
+  end if;
+
+  update public.study_notes
+  set downloads = coalesce(downloads, 0) + 1,
+      downloads_count = coalesce(downloads_count, 0) + 1,
+      updated_at = now()
+  where id = row_id
+    and status = 'published'
+    and is_public = true
+    and (not is_restricted or auth.uid() is not null);
+end;
+$$;
+
+-- 11.2 User-bound community upvote persistence (prevents repeated anonymous counter manipulation)
+create or replace function public.adjust_community_upvote(
+  p_table text,
+  p_id text,
+  p_delta integer
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_new_count integer := 0;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'Authentication is required to vote on community items.';
+  end if;
+
+  if p_table not in (
+    'program_discussions',
+    'program_discussion_comments',
+    'program_doubts',
+    'program_doubt_answers',
+    'university_discussions',
+    'university_discussion_comments',
+    'university_doubts',
+    'university_doubt_answers'
+  ) then
+    raise exception 'Unsupported community table: %', p_table;
+  end if;
+
+  if p_delta > 0 then
+    insert into public.community_item_votes (target_table, target_id, user_id)
+    values (p_table, p_id, v_uid)
+    on conflict (target_table, target_id, user_id) do nothing;
+  else
+    delete from public.community_item_votes
+    where target_table = p_table
+      and target_id = p_id
+      and user_id = v_uid;
+  end if;
+
+  select count(*)::integer
+  into v_new_count
+  from public.community_item_votes
+  where target_table = p_table
+    and target_id = p_id;
+
+  execute format(
+    'update public.%I set upvotes_count = $1 where id = $2',
+    p_table
+  ) using v_new_count, p_id;
+
+  return v_new_count;
+end;
+$$;
+
+-- 11.3 Case-insensitive username availability check (without exposing profiles.email)
+create or replace function public.check_username_available(
+  requested_username text,
+  current_user_id uuid default null
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_clean text;
+begin
+  v_clean := lower(trim(coalesce(requested_username, '')));
+  if length(v_clean) < 3 then
+    return false;
+  end if;
+
+  return not exists (
+    select 1
+    from public.profiles p
+    where lower(p.username) = v_clean
+      and (current_user_id is null or p.id <> current_user_id)
+  );
+end;
+$$;
+
+-- 11.4 Aggregated public cohort counts (never exposes individual academic_information rows)
+create or replace function public.get_public_cohort_counts()
+returns table (
+  institution_name text,
+  major text,
+  student_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    coalesce(nullif(trim(ai.institution_name), ''), '') as institution_name,
+    coalesce(nullif(trim(ai.major), ''), nullif(trim(ai.degree_program), ''), '') as major,
+    count(distinct ai.user_id) as student_count
+  from public.academic_information ai
+  where nullif(trim(ai.institution_name), '') is not null
+     or nullif(trim(ai.major), '') is not null
+     or nullif(trim(ai.degree_program), '') is not null
+  group by 1, 2;
+$$;
+
+-- ============================================================================
+-- 12. EXPLICIT TABLE, VIEW & FUNCTION GRANTS + REALTIME PUBLICATIONS
+-- ============================================================================
+
+grant usage on schema public to anon, authenticated;
+
+-- Publicly readable tables
+grant select on
+  public.public_student_profiles,
+  public.stored_files,
+  public.study_notes,
+  public.study_note_upvotes,
+  public.forum_topics,
+  public.forum_posts,
+  public.forum_comments,
+  public.forum_post_votes,
+  public.forum_comment_votes,
+  public.academic_programs,
+  public.program_enrollments,
+  public.program_discussions,
+  public.program_discussion_comments,
+  public.program_doubts,
+  public.program_doubt_answers,
+  public.universities,
+  public.departments,
+  public.courses,
+  public.university_follows,
+  public.university_discussions,
+  public.university_discussion_comments,
+  public.university_doubts,
+  public.university_doubt_answers,
+  public.community_item_votes
+to anon, authenticated;
+
+-- Authenticated write/own-row tables (protected by RLS + column-protection triggers)
+grant select, insert, update on public.profiles to authenticated;
+grant select, insert, update, delete on
+  public.academic_information,
+  public.user_settings_preferences,
+  public.stored_files,
+  public.study_notes,
+  public.study_note_upvotes,
+  public.forum_topics,
+  public.forum_posts,
+  public.forum_comments,
+  public.forum_post_votes,
+  public.forum_comment_votes,
+  public.forum_bookmarks,
+  public.forum_reports,
+  public.academic_programs,
+  public.program_enrollments,
+  public.program_discussions,
+  public.program_discussion_comments,
+  public.program_doubts,
+  public.program_doubt_answers,
+  public.universities,
+  public.university_follows,
+  public.university_discussions,
+  public.university_discussion_comments,
+  public.university_doubts,
+  public.university_doubt_answers,
+  public.community_item_votes
+to authenticated;
+
+-- Moderator roles: read-only for authenticated (subject to RLS); no self-insert/update/delete
+revoke insert, update, delete on public.moderator_roles from anon, authenticated;
+grant select on public.moderator_roles to authenticated;
+
+-- Function execution grants
+grant execute on function public.increment_downloads(text) to anon, authenticated;
+revoke execute on function public.adjust_community_upvote(text, text, integer) from anon;
+grant execute on function public.adjust_community_upvote(text, text, integer) to authenticated;
+grant execute on function public.check_username_available(text, uuid) to anon, authenticated;
+grant execute on function public.get_public_cohort_counts() to anon, authenticated;
+grant execute on function public.is_moderator() to anon, authenticated;
+grant execute on function public.is_platform_admin() to anon, authenticated;
+
+-- Ensure Realtime publication includes canonical shared tables
+do $$
+declare
+  rt_table text;
+  rt_tables text[] := array[
+    'study_notes',
+    'study_note_upvotes',
+    'forum_posts',
+    'forum_comments',
+    'forum_post_votes',
+    'forum_comment_votes',
+    'program_discussions',
+    'program_discussion_comments',
+    'program_doubts',
+    'program_doubt_answers',
+    'university_discussions',
+    'university_discussion_comments',
+    'university_doubts',
+    'university_doubt_answers',
+    'community_item_votes'
+  ];
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach rt_table in array rt_tables loop
+      if not exists (
+        select 1
+        from pg_publication_tables
+        where pubname = 'supabase_realtime'
+          and schemaname = 'public'
+          and tablename = rt_table
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', rt_table);
+      end if;
+    end loop;
+  end if;
+end $$;
+
+commit;

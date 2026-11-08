@@ -84,6 +84,16 @@ export function canUserDeleteNote(
 ): boolean {
   if (!note) return false;
 
+  if (
+    user &&
+    !user.isGuest &&
+    (user.isModerator === true ||
+      user.moderatorRole === 'moderator' ||
+      user.moderatorRole === 'admin')
+  ) {
+    return true;
+  }
+
   const currentUserId = user?.id?.trim();
   const localUploaderId = getOrCreateLocalUploaderId();
   const ownedRegistry = getOwnedNotesRegistry();
@@ -918,6 +928,9 @@ export interface SharedResourceUploadParams {
   additionalProgramIds?: string[];
   programName: string;
   degreeTier: DegreeTier;
+  isRestricted?: boolean;
+  isPublic?: boolean;
+  isPublished?: boolean;
   idempotencyKey?: string;
   supabaseClient: SupabaseClient | null;
   supabaseUrl?: string;
@@ -1059,13 +1072,26 @@ endobj
       // Reserve bytes in-flight so concurrent uploads cannot exceed the 1 GB quota
       inFlightByteReservations.set(reservationId, finalSizeBytes);
 
+      const effectiveUploaderIdForStorage =
+        params.uploaderId?.trim() || getOrCreateLocalUploaderId();
+      const isUuidForStorage =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          effectiveUploaderIdForStorage
+        );
+
       // Deduplicate concurrent identical file uploads in flight
       let uploadPromise = inFlightContentHashes.get(contentHash);
       if (!uploadPromise) {
         uploadPromise = (async () => {
           const extMatch = finalFile!.name.match(/\.[^.]+$/);
           const ext = extMatch ? extMatch[0].toLowerCase() : '.pdf';
-          const hashStoragePath = `shared/${contentHash}${ext}`;
+          const hashStoragePath = isUuidForStorage
+            ? `${effectiveUploaderIdForStorage}/${contentHash}${ext}`
+            : `shared/${contentHash}${ext}`;
+          const targetBucket =
+            params.isRestricted || params.isPublic === false || params.isPublished === false
+              ? 'study-materials-restricted'
+              : 'study-materials';
           let resolvedUrl = '';
           let uploadedToRemoteBucket = false;
 
@@ -1076,46 +1102,68 @@ endobj
             finalFile
           ) {
             const { error: storageError } = await params.supabaseClient.storage
-              .from('study-materials')
+              .from(targetBucket)
               .upload(hashStoragePath, finalFile, {
                 contentType: finalFile.type || 'application/pdf',
                 upsert: false
               });
 
-            // If file already exists in bucket (e.g. 409 Duplicate) or uploaded cleanly, get its public URL
+            // If file already exists in bucket (e.g. 409 Duplicate) or uploaded cleanly, resolve URL
             if (
               !storageError ||
               storageError.message?.toLowerCase().includes('already exists') ||
               storageError.message?.toLowerCase().includes('duplicate')
             ) {
-              const { data: publicUrlData } = params.supabaseClient.storage
-                .from('study-materials')
-                .getPublicUrl(hashStoragePath);
-              if (publicUrlData?.publicUrl) {
-                resolvedUrl = publicUrlData.publicUrl;
-                uploadedToRemoteBucket = true;
+              if (targetBucket === 'study-materials') {
+                const { data: publicUrlData } = params.supabaseClient.storage
+                  .from('study-materials')
+                  .getPublicUrl(hashStoragePath);
+                if (publicUrlData?.publicUrl) {
+                  resolvedUrl = publicUrlData.publicUrl;
+                }
+              } else {
+                resolvedUrl = '';
               }
+              uploadedToRemoteBucket = true;
             } else {
-              storageErrorMsg = `Supabase Storage bucket "study-materials" error: ${storageError.message}`;
+              storageErrorMsg = `Supabase Storage bucket "${targetBucket}" error: ${storageError.message}`;
             }
 
             if (uploadedToRemoteBucket) {
-              // Record in stored_files table if present
+              // Register in stored_files via SECURITY DEFINER RPC (safe across multiple users)
               try {
-                await params.supabaseClient.from('stored_files').upsert(
-                  [
-                    {
-                      content_hash: contentHash,
-                      storage_path: hashStoragePath,
-                      file_url: resolvedUrl,
-                      mime_type: finalFile.type || 'application/pdf',
-                      size_bytes: finalSizeBytes
-                    }
-                  ],
-                  { onConflict: 'content_hash' }
-                );
+                const { error: sfRpcErr } = await params.supabaseClient.rpc('upsert_stored_file', {
+                  p_content_hash: contentHash,
+                  p_storage_bucket: targetBucket,
+                  p_storage_path: hashStoragePath,
+                  p_file_url: resolvedUrl,
+                  p_original_filename: finalFile.name,
+                  p_mime_type: finalFile.type || 'application/pdf',
+                  p_size_bytes: finalSizeBytes,
+                  p_is_public: targetBucket === 'study-materials'
+                });
+                if (sfRpcErr) {
+                  await params.supabaseClient.from('stored_files').upsert(
+                    [
+                      {
+                        content_hash: contentHash,
+                        sha256_hash: contentHash,
+                        storage_bucket: targetBucket,
+                        storage_path: hashStoragePath,
+                        file_url: resolvedUrl,
+                        original_filename: finalFile.name,
+                        mime_type: finalFile.type || 'application/pdf',
+                        size_bytes: finalSizeBytes,
+                        is_public: targetBucket === 'study-materials',
+                        uploaded_by: isUuidForStorage ? effectiveUploaderIdForStorage : null,
+                        created_by: isUuidForStorage ? effectiveUploaderIdForStorage : null
+                      }
+                    ],
+                    { onConflict: 'content_hash', ignoreDuplicates: true }
+                  );
+                }
               } catch {
-                // Ignore if stored_files table is not yet migrated
+                // Ignore if stored_files table or RPC is not yet migrated
               }
             }
           }
@@ -1230,7 +1278,20 @@ endobj
           `Program: ${params.programName} (Semester ${params.semesterNumber})`,
           `Instructor: ${params.professor.trim() || 'Faculty Department'}`,
           `Academic Term: ${params.academicYear} ${params.semester}`
-        ]
+        ],
+        _xeusarMeta: {
+          programId: params.programId,
+          programIds,
+          programName: params.programName,
+          degreeTier: params.degreeTier,
+          semesterNumber: params.semesterNumber,
+          universityId: params.universityId,
+          courseId: params.courseId,
+          courseName: normalizedCourseName,
+          contentHash,
+          storagePath,
+          uploaderId: effectiveUploaderId
+        }
       },
       {
         pageNumber: 2,
@@ -1250,6 +1311,11 @@ endobj
       params.isConnected &&
       isValidHttpUrl(params.supabaseUrl)
     ) {
+      const resolvedTargetBucket =
+        params.isRestricted || params.isPublic === false || params.isPublished === false
+          ? 'study-materials-restricted'
+          : 'study-materials';
+
       const fullPayload: Record<string, any> = {
         id: noteId,
         title: params.title.trim(),
@@ -1257,31 +1323,35 @@ endobj
           params.description.trim() ||
           `Comprehensive ${params.materialType.replace(/_/g, ' ')} for ${normalizedCourseName} (${resolvedSubject}).`,
         course_code: normalizedCode,
-        course_name: normalizedCourseName,
         course_id: params.courseId || null,
         subject: resolvedSubject,
-        material_type: params.materialType,
-        academic_year: params.academicYear,
+        note_type: params.materialType,
+        resource_type: params.materialType,
+        academic_year: String(params.academicYear),
         semester: params.semester,
-        semester_number: params.semesterNumber,
         professor: params.professor.trim() || 'Course Instructor',
-        file_url: fileUrl,
+        file_url: resolvedTargetBucket === 'study-materials-restricted' ? '' : fileUrl,
+        storage_bucket: resolvedTargetBucket,
+        storage_path: storagePath,
         file_name: finalFile ? finalFile.name : `${normalizedCourseName.replace(/\s+/g, '_')}.pdf`,
+        file_type: finalFile?.type || 'application/pdf',
+        mime_type: finalFile?.type || 'application/pdf',
+        file_size: finalSizeBytes,
         file_size_bytes: finalSizeBytes,
         page_count: calculatedPages,
         uploader_id: isUuidUploaderId ? effectiveUploaderId : null,
-        uploader_name: params.uploaderName.trim() || 'Anonymous Student',
-        uploader_university:
+        author_id: isUuidUploaderId ? effectiveUploaderId : null,
+        author_name: params.uploaderName.trim() || 'Anonymous Student',
+        author_university:
           params.uploaderUniversity.trim() || 'Open Campus',
+        university: params.uploaderUniversity.trim() || 'Open Campus',
         university_id: params.universityId || null,
-        program_id: params.programId,
-        program_ids: programIds,
-        program_name: params.programName,
-        degree_tier: params.degreeTier,
+        program_id: params.programId || null,
         content_hash: contentHash,
-        storage_path: storagePath,
-        downloads_count: 0,
-        upvotes_count: 1,
+        file_sha256: contentHash,
+        is_public: params.isPublic !== false && !params.isRestricted,
+        is_published: params.isPublished !== false,
+        is_restricted: Boolean(params.isRestricted),
         tags:
           params.tags.length > 0
             ? params.tags
@@ -1336,6 +1406,13 @@ endobj
         } else {
           dbSyncWarning = classified.userMessage;
         }
+      }
+
+      if (syncedToSupabase && isUuidUploaderId) {
+        params.supabaseClient
+          .from('study_note_upvotes')
+          .upsert({ note_id: noteId, user_id: effectiveUploaderId }, { onConflict: 'note_id,user_id' })
+          .then(() => {}, () => {});
       }
     } else {
       dbSyncWarning = 'Supabase connection is not active; saved to local browser storage only.';
@@ -1532,17 +1609,13 @@ export async function updateSharedResource(
         title: updated.title,
         description: updated.description,
         course_code: updated.courseCode,
-        course_name: updated.courseName,
         course_id: updated.courseId || null,
         subject: updated.subject,
-        material_type: updated.materialType,
+        note_type: updated.materialType,
+        resource_type: updated.materialType,
         semester: updated.semester,
-        semester_number: updated.semesterNumber,
         professor: updated.professor,
-        program_id: updated.programId,
-        program_ids: updated.programIds,
-        program_name: updated.programName,
-        degree_tier: updated.degreeTier,
+        program_id: updated.programId || null,
         tags: updated.tags,
         pages: updated.pages
       })

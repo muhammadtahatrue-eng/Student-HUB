@@ -547,8 +547,8 @@ function mapRowToForumPost(
   isBookmarked = false
 ): ForumPost {
   const topicObj = FORUM_TOPICS.find(t => t.id === row.topic_id) || FORUM_TOPICS[9];
-  const upvotes = Number(row.upvotes_count ?? 0);
-  const downvotes = Number(row.downvotes_count ?? 0);
+  const upvotes = Number(row.upvotes_count ?? row.upvotes ?? 0);
+  const downvotes = Number(row.downvotes_count ?? row.downvotes ?? 0);
   return {
     id: String(row.id),
     title: String(row.title || ''),
@@ -571,7 +571,7 @@ function mapRowToForumPost(
     downvotesCount: downvotes,
     score: upvotes - downvotes,
     userVote,
-    commentsCount: Number(row.comments_count ?? 0),
+    commentsCount: Number(row.comments_count ?? row.comment_count ?? 0),
     isBookmarked,
     acceptedCommentId: row.accepted_comment_id || null,
     status: row.status || 'published',
@@ -582,12 +582,13 @@ function mapRowToForumPost(
 }
 
 function mapRowToForumComment(row: any, userVote: 1 | -1 | 0 = 0): ForumComment {
-  const upvotes = Number(row.upvotes_count ?? 0);
-  const downvotes = Number(row.downvotes_count ?? 0);
+  const upvotes = Number(row.upvotes_count ?? row.upvotes ?? 0);
+  const downvotes = Number(row.downvotes_count ?? row.downvotes ?? 0);
+  const parentId = row.parent_comment_id ?? row.parent_id ?? null;
   return {
     id: String(row.id),
     postId: String(row.post_id),
-    parentCommentId: row.parent_comment_id ? String(row.parent_comment_id) : null,
+    parentCommentId: parentId ? String(parentId) : null,
     body: String(row.body || ''),
     authorId: String(row.author_id || ''),
     authorName: String(row.author_name || 'Student Scholar'),
@@ -644,10 +645,14 @@ export async function fetchForumPosts(
       } else if (postRows) {
         // Also fetch user's votes and bookmarks from Supabase if authenticated
         if (currentUserId) {
-          const [votesRes, bookmarksRes] = await Promise.all([
+          const [postVotesRes, commentVotesRes, bookmarksRes] = await Promise.all([
             sb
-              .from('forum_votes')
-              .select('target_type, target_id, vote_value')
+              .from('forum_post_votes')
+              .select('post_id, vote_type')
+              .eq('user_id', currentUserId),
+            sb
+              .from('forum_comment_votes')
+              .select('comment_id, vote_type')
               .eq('user_id', currentUserId),
             sb
               .from('forum_bookmarks')
@@ -655,15 +660,25 @@ export async function fetchForumPosts(
               .eq('user_id', currentUserId)
           ]);
 
-          if (!votesRes.error && Array.isArray(votesRes.data)) {
-            votesRes.data.forEach(v => {
-              const key = `${currentUserId}::${v.target_type}::${v.target_id}`;
-              if (v.vote_value === 1 || v.vote_value === -1) {
-                voteMap[key] = v.vote_value;
+          if (!postVotesRes.error && Array.isArray(postVotesRes.data)) {
+            postVotesRes.data.forEach(v => {
+              const key = `${currentUserId}::post::${v.post_id}`;
+              if (v.vote_type === 1 || v.vote_type === -1) {
+                voteMap[key] = v.vote_type;
               }
             });
-            saveStoredVoteMap(voteMap);
           }
+
+          if (!commentVotesRes.error && Array.isArray(commentVotesRes.data)) {
+            commentVotesRes.data.forEach(v => {
+              const key = `${currentUserId}::comment::${v.comment_id}`;
+              if (v.vote_type === 1 || v.vote_type === -1) {
+                voteMap[key] = v.vote_type;
+              }
+            });
+          }
+
+          saveStoredVoteMap(voteMap);
 
           if (!bookmarksRes.error && Array.isArray(bookmarksRes.data)) {
             bookmarksRes.data.forEach(b => userBookmarks.add(String(b.post_id)));
@@ -927,15 +942,14 @@ export async function createForumPost(params: {
       } else if (data) {
         syncedToDb = true;
         await sb
-          .from('forum_votes')
+          .from('forum_post_votes')
           .upsert(
             {
+              post_id: postId,
               user_id: params.author.id,
-              target_type: 'post',
-              target_id: postId,
-              vote_value: 1
+              vote_type: 1
             },
-            { onConflict: 'user_id,target_type,target_id' }
+            { onConflict: 'post_id,user_id' }
           )
           .then(() => {}, () => {});
       }
@@ -1071,11 +1085,11 @@ export async function deleteForumPost(params: {
   const sb = params.supabase ?? getSupabaseInstance();
   if (sb) {
     try {
-      const { error } = await sb
-        .from('forum_posts')
-        .delete()
-        .eq('id', params.postId)
-        .eq('author_id', params.user.id);
+      let query = sb.from('forum_posts').delete().eq('id', params.postId);
+      if (!isForumModerator(params.user)) {
+        query = query.eq('author_id', params.user.id);
+      }
+      const { error } = await query;
       if (error) {
         const classified = classifySupabaseError(error, 'forum_posts');
         if (classified.category === 'permission_denied') {
@@ -1119,6 +1133,24 @@ export async function fetchForumComments(
         .order('created_at', { ascending: true });
 
       if (!error && data) {
+        if (currentUserId && data.length > 0) {
+          const commentIds = data.map(r => String(r.id));
+          const { data: voteRows, error: voteErr } = await sb
+            .from('forum_comment_votes')
+            .select('comment_id, vote_type')
+            .eq('user_id', currentUserId)
+            .in('comment_id', commentIds);
+          if (!voteErr && Array.isArray(voteRows)) {
+            voteRows.forEach(v => {
+              const key = `${currentUserId}::comment::${v.comment_id}`;
+              if (v.vote_type === 1 || v.vote_type === -1) {
+                voteMap[key] = v.vote_type;
+              }
+            });
+            saveStoredVoteMap(voteMap);
+          }
+        }
+
         const merged = new Map<string, ForumComment>();
         // Keep only unsynced local comments for current user
         localComments
@@ -1244,6 +1276,7 @@ export async function createForumComment(params: {
         id: commentId,
         post_id: newComment.postId,
         parent_comment_id: newComment.parentCommentId,
+        parent_id: newComment.parentCommentId,
         body: newComment.body,
         author_id: newComment.authorId,
         author_name: newComment.authorName,
@@ -1252,7 +1285,9 @@ export async function createForumComment(params: {
         author_program: newComment.authorProgram || null,
         author_degree_tier: newComment.authorDegreeTier || null,
         upvotes_count: 1,
+        upvotes: 1,
         downvotes_count: 0,
+        downvotes: 0,
         is_accepted: false,
         status: 'published'
       });
@@ -1265,6 +1300,17 @@ export async function createForumComment(params: {
         syncWarning = classified.userMessage;
       } else {
         syncedToDb = true;
+        await sb
+          .from('forum_comment_votes')
+          .upsert(
+            {
+              comment_id: commentId,
+              user_id: params.author.id,
+              vote_type: 1
+            },
+            { onConflict: 'comment_id,user_id' }
+          )
+          .then(() => {}, () => {});
       }
     } catch (err: any) {
       syncWarning = err?.message;
@@ -1389,11 +1435,11 @@ export async function deleteForumComment(params: {
   const sb = params.supabase ?? getSupabaseInstance();
   if (sb) {
     try {
-      const { error } = await sb
-        .from('forum_comments')
-        .delete()
-        .eq('id', params.commentId)
-        .eq('author_id', params.user.id);
+      let query = sb.from('forum_comments').delete().eq('id', params.commentId);
+      if (!isForumModerator(params.user)) {
+        query = query.eq('author_id', params.user.id);
+      }
+      const { error } = await query;
       if (error) {
         const classified = classifySupabaseError(error, 'forum_comments');
         if (classified.category === 'permission_denied') {
@@ -1470,7 +1516,10 @@ export async function toggleAcceptedForumAnswer(params: {
     try {
       const { error } = await sb
         .from('forum_posts')
-        .update({ accepted_comment_id: nextAcceptedId })
+        .update({
+          accepted_comment_id: nextAcceptedId,
+          is_answered: Boolean(nextAcceptedId)
+        })
         .eq('id', params.postId)
         .eq('author_id', params.user.id);
       if (error) {
@@ -1479,6 +1528,19 @@ export async function toggleAcceptedForumAnswer(params: {
           return { acceptedCommentId: post.acceptedCommentId || null, error: classified.userMessage };
         }
       }
+      await sb
+        .from('forum_comments')
+        .update({ is_accepted: false })
+        .eq('post_id', params.postId)
+        .then(() => {
+          if (nextAcceptedId) {
+            return sb
+              .from('forum_comments')
+              .update({ is_accepted: true })
+              .eq('id', nextAcceptedId)
+              .eq('post_id', params.postId);
+          }
+        }, () => {});
     } catch {}
   }
 
@@ -1587,23 +1649,40 @@ export async function voteOnForumTarget(params: {
   const sb = params.supabase ?? getSupabaseInstance();
   if (sb) {
     try {
-      if (nextVote === 0) {
-        await sb
-          .from('forum_votes')
-          .delete()
-          .eq('user_id', params.user.id)
-          .eq('target_type', params.targetType)
-          .eq('target_id', params.targetId);
+      if (params.targetType === 'post') {
+        if (nextVote === 0) {
+          await sb
+            .from('forum_post_votes')
+            .delete()
+            .eq('user_id', params.user.id)
+            .eq('post_id', params.targetId);
+        } else {
+          await sb.from('forum_post_votes').upsert(
+            {
+              post_id: params.targetId,
+              user_id: params.user.id,
+              vote_type: nextVote
+            },
+            { onConflict: 'post_id,user_id' }
+          );
+        }
       } else {
-        await sb.from('forum_votes').upsert(
-          {
-            user_id: params.user.id,
-            target_type: params.targetType,
-            target_id: params.targetId,
-            vote_value: nextVote
-          },
-          { onConflict: 'user_id,target_type,target_id' }
-        );
+        if (nextVote === 0) {
+          await sb
+            .from('forum_comment_votes')
+            .delete()
+            .eq('user_id', params.user.id)
+            .eq('comment_id', params.targetId);
+        } else {
+          await sb.from('forum_comment_votes').upsert(
+            {
+              comment_id: params.targetId,
+              user_id: params.user.id,
+              vote_type: nextVote
+            },
+            { onConflict: 'comment_id,user_id' }
+          );
+        }
       }
     } catch {}
   }
@@ -1674,14 +1753,10 @@ export async function toggleForumBookmark(params: {
 
 export function isForumModerator(user: StudentUser | null | undefined): boolean {
   if (!user || user.isGuest) return false;
-  const email = (user.email || '').toLowerCase();
-  const username = (user.username || '').toLowerCase();
-  return (
-    email === 'muhammadtahatrue@gmail.com' ||
-    email.endsWith('@xeusar.edu') ||
-    username === 'admin' ||
-    username === 'moderator' ||
-    username === 'muhammadtahatrue'
+  return Boolean(
+    user.isModerator === true ||
+      user.moderatorRole === 'moderator' ||
+      user.moderatorRole === 'admin'
   );
 }
 

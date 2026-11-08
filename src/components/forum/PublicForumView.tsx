@@ -436,6 +436,37 @@ export const PublicForumView: React.FC<PublicForumViewProps> = ({
     setFollowedTopics(getFollowedForumTopics(user?.id));
   }, [supabase, user?.id]);
 
+  // Subscribe to live cross-user Supabase Realtime updates for forum_posts, forum_comments, and forum_votes
+  useEffect(() => {
+    if (!supabase || !supabaseConfig.isConnected) return;
+
+    const refreshForumState = () => {
+      fetchForumPosts(supabase, user?.id)
+        .then(res => {
+          if (res.posts) setPosts(res.posts);
+        })
+        .catch(() => {});
+
+      if (activePostId) {
+        fetchForumComments(supabase, activePostId, user?.id)
+          .then(list => setComments(list))
+          .catch(() => {});
+      }
+    };
+
+    const channel = supabase
+      .channel('public:xeusar_forum_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_posts' }, refreshForumState)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_comments' }, refreshForumState)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_post_votes' }, refreshForumState)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forum_comment_votes' }, refreshForumState)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, supabaseConfig.isConnected, user?.id, activePostId]);
+
   useEffect(() => {
     if (initialPostId) {
       setActivePostId(initialPostId);

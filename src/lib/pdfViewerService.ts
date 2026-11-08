@@ -483,19 +483,57 @@ export function generateValidPdfDocumentBlob(note: StudyNote): Blob {
 function extractStorageKeysFromUrl(fileUrl?: string): string[] {
   if (!fileUrl || fileUrl.startsWith('data:')) return [];
   const keys: string[] = [fileUrl];
-  const sharedMatch = fileUrl.match(/shared\/([a-f0-9]{16,64})(\.[a-z0-9]+)?/i);
+  const bucketMatch = fileUrl.match(/\/study-materials\/([^?#]+)/i);
+  if (bucketMatch && bucketMatch[1]) {
+    keys.push(decodeURIComponent(bucketMatch[1]));
+  }
+  const sharedMatch = fileUrl.match(/(?:[0-9a-f-]{36}|shared)\/([a-f0-9]{16,64})(\.[a-z0-9]+)?/i);
   if (sharedMatch) {
-    keys.push(sharedMatch[0]); // e.g., shared/<hash>.pdf
+    keys.push(sharedMatch[0]); // e.g., <userId>/<hash>.pdf or shared/<hash>.pdf
     keys.push(sharedMatch[1]); // e.g., <hash>
   }
   return keys;
 }
 
 /**
+ * Resolves a direct or 300-second signed PDF URL for a study note across
+ * public ('study-materials') and restricted ('study-materials-restricted') buckets.
+ */
+export async function resolveStudyNotePdfUrl(note: {
+  storage_bucket?: string | null;
+  storage_path?: string | null;
+  file_url?: string | null;
+  is_restricted?: boolean | null;
+}): Promise<string | null> {
+  const supabase = getSupabaseInstance();
+  const bucket =
+    note.storage_bucket === 'study-materials-restricted' || note.is_restricted
+      ? 'study-materials-restricted'
+      : 'study-materials';
+
+  if (bucket === 'study-materials-restricted') {
+    if (!note.storage_path || !supabase) return null;
+    const { data, error } = await supabase.storage
+      .from('study-materials-restricted')
+      .createSignedUrl(note.storage_path, 300);
+    if (error || !data?.signedUrl) return null;
+    return data.signedUrl;
+  }
+
+  if (note.file_url && note.file_url.trim().length > 0) {
+    return note.file_url;
+  }
+  if (note.storage_path && supabase) {
+    return supabase.storage.from('study-materials').getPublicUrl(note.storage_path).data.publicUrl;
+  }
+  return null;
+}
+
+/**
  * Resolves a valid, viewable PDF Blob and Object URL for ANY posted StudyNote.
  * 1. Checks if `note.fileUrl` is an inline base64 Data URL (`data:application/pdf...`).
  * 2. Checks local IndexedDB / memory cache by contentHash, URL hash, storagePath, note.id, and fileName.
- * 3. Fetches from Supabase Storage (public URL or authenticated `.download()`) if available.
+ * 3. Fetches from Supabase Storage (`study-materials-restricted` with 300s signed URL or `study-materials`) if available.
  * 4. Synthesizes a spec-compliant multi-page PDF 1.4 binary from the note's pages & metadata.
  */
 export async function resolveViewablePdfForNote(note: StudyNote): Promise<{
@@ -546,26 +584,80 @@ export async function resolveViewablePdfForNote(note: StudyNote): Promise<{
     }
   }
 
-  // 3. Try Supabase Storage SDK download if we have a storage path (`shared/...`)
+  // 3. Try Supabase Storage SDK download / 300s signed URL if we have a canonical storage path
   const storagePathCandidate =
     note.storagePath ||
-    urlKeys.find(k => k.startsWith('shared/'));
+    urlKeys.find(k => !k.startsWith('http://') && !k.startsWith('https://') && k.includes('/'));
 
   if (storagePathCandidate) {
     try {
       const supabase = getSupabaseInstance();
       if (supabase) {
-        const { data: downloadedBlob, error } = await supabase.storage
-          .from('study-materials')
-          .download(storagePathCandidate);
-        if (!error && downloadedBlob && downloadedBlob.size > 0) {
-          await storeUploadedFileAllKeys(downloadedBlob, candidateKeys);
-          return {
-            blobUrl: URL.createObjectURL(downloadedBlob),
-            blob: downloadedBlob,
-            mimeType: downloadedBlob.type || 'application/pdf',
-            isUploadedFile: true
-          };
+        const noteAny = note as any;
+        const isRestrictedNote =
+          noteAny.storageBucket === 'study-materials-restricted' ||
+          noteAny.storage_bucket === 'study-materials-restricted' ||
+          Boolean(noteAny.isRestricted || noteAny.is_restricted);
+
+        const bucketsToTry = isRestrictedNote
+          ? (['study-materials-restricted', 'study-materials'] as const)
+          : (['study-materials', 'study-materials-restricted'] as const);
+
+        for (const bucketName of bucketsToTry) {
+          if (bucketName === 'study-materials-restricted') {
+            const signedUrl = await resolveStudyNotePdfUrl({
+              storage_bucket: 'study-materials-restricted',
+              storage_path: storagePathCandidate,
+              is_restricted: true
+            });
+            if (signedUrl) {
+              const signedResp = await fetch(signedUrl);
+              if (signedResp.ok) {
+                const signedBlob = await signedResp.blob();
+                if (signedBlob.size > 0) {
+                  await storeUploadedFileAllKeys(signedBlob, candidateKeys);
+                  return {
+                    blobUrl: URL.createObjectURL(signedBlob),
+                    blob: signedBlob,
+                    mimeType: signedBlob.type || 'application/pdf',
+                    isUploadedFile: true
+                  };
+                }
+              }
+            }
+          } else {
+            const { data: downloadedBlob, error } = await supabase.storage
+              .from('study-materials')
+              .download(storagePathCandidate);
+            if (!error && downloadedBlob && downloadedBlob.size > 0) {
+              await storeUploadedFileAllKeys(downloadedBlob, candidateKeys);
+              return {
+                blobUrl: URL.createObjectURL(downloadedBlob),
+                blob: downloadedBlob,
+                mimeType: downloadedBlob.type || 'application/pdf',
+                isUploadedFile: true
+              };
+            }
+
+            const { data: signedData, error: signErr } = await supabase.storage
+              .from('study-materials')
+              .createSignedUrl(storagePathCandidate, 300);
+            if (!signErr && signedData?.signedUrl) {
+              const signedResp = await fetch(signedData.signedUrl);
+              if (signedResp.ok) {
+                const signedBlob = await signedResp.blob();
+                if (signedBlob.size > 0) {
+                  await storeUploadedFileAllKeys(signedBlob, candidateKeys);
+                  return {
+                    blobUrl: URL.createObjectURL(signedBlob),
+                    blob: signedBlob,
+                    mimeType: signedBlob.type || 'application/pdf',
+                    isUploadedFile: true
+                  };
+                }
+              }
+            }
+          }
         }
       }
     } catch {

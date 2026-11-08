@@ -32,6 +32,17 @@ function isUuidString(val?: string | null): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
 }
 
+function getActiveUserIdFromStorage(): string | undefined {
+  try {
+    const rawUser = localStorage.getItem('studyvault_active_user');
+    if (rawUser) {
+      const parsed = JSON.parse(rawUser);
+      if (parsed?.id) return String(parsed.id);
+    }
+  } catch {}
+  return undefined;
+}
+
 // Zero hardcoded enrollments — counts increment only when real students register
 const INITIAL_STUDENT_ENROLLMENTS: Record<string, number> = {};
 
@@ -218,7 +229,8 @@ export function registerCustomUniversity(details: {
             established_year: newCustomUni.establishedYear,
             verified_students: 1,
             description: newCustomUni.description,
-            is_member_restricted: false
+            is_member_restricted: false,
+            created_by: details.studentId
           }
         ],
         { onConflict: 'id' }
@@ -237,12 +249,17 @@ export function registerStudentToUniversity(studentId: string, universityId: str
 }
 
 // ============================================================================
-// FOLLOWED UNIVERSITIES
+// FOLLOWED UNIVERSITIES (SCOPED BY USER ID)
 // ============================================================================
 
-export function getFollowedUniversityIds(): string[] {
+function getFollowedUniversitiesStorageKey(userId?: string): string {
+  const effectiveUserId = userId || getActiveUserIdFromStorage();
+  return effectiveUserId ? `${STORAGE_KEY_FOLLOWED}_${effectiveUserId}` : STORAGE_KEY_FOLLOWED;
+}
+
+export function getFollowedUniversityIds(userId?: string): string[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_FOLLOWED);
+    const raw = localStorage.getItem(getFollowedUniversitiesStorageKey(userId));
     if (raw) {
       return JSON.parse(raw);
     }
@@ -250,8 +267,11 @@ export function getFollowedUniversityIds(): string[] {
   return [];
 }
 
-export function toggleFollowUniversity(universityId: string): { followed: boolean; followedIds: string[] } {
-  const current = getFollowedUniversityIds();
+export function toggleFollowUniversity(
+  universityId: string,
+  userId?: string
+): { followed: boolean; followedIds: string[] } {
+  const current = getFollowedUniversityIds(userId);
   const index = current.indexOf(universityId);
   let updated: string[];
   let followed: boolean;
@@ -265,14 +285,14 @@ export function toggleFollowUniversity(universityId: string): { followed: boolea
   }
 
   try {
-    localStorage.setItem(STORAGE_KEY_FOLLOWED, JSON.stringify(updated));
+    localStorage.setItem(getFollowedUniversitiesStorageKey(userId), JSON.stringify(updated));
   } catch {}
 
   return { followed, followedIds: updated };
 }
 
-export function isFollowingUniversity(universityId: string): boolean {
-  return getFollowedUniversityIds().includes(universityId);
+export function isFollowingUniversity(universityId: string, userId?: string): boolean {
+  return getFollowedUniversityIds(userId).includes(universityId);
 }
 
 // ============================================================================
@@ -497,7 +517,13 @@ export function addDiscussionPost(
           is_pinned: false
         }
       ])
-      .then(() => {}, () => {});
+      .then(() => {
+        sb.rpc('adjust_community_upvote', {
+          p_table: 'university_discussions',
+          p_id: newPost.id,
+          p_delta: 1
+        }).then(() => {}, () => {});
+      }, () => {});
   }
 
   return newPost;
@@ -583,13 +609,7 @@ export function addDiscussionComment(
     };
     sb.from('university_discussion_comments')
       .insert([commentRow])
-      .then(({ error }) => {
-        if (error) {
-          sb.from('discussion_comments')
-            .insert([commentRow])
-            .then(() => {}, () => {});
-        }
-      }, () => {});
+      .then(() => {}, () => {});
   }
 
   return newComment;
@@ -639,6 +659,15 @@ export function toggleDiscussionUpvote(postId: string): { upvoted: boolean; coun
 
   saveAllDiscussions(updatedAll);
   toggleCommunityUpvote(`disc-${postId}`);
+
+  const sb = getSupabaseInstance();
+  if (sb) {
+    sb.rpc('adjust_community_upvote', {
+      p_table: 'university_discussions',
+      p_id: postId,
+      p_delta: hasUpvoted ? -1 : 1
+    }).then(() => {}, () => {});
+  }
 
   return { upvoted: !hasUpvoted, count: finalCount };
 }
@@ -776,7 +805,13 @@ export function addDoubtQuestion(
           status: 'unanswered'
         }
       ])
-      .then(() => {}, () => {});
+      .then(() => {
+        sb.rpc('adjust_community_upvote', {
+          p_table: 'university_doubts',
+          p_id: newQuestion.id,
+          p_delta: 1
+        }).then(() => {}, () => {});
+      }, () => {});
   }
 
   return newQuestion;
@@ -869,13 +904,7 @@ export function addDoubtAnswer(
     };
     sb.from('university_doubt_answers')
       .insert([answerRow])
-      .then(({ error }) => {
-        if (error) {
-          sb.from('doubt_answers')
-            .insert([answerRow])
-            .then(() => {}, () => {});
-        }
-      }, () => {});
+      .then(() => {}, () => {});
   }
 
   return newAnswer;
@@ -948,6 +977,16 @@ export function acceptDoubtAnswer(
       .eq('id', questionId)
       .eq('author_id', activeUserId!)
       .then(() => {}, () => {});
+    sb.from('university_doubt_answers')
+      .update({ is_accepted: false })
+      .eq('question_id', questionId)
+      .then(() => {
+        sb.from('university_doubt_answers')
+          .update({ is_accepted: true })
+          .eq('id', answerId)
+          .eq('question_id', questionId)
+          .then(() => {}, () => {});
+      }, () => {});
   }
 }
 
@@ -982,6 +1021,15 @@ export function toggleDoubtUpvote(questionId: string): { upvoted: boolean; count
   saveAllDoubts(updatedAll);
   toggleCommunityUpvote(`doubt-${questionId}`);
 
+  const sb = getSupabaseInstance();
+  if (sb) {
+    sb.rpc('adjust_community_upvote', {
+      p_table: 'university_doubts',
+      p_id: questionId,
+      p_delta: hasUpvoted ? -1 : 1
+    }).then(() => {}, () => {});
+  }
+
   return { upvoted: !hasUpvoted, count: finalCount };
 }
 
@@ -990,20 +1038,27 @@ export function toggleUpvoteDoubt(questionId: string) {
 }
 
 // ============================================================================
-// UPVOTES TRACKING
+// UPVOTES TRACKING (SCOPED BY USER ID)
 // ============================================================================
 
-function getCommunityUpvotes(): string[] {
+function getCommunityUpvotesKey(userId?: string): string {
+  const effectiveUserId = userId || getActiveUserIdFromStorage();
+  return effectiveUserId
+    ? `${STORAGE_KEY_UPVOTED_ITEMS}_${effectiveUserId}`
+    : STORAGE_KEY_UPVOTED_ITEMS;
+}
+
+function getCommunityUpvotes(userId?: string): string[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_UPVOTED_ITEMS);
+    const raw = localStorage.getItem(getCommunityUpvotesKey(userId));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
 
-function toggleCommunityUpvote(itemKey: string): void {
-  const upvoted = getCommunityUpvotes();
+function toggleCommunityUpvote(itemKey: string, userId?: string): void {
+  const upvoted = getCommunityUpvotes(userId);
   const idx = upvoted.indexOf(itemKey);
   let next: string[];
   if (idx >= 0) {
@@ -1012,7 +1067,7 @@ function toggleCommunityUpvote(itemKey: string): void {
     next = [...upvoted, itemKey];
   }
   try {
-    localStorage.setItem(STORAGE_KEY_UPVOTED_ITEMS, JSON.stringify(next));
+    localStorage.setItem(getCommunityUpvotesKey(userId), JSON.stringify(next));
   } catch {}
 }
 
@@ -1127,22 +1182,20 @@ export async function syncUniversitiesFromSupabase(
 
     saveCustomUniversities(Array.from(customById.values()));
 
-    // 2. Sync student enrollments per university from public.academic_information
+    // 2. Sync aggregated student enrollments per university via SECURITY DEFINER RPC (never querying private academic_information rows)
     const enrollments = getStudentEnrollments();
     const studentsPerUni: Record<string, Set<string>> = {};
+    const rpcUniCounts: Record<string, number> = {};
 
     try {
-      const { data: acadRows } = await sb
-        .from('academic_information')
-        .select('user_id, institution_name')
-        .limit(500);
-      if (Array.isArray(acadRows)) {
-        for (const r of acadRows) {
-          if (r?.user_id && r?.institution_name) {
+      const { data: cohortRows } = await sb.rpc('get_public_cohort_counts');
+      if (Array.isArray(cohortRows)) {
+        for (const r of cohortRows) {
+          if (r?.institution_name) {
             const matched = findUniversityByNameOrFuzzy(r.institution_name);
             if (matched) {
-              if (!studentsPerUni[matched.id]) studentsPerUni[matched.id] = new Set();
-              studentsPerUni[matched.id].add(r.user_id);
+              const countVal = Math.max(1, Number(r.student_count) || 1);
+              rpcUniCounts[matched.id] = (rpcUniCounts[matched.id] || 0) + countVal;
             }
           }
         }
@@ -1171,7 +1224,38 @@ export async function syncUniversitiesFromSupabase(
     for (const [uniId, set] of Object.entries(studentsPerUni)) {
       enrollments[uniId] = Math.max(enrollments[uniId] || 0, set.size);
     }
+    for (const [uniId, count] of Object.entries(rpcUniCounts)) {
+      enrollments[uniId] = Math.max(enrollments[uniId] || 0, count);
+    }
     saveStudentEnrollments(enrollments);
+
+    // Hydrate user's persisted community votes if signed in
+    const activeUserId = getActiveUserIdFromStorage();
+    const upvotedList = new Set<string>(getCommunityUpvotes(activeUserId));
+    if (isUuidString(activeUserId)) {
+      try {
+        const { data: voteRows } = await sb
+          .from('community_item_votes')
+          .select('target_table, target_id')
+          .eq('user_id', activeUserId!)
+          .in('target_table', ['university_discussions', 'university_doubts']);
+        if (Array.isArray(voteRows)) {
+          for (const vr of voteRows) {
+            if (vr.target_table === 'university_discussions') {
+              upvotedList.add(`disc-${vr.target_id}`);
+            } else if (vr.target_table === 'university_doubts') {
+              upvotedList.add(`doubt-${vr.target_id}`);
+            }
+          }
+          try {
+            localStorage.setItem(
+              getCommunityUpvotesKey(activeUserId),
+              JSON.stringify(Array.from(upvotedList))
+            );
+          } catch {}
+        }
+      } catch {}
+    }
 
     // 3. Merge University Discussions & Comments from canonical tables
     const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
@@ -1187,7 +1271,8 @@ export async function syncUniversitiesFromSupabase(
         .limit(200);
       if (Array.isArray(dbDiscs)) {
         for (const row of dbDiscs) {
-          if (row?.id && !discById.has(row.id)) {
+          if (row?.id) {
+            const existing = discById.get(row.id);
             discById.set(row.id, {
               id: row.id,
               universityId: row.university_id,
@@ -1201,10 +1286,10 @@ export async function syncUniversitiesFromSupabase(
               authorMajor: row.author_major || 'Student Member',
               authorUniversity: row.author_university || 'University Campus',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: false,
-              commentsCount: Number(row.comments_count) || 0,
-              comments: [],
+              upvotesCount: Number(row.upvotes_count ?? 1),
+              hasUpvoted: upvotedList.has(`disc-${row.id}`),
+              commentsCount: Number(row.comments_count ?? 0),
+              comments: existing?.comments ? [...existing.comments] : [],
               isPinned: Boolean(row.is_pinned)
             });
           }
@@ -1214,19 +1299,11 @@ export async function syncUniversitiesFromSupabase(
 
     const allComments: DiscussionComment[] = [];
     try {
-      let { data: dbComments, error: commErr } = await sb
+      const { data: dbComments } = await sb
         .from('university_discussion_comments')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(500);
-      if (commErr) {
-        const fallback = await sb
-          .from('discussion_comments')
-          .select('*')
-          .order('created_at', { ascending: true })
-          .limit(500);
-        dbComments = fallback.data;
-      }
       if (Array.isArray(dbComments)) {
         for (const row of dbComments) {
           if (row?.id) {
@@ -1253,7 +1330,7 @@ export async function syncUniversitiesFromSupabase(
         const exists = (parent.comments || []).some(existing => existing.id === c.id);
         if (!exists) {
           parent.comments = [...(parent.comments || []), c];
-          parent.commentsCount = parent.comments.length;
+          parent.commentsCount = Math.max(parent.commentsCount || 0, parent.comments.length);
         }
       }
     }
@@ -1290,8 +1367,8 @@ export async function syncUniversitiesFromSupabase(
               authorAvatar: row.author_avatar || undefined,
               authorUniversity: row.author_university || 'University Campus',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: existing?.hasUpvoted || false,
+              upvotesCount: Number(row.upvotes_count ?? 1),
+              hasUpvoted: upvotedList.has(`doubt-${row.id}`),
               status: row.status || 'unanswered',
               acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
               answers: existing?.answers ? [...existing.answers] : []
@@ -1303,19 +1380,11 @@ export async function syncUniversitiesFromSupabase(
 
     const allAnswers: DoubtAnswer[] = [];
     try {
-      let { data: dbAnswers, error: ansErr } = await sb
+      const { data: dbAnswers } = await sb
         .from('university_doubt_answers')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(500);
-      if (ansErr) {
-        const fallback = await sb
-          .from('doubt_answers')
-          .select('*')
-          .order('created_at', { ascending: true })
-          .limit(500);
-        dbAnswers = fallback.data;
-      }
       if (Array.isArray(dbAnswers)) {
         for (const row of dbAnswers) {
           if (row?.id) {

@@ -212,25 +212,33 @@ export async function testSupabaseConnection(
 
     const coreTables = [
       'profiles',
+      'moderator_roles',
       'academic_information',
       'user_settings_preferences',
+      'stored_files',
       'study_notes',
-      'note_upvotes',
+      'study_note_upvotes',
       'forum_topics',
       'forum_posts',
       'forum_comments',
-      'forum_votes',
+      'forum_post_votes',
+      'forum_comment_votes',
       'forum_bookmarks',
+      'forum_reports',
       'academic_programs',
+      'program_enrollments',
       'program_discussions',
       'program_discussion_comments',
       'program_doubts',
       'program_doubt_answers',
       'universities',
+      'departments',
+      'courses',
       'university_discussions',
       'university_discussion_comments',
       'university_doubts',
-      'university_doubt_answers'
+      'university_doubt_answers',
+      'community_item_votes'
     ];
 
     const missingTables: string[] = [];
@@ -245,15 +253,11 @@ export async function testSupabaseConnection(
     }
 
     const missingBuckets: string[] = [];
-    const probeBlob = new Blob(['probe'], { type: 'application/pdf' });
-    const { error: bucketErr } = await testClient.storage
-      .from('study-materials')
-      .upload('__schema_probe__.pdf', probeBlob, { upsert: true });
-
-    if (bucketErr && bucketErr.message.toLowerCase().includes('bucket not found')) {
-      missingBuckets.push('study-materials');
-    } else if (!bucketErr) {
-      await testClient.storage.from('study-materials').remove(['__schema_probe__.pdf']).catch(() => {});
+    for (const bucketName of ['study-materials', 'avatars']) {
+      const { error: listErr } = await testClient.storage.from(bucketName).list('', { limit: 1 });
+      if (listErr && listErr.message.toLowerCase().includes('bucket not found')) {
+        missingBuckets.push(bucketName);
+      }
     }
 
     if (missingTables.length > 0 || missingBuckets.length > 0) {
@@ -279,7 +283,7 @@ export async function testSupabaseConnection(
       missingTables: [],
       missingBuckets: [],
       message:
-        'Connected to Supabase! All 20 canonical database tables, RLS policies, and Storage buckets (study-materials, avatars) are active.'
+        'Connected to Supabase! All 26 canonical database tables, RLS policies, and Storage buckets (study-materials, avatars) are active.'
     };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Could not reach Supabase endpoint.' };
@@ -305,8 +309,18 @@ export function clearUserSpecificLocalState(userId?: string): void {
   try {
     localStorage.removeItem('studyvault_active_user');
     localStorage.removeItem(STORAGE_KEY_UPVOTES);
+    localStorage.removeItem('xeusar_followed_universities_v3');
+    localStorage.removeItem('xeusar_community_upvotes_v3');
+    localStorage.removeItem('xeusar_program_upvotes_v2');
+    localStorage.removeItem('xeusar_followed_programs_v2');
+    localStorage.removeItem('xeusar_forum_followed_topics_v1');
     if (userId) {
       localStorage.removeItem(`${STORAGE_KEY_UPVOTES}_${userId}`);
+      localStorage.removeItem(`xeusar_followed_universities_v3_${userId}`);
+      localStorage.removeItem(`xeusar_community_upvotes_v3_${userId}`);
+      localStorage.removeItem(`xeusar_program_upvotes_v2_${userId}`);
+      localStorage.removeItem(`xeusar_followed_programs_v2_${userId}`);
+      localStorage.removeItem(`xeusar_forum_followed_topics_v1_${userId}`);
       localStorage.removeItem(`xeusar_profile_setup_draft_${userId}`);
       localStorage.removeItem(`xeusar_forum_post_draft_v1_${userId}`);
     }
@@ -443,43 +457,35 @@ export async function syncNoteUpvoteToSupabase(
   noteId: string,
   userId: string | undefined,
   upvoted: boolean,
-  newCount: number
+  _newCount: number
 ): Promise<void> {
   if (!supabase) return;
   try {
     if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(userId)) {
       if (upvoted) {
         const { error } = await supabase
-          .from('note_upvotes')
-          .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'user_id,note_id' });
+          .from('study_note_upvotes')
+          .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'note_id,user_id' });
         if (error && classifySupabaseError(error).isMissingSchema) {
           await supabase
-            .from('study_note_upvotes')
-            .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'user_id,note_id' })
-            .then(() => {}, () => {});
+            .from('note_upvotes')
+            .upsert({ note_id: noteId, user_id: userId }, { onConflict: 'user_id,note_id' });
         }
       } else {
         const { error } = await supabase
-          .from('note_upvotes')
+          .from('study_note_upvotes')
           .delete()
           .eq('note_id', noteId)
           .eq('user_id', userId);
         if (error && classifySupabaseError(error).isMissingSchema) {
           await supabase
-            .from('study_note_upvotes')
+            .from('note_upvotes')
             .delete()
             .eq('note_id', noteId)
-            .eq('user_id', userId)
-            .then(() => {}, () => {});
+            .eq('user_id', userId);
         }
       }
     }
-
-    await supabase
-      .from('study_notes')
-      .update({ upvotes_count: newCount })
-      .eq('id', noteId)
-      .then(() => {}, () => {});
   } catch {
     // Ignore transient network errors
   }
@@ -506,18 +512,11 @@ export function incrementDownloadCountLocal(noteId: string): number {
 export async function syncNoteDownloadToSupabase(
   supabase: SupabaseClient | null,
   noteId: string,
-  nextCount: number
+  _nextCount: number
 ): Promise<void> {
   if (!supabase) return;
   try {
-    const { error: rpcErr } = await supabase.rpc('increment_downloads', { note_id: noteId });
-    if (rpcErr) {
-      await supabase
-        .from('study_notes')
-        .update({ downloads_count: nextCount })
-        .eq('id', noteId)
-        .then(() => {}, () => {});
-    }
+    await supabase.rpc('increment_downloads', { note_id: noteId });
   } catch {
     // Ignore offline errors
   }
@@ -574,29 +573,28 @@ export async function fetchAllNotes(
   let schemaMissing = false;
 
   try {
-    // 1. Fetch user's remote note_upvotes if authenticated
+    // 1. Fetch user's remote study_note_upvotes if authenticated
     if (effectiveUserId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(effectiveUserId)) {
-      const { data: upvoteRows, error: upvoteErr } = await supabaseClient
-        .from('note_upvotes')
+      let { data: upvoteRows, error: upvoteErr } = await supabaseClient
+        .from('study_note_upvotes')
         .select('note_id')
         .eq('user_id', effectiveUserId);
 
+      if (upvoteErr && classifySupabaseError(upvoteErr).isMissingSchema) {
+        const legacyRes = await supabaseClient
+          .from('note_upvotes')
+          .select('note_id')
+          .eq('user_id', effectiveUserId);
+        upvoteRows = legacyRes.data;
+        upvoteErr = legacyRes.error;
+      }
+
       if (!upvoteErr && Array.isArray(upvoteRows)) {
+        upvotes.clear();
         upvoteRows.forEach((r: any) => {
           if (r.note_id) upvotes.add(String(r.note_id));
         });
         saveUpvotedIds(upvotes, effectiveUserId);
-      } else if (upvoteErr && classifySupabaseError(upvoteErr).isMissingSchema) {
-        const { data: aliasRows, error: aliasErr } = await supabaseClient
-          .from('study_note_upvotes')
-          .select('note_id')
-          .eq('user_id', effectiveUserId);
-        if (!aliasErr && Array.isArray(aliasRows)) {
-          aliasRows.forEach((r: any) => {
-            if (r.note_id) upvotes.add(String(r.note_id));
-          });
-          saveUpvotedIds(upvotes, effectiveUserId);
-        }
       }
     }
 
@@ -638,6 +636,12 @@ export async function fetchAllNotes(
               : typeof embeddedMeta.semesterNumber === 'number'
               ? embeddedMeta.semesterNumber
               : localMatch?.semesterNumber || 1;
+          const resolvedUploaderId =
+            row.uploader_id ||
+            row.author_id ||
+            row.user_id ||
+            embeddedMeta.uploaderId ||
+            localMatch?.uploaderId;
 
           return {
             id,
@@ -651,7 +655,7 @@ export async function fetchAllNotes(
               row.subject,
             courseId: row.course_id || embeddedMeta.courseId || localMatch?.courseId,
             subject: row.subject,
-            materialType: row.material_type,
+            materialType: row.material_type || row.resource_type || 'lecture_notes',
             academicYear: row.academic_year || new Date().getFullYear(),
             semester: row.semester || localMatch?.semester || 'Current Semester',
             semesterNumber: resolvedSemesterNum,
@@ -663,13 +667,11 @@ export async function fetchAllNotes(
             fileName: row.file_name,
             fileSizeBytes: Number(row.file_size_bytes) || 2048000,
             pageCount: Number(row.page_count) || 10,
-            uploaderId:
-              row.uploader_id ||
-              row.user_id ||
-              embeddedMeta.uploaderId ||
-              localMatch?.uploaderId,
-            uploaderName: row.uploader_name || 'Student Contributor',
-            uploaderUniversity: row.uploader_university || 'Open Campus',
+            authorId: resolvedUploaderId,
+            uploaderId: resolvedUploaderId,
+            uploaderName: row.uploader_name || row.author_name || 'Student Contributor',
+            uploaderUniversity:
+              row.uploader_university || row.author_university || row.university || 'Open Campus',
             universityId:
               row.university_id ||
               embeddedMeta.universityId ||
@@ -692,8 +694,8 @@ export async function fetchAllNotes(
               localMatch?.storagePath,
             isRestricted: Boolean(row.is_restricted),
             isUnsynced: false,
-            downloadsCount: Number(row.downloads_count) || 0,
-            upvotesCount: Number(row.upvotes_count) || 0,
+            downloadsCount: Number(row.downloads_count ?? row.downloads) || 0,
+            upvotesCount: Number(row.upvotes_count ?? row.upvotes) || 0,
             hasUpvoted: upvotes.has(id),
             createdAt: row.created_at,
             updatedAt: row.updated_at || row.created_at,

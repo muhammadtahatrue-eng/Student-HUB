@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan to supercharge neon lighting brightness with high-intensity point lights and emissive core glow, and implement spring-momentum physics (k: 0.08, damping: 0.92) with flowing ribbon trail curve generation.",
-  "updatedAt": "2026-10-07T09:51:56.140002708Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Updated v4 Implementation Plan incorporating the 6 critical PostgreSQL/PostgREST edge-case fixes (Trap 1: upsert-safe column-level GRANT UPDATE lists; Trap 2: upsert_stored_file SECURITY DEFINER RPC for cross-user deduplication; Trap 3: single-source SECURITY DEFINER trigger for study_note_upvotes; Trap 4: RLS recursion prevention without FORCE RLS; Trap 5: clean 'alumnus' role constraint; Trap 6: full canonical forum_topics seed + Class B quarantine) and the exact Phase 3 frontend alignments.",
+  "updatedAt":  "2026-11-08T11:12:23.063462206Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

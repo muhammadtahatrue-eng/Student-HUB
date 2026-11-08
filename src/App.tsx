@@ -649,7 +649,35 @@ export default function App() {
           )
           .on(
             'postgres_changes',
-            { event: '*', schema: 'public', table: 'profiles' },
+            { event: '*', schema: 'public', table: 'study_note_upvotes' },
+            () => {
+              loadData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'program_discussions' },
+            () => {
+              loadData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'program_doubts' },
+            () => {
+              loadData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'university_discussions' },
+            () => {
+              loadData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'university_doubts' },
             () => {
               loadData();
             }

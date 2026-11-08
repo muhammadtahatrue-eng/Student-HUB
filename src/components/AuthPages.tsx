@@ -35,7 +35,10 @@ export type AuthPageMode = 'login' | 'signup' | 'forgot-password' | 'reset-passw
  * Production root URL for Supabase email confirmation redirects.
  * Must NOT contain a #hash fragment so Supabase can cleanly append callback tokens/codes.
  */
-export const EMAIL_REDIRECT_URL = 'https://xeusar-hub.vercel.app/';
+export const EMAIL_REDIRECT_URL =
+  typeof window !== 'undefined' && window.location?.origin
+    ? `${window.location.origin}/`
+    : '/';
 
 export interface AuthCallbackBanner {
   type: 'success' | 'error' | 'info';

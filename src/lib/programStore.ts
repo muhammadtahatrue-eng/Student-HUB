@@ -26,6 +26,28 @@ const STORAGE_KEY_STUDENT_PROGRAM_MAP = 'xeusar_student_program_map_v2';
 const STORAGE_KEY_FOLLOWED_PROGRAMS = 'xeusar_followed_programs_v2';
 const STORAGE_KEY_DISCUSSIONS = 'xeusar_program_discussions_v2';
 const STORAGE_KEY_DOUBTS = 'xeusar_program_doubts_v2';
+const STORAGE_KEY_PROGRAM_UPVOTES = 'xeusar_program_upvotes_v2';
+
+function getProgramUpvotesKey(userId?: string): string {
+  const effectiveUserId = userId || getActiveUserFromStorage()?.id;
+  return effectiveUserId
+    ? `${STORAGE_KEY_PROGRAM_UPVOTES}_${effectiveUserId}`
+    : STORAGE_KEY_PROGRAM_UPVOTES;
+}
+
+function getProgramUpvotedSet(userId?: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(getProgramUpvotesKey(userId));
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
+}
+
+function saveProgramUpvotedSet(set: Set<string>, userId?: string): void {
+  try {
+    localStorage.setItem(getProgramUpvotesKey(userId), JSON.stringify(Array.from(set)));
+  } catch {}
+}
 
 function getActiveUserFromStorage(): { id?: string; name?: string; isGuest?: boolean; programId?: string; program?: string; majorOrField?: string } | null {
   try {
@@ -546,20 +568,26 @@ export function getRealResourceCountsByProgram(): Record<string, number> {
 // ----------------------------------------------------------------------------
 
 export function getAllProgramDiscussions(): ProgramDiscussionPost[] {
+  const upvotedSet = getProgramUpvotedSet();
   try {
     const raw = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     const all: ProgramDiscussionPost[] = raw ? JSON.parse(raw) : INITIAL_PROGRAM_DISCUSSIONS;
-    return [...all].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return [...all]
+      .map(p => ({ ...p, hasUpvoted: upvotedSet.has(`disc-${p.id}`) }))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   } catch {
     return INITIAL_PROGRAM_DISCUSSIONS;
   }
 }
 
 export function getProgramDiscussions(programId: string): ProgramDiscussionPost[] {
+  const upvotedSet = getProgramUpvotedSet();
   try {
     const raw = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     let all: ProgramDiscussionPost[] = raw ? JSON.parse(raw) : INITIAL_PROGRAM_DISCUSSIONS;
-    const scoped = all.filter(p => p.programId === programId);
+    const scoped = all
+      .filter(p => p.programId === programId)
+      .map(p => ({ ...p, hasUpvoted: upvotedSet.has(`disc-${p.id}`) }));
     return scoped.sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
@@ -600,6 +628,10 @@ export function createProgramDiscussion(params: {
   };
 
   try {
+    const upvotedSet = getProgramUpvotedSet(params.author.id);
+    upvotedSet.add(`disc-${newPost.id}`);
+    saveProgramUpvotedSet(upvotedSet, params.author.id);
+
     const raw = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     const list: ProgramDiscussionPost[] = raw ? JSON.parse(raw) : [...INITIAL_PROGRAM_DISCUSSIONS];
     list.unshift(newPost);
@@ -627,7 +659,13 @@ export function createProgramDiscussion(params: {
           comments_count: 0
         }
       ])
-      .then(() => {}, () => {});
+      .then(() => {
+        sb.rpc('adjust_community_upvote', {
+          p_table: 'program_discussions',
+          p_id: newPost.id,
+          p_delta: 1
+        }).then(() => {}, () => {});
+      }, () => {});
   }
 
   return newPost;
@@ -635,21 +673,38 @@ export function createProgramDiscussion(params: {
 
 export function toggleUpvoteProgramDiscussion(postId: string): { upvotesCount: number; hasUpvoted: boolean } {
   try {
+    const upvotedSet = getProgramUpvotedSet();
+    const key = `disc-${postId}`;
+    const wasUpvoted = upvotedSet.has(key);
+
     const raw = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
     const list: ProgramDiscussionPost[] = raw ? JSON.parse(raw) : [...INITIAL_PROGRAM_DISCUSSIONS];
     const post = list.find(p => p.id === postId);
     if (!post) return { upvotesCount: 0, hasUpvoted: false };
 
-    if (post.hasUpvoted) {
+    if (wasUpvoted) {
+      upvotedSet.delete(key);
       post.hasUpvoted = false;
       post.upvotesCount = Math.max(0, post.upvotesCount - 1);
     } else {
+      upvotedSet.add(key);
       post.hasUpvoted = true;
       post.upvotesCount = post.upvotesCount + 1;
     }
 
+    saveProgramUpvotedSet(upvotedSet);
     localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(list));
-    return { upvotesCount: post.upvotesCount, hasUpvoted: post.hasUpvoted };
+
+    const sb = getSupabaseInstance();
+    if (sb) {
+      sb.rpc('adjust_community_upvote', {
+        p_table: 'program_discussions',
+        p_id: postId,
+        p_delta: wasUpvoted ? -1 : 1
+      }).then(() => {}, () => {});
+    }
+
+    return { upvotesCount: post.upvotesCount, hasUpvoted: !wasUpvoted };
   } catch {
     return { upvotesCount: 0, hasUpvoted: false };
   }
@@ -715,10 +770,13 @@ export function addProgramDiscussionComment(params: {
 // ----------------------------------------------------------------------------
 
 export function getProgramDoubts(programId: string): ProgramDoubtQuestion[] {
+  const upvotedSet = getProgramUpvotedSet();
   try {
     const raw = localStorage.getItem(STORAGE_KEY_DOUBTS);
     let all: ProgramDoubtQuestion[] = raw ? JSON.parse(raw) : INITIAL_PROGRAM_DOUBTS;
-    const scoped = all.filter(q => q.programId === programId);
+    const scoped = all
+      .filter(q => q.programId === programId)
+      .map(q => ({ ...q, hasUpvoted: upvotedSet.has(`doubt-${q.id}`) }));
     return scoped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   } catch {
     return INITIAL_PROGRAM_DOUBTS.filter(q => q.programId === programId);
@@ -756,6 +814,10 @@ export function createProgramDoubt(params: {
   };
 
   try {
+    const upvotedSet = getProgramUpvotedSet(params.author.id);
+    upvotedSet.add(`doubt-${newQuestion.id}`);
+    saveProgramUpvotedSet(upvotedSet, params.author.id);
+
     const raw = localStorage.getItem(STORAGE_KEY_DOUBTS);
     const list: ProgramDoubtQuestion[] = raw ? JSON.parse(raw) : [...INITIAL_PROGRAM_DOUBTS];
     list.unshift(newQuestion);
@@ -782,7 +844,13 @@ export function createProgramDoubt(params: {
           status: 'unanswered'
         }
       ])
-      .then(() => {}, () => {});
+      .then(() => {
+        sb.rpc('adjust_community_upvote', {
+          p_table: 'program_doubts',
+          p_id: newQuestion.id,
+          p_delta: 1
+        }).then(() => {}, () => {});
+      }, () => {});
   }
 
   return newQuestion;
@@ -790,21 +858,38 @@ export function createProgramDoubt(params: {
 
 export function toggleUpvoteProgramDoubt(doubtId: string): { upvotesCount: number; hasUpvoted: boolean } {
   try {
+    const upvotedSet = getProgramUpvotedSet();
+    const key = `doubt-${doubtId}`;
+    const wasUpvoted = upvotedSet.has(key);
+
     const raw = localStorage.getItem(STORAGE_KEY_DOUBTS);
     const list: ProgramDoubtQuestion[] = raw ? JSON.parse(raw) : [...INITIAL_PROGRAM_DOUBTS];
     const q = list.find(item => item.id === doubtId);
     if (!q) return { upvotesCount: 0, hasUpvoted: false };
 
-    if (q.hasUpvoted) {
+    if (wasUpvoted) {
+      upvotedSet.delete(key);
       q.hasUpvoted = false;
       q.upvotesCount = Math.max(0, q.upvotesCount - 1);
     } else {
+      upvotedSet.add(key);
       q.hasUpvoted = true;
       q.upvotesCount = q.upvotesCount + 1;
     }
 
+    saveProgramUpvotedSet(upvotedSet);
     localStorage.setItem(STORAGE_KEY_DOUBTS, JSON.stringify(list));
-    return { upvotesCount: q.upvotesCount, hasUpvoted: q.hasUpvoted };
+
+    const sb = getSupabaseInstance();
+    if (sb) {
+      sb.rpc('adjust_community_upvote', {
+        p_table: 'program_doubts',
+        p_id: doubtId,
+        p_delta: wasUpvoted ? -1 : 1
+      }).then(() => {}, () => {});
+    }
+
+    return { upvotesCount: q.upvotesCount, hasUpvoted: !wasUpvoted };
   } catch {
     return { upvotesCount: 0, hasUpvoted: false };
   }
@@ -901,6 +986,16 @@ export function markAcceptedProgramAnswer(
         .eq('id', questionId)
         .eq('author_id', activeUserId!)
         .then(() => {}, () => {});
+      sb.from('program_doubt_answers')
+        .update({ is_accepted: false })
+        .eq('question_id', questionId)
+        .then(() => {
+          sb.from('program_doubt_answers')
+            .update({ is_accepted: true })
+            .eq('id', answerId)
+            .eq('question_id', questionId)
+            .then(() => {}, () => {});
+        }, () => {});
     }
 
     return true;
@@ -955,31 +1050,27 @@ export async function syncProgramsFromSupabase(
 
     saveStoredSystemPrograms(Array.from(customById.values()));
 
-    // 2. Sync student enrollments per program from public.academic_information
+    // 2. Sync aggregated public cohort counts via SECURITY DEFINER RPC (never querying private academic_information rows)
     const studentMap = getStudentProgramMap();
+    const rpcCohortCounts: Record<string, number> = {};
     try {
-      const { data: acadRows } = await sb
-        .from('academic_information')
-        .select('user_id, major, education_level')
-        .limit(500);
-      if (Array.isArray(acadRows)) {
-        for (const r of acadRows) {
-          if (r?.user_id && r?.major) {
+      const { data: cohortRows } = await sb.rpc('get_public_cohort_counts');
+      if (Array.isArray(cohortRows)) {
+        for (const r of cohortRows) {
+          if (r?.major) {
             const prog = ensureSystemProgramForRegisteredStudent({
-              studentId: r.user_id,
               programName: r.major
             });
             if (prog) {
-              studentMap[r.user_id] = prog.id;
+              const countVal = Math.max(1, Number(r.student_count) || 1);
+              rpcCohortCounts[prog.id] = (rpcCohortCounts[prog.id] || 0) + countVal;
             }
           }
         }
       }
     } catch {}
 
-    saveStudentProgramMap(studentMap);
-
-    // Recompute enrollment counts from distinct students + current notes
+    // Recompute enrollment counts from distinct students + RPC cohort counts + current notes
     const countsByProgram: Record<string, Set<string>> = {};
     for (const [uid, pid] of Object.entries(studentMap)) {
       if (!pid) continue;
@@ -1010,7 +1101,33 @@ export async function syncProgramsFromSupabase(
     for (const [pid, set] of Object.entries(countsByProgram)) {
       enrollmentCounts[pid] = Math.max(enrollmentCounts[pid] || 0, set.size);
     }
+    for (const [pid, count] of Object.entries(rpcCohortCounts)) {
+      enrollmentCounts[pid] = Math.max(enrollmentCounts[pid] || 0, count);
+    }
     saveProgramEnrollmentMap(enrollmentCounts);
+
+    // Hydrate user's persisted community votes if signed in
+    const activeUserId = getActiveUserFromStorage()?.id;
+    const upvotedSet = getProgramUpvotedSet(activeUserId);
+    if (isUuidString(activeUserId)) {
+      try {
+        const { data: voteRows } = await sb
+          .from('community_item_votes')
+          .select('target_table, target_id')
+          .eq('user_id', activeUserId!)
+          .in('target_table', ['program_discussions', 'program_doubts']);
+        if (Array.isArray(voteRows)) {
+          for (const vr of voteRows) {
+            if (vr.target_table === 'program_discussions') {
+              upvotedSet.add(`disc-${vr.target_id}`);
+            } else if (vr.target_table === 'program_doubts') {
+              upvotedSet.add(`doubt-${vr.target_id}`);
+            }
+          }
+          saveProgramUpvotedSet(upvotedSet, activeUserId);
+        }
+      } catch {}
+    }
 
     // 3. Merge Program Discussions & Comments from canonical tables
     const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
@@ -1028,7 +1145,8 @@ export async function syncProgramsFromSupabase(
         .limit(200);
       if (Array.isArray(dbDiscs)) {
         for (const row of dbDiscs) {
-          if (row?.id && !discById.has(row.id)) {
+          if (row?.id) {
+            const existing = discById.get(row.id);
             discById.set(row.id, {
               id: row.id,
               programId: row.program_id,
@@ -1043,10 +1161,11 @@ export async function syncProgramsFromSupabase(
               authorProgram: row.author_program || 'Student Peer',
               authorDegreeTier: row.author_degree_tier || undefined,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: false,
-              commentsCount: Number(row.comments_count) || 0,
-              comments: []
+              upvotesCount: Number(row.upvotes_count ?? 1),
+              hasUpvoted: upvotedSet.has(`disc-${row.id}`),
+              commentsCount: Number(row.comments_count ?? 0),
+              isPinned: Boolean(row.is_pinned ?? existing?.isPinned),
+              comments: existing?.comments ? [...existing.comments] : []
             });
           }
         }
@@ -1087,7 +1206,7 @@ export async function syncProgramsFromSupabase(
         const exists = (parent.comments || []).some(existing => existing.id === c.id);
         if (!exists) {
           parent.comments = [...(parent.comments || []), c];
-          parent.commentsCount = parent.comments.length;
+          parent.commentsCount = Math.max(parent.commentsCount || 0, parent.comments.length);
         }
       }
     }
@@ -1128,8 +1247,8 @@ export async function syncProgramsFromSupabase(
               authorAvatar: row.author_avatar || undefined,
               authorProgram: row.author_program || 'Student Peer',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 1,
-              hasUpvoted: existing?.hasUpvoted || false,
+              upvotesCount: Number(row.upvotes_count ?? 1),
+              hasUpvoted: upvotedSet.has(`doubt-${row.id}`),
               status: row.status || 'unanswered',
               acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
               answers: existing?.answers ? [...existing.answers] : []

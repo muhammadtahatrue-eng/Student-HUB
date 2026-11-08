@@ -1,0 +1,70 @@
+-- ============================================================================
+-- XEUSAR — OPTIONAL PRIVATE STORAGE BUCKET HARDENING (NOT APPLIED BY DEFAULT)
+-- File: supabase/migrations/20261105000000_optional_private_study_materials_storage.sql.example
+--
+-- STATUS: REVIEW ONLY — DO NOT APPLY WITHOUT EXPLICIT APPROVAL
+--
+-- Why this file exists:
+-- In Supabase Storage, when a bucket has `public = true`, anyone who already
+-- knows the exact object URL (`/storage/v1/object/public/study-materials/<path>`)
+-- can fetch the file directly from the Storage CDN without evaluating
+-- `storage.objects` SELECT RLS policies.
+--
+-- If you want Supabase Storage to enforce `study_notes` publication/restriction
+-- rules on every file download/preview via short-lived signed URLs or
+-- authenticated SDK downloads:
+-- 1. Review and run this SQL in the Supabase SQL Editor.
+-- 2. `src/lib/pdfViewerService.ts` has already been updated to automatically
+--    extract `<userId>/<sha256>.<ext>` paths and request `.download()` or
+--    `.createSignedUrl(path, 3600)` when the bucket is private.
+-- ============================================================================
+
+begin;
+
+-- 1. Switch study-materials bucket from public CDN mode to private RLS-enforced mode
+update storage.buckets
+set public = false,
+    file_size_limit = 5242880,
+    allowed_mime_types = array[
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'text/plain',
+      'text/markdown',
+      'image/png',
+      'image/jpeg',
+      'image/webp'
+    ]
+where id = 'study-materials';
+
+-- 2. Replace broad public read policy on storage.objects with study_notes-aware policy
+drop policy if exists "study_materials_public_read" on storage.objects;
+drop policy if exists "study_materials_gated_read" on storage.objects;
+
+create policy "study_materials_gated_read"
+  on storage.objects for select
+  using (
+    bucket_id = 'study-materials'
+    and (
+      -- Uploader or moderator can always access
+      (auth.uid() is not null and (storage.foldername(name))[1] = auth.uid()::text)
+      or public.is_moderator()
+      -- Any user (or anon for non-restricted public notes) can access if linked to a published note
+      or exists (
+        select 1
+        from public.study_notes sn
+        left join public.stored_files sf on sf.id = sn.file_id
+        where (
+          sn.storage_path = storage.objects.name
+          or sf.storage_path = storage.objects.name
+        )
+          and sn.status = 'published'
+          and sn.is_public = true
+          and (not sn.is_restricted or auth.uid() is not null)
+      )
+    )
+  );
+
+commit;

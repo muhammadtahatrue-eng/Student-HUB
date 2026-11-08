@@ -136,9 +136,6 @@ export function isIgnorableSchemaOrTableError(error: any): boolean {
 // USERNAME UNIQUENESS CHECK (Case-Insensitive)
 // ============================================================================
 
-let rpcCheckAvailableSupported: boolean | null = null;
-let profilesTableAvailable: boolean | null = null;
-
 export async function checkUsernameAvailability(
   supabase: SupabaseClient,
   username: string,
@@ -152,36 +149,25 @@ export async function checkUsernameAvailability(
   const normalized = username.trim().toLowerCase();
 
   try {
-    // 1. Try security-definer RPC function first if not known to be missing
-    if (rpcCheckAvailableSupported !== false) {
-      const { data: rpcAvailable, error: rpcError } = await supabase.rpc(
-        'check_username_available',
-        {
-          candidate_username: normalized,
-          current_user_id: currentUserId || null
-        }
-      );
-
-      if (!rpcError && typeof rpcAvailable === 'boolean') {
-        rpcCheckAvailableSupported = true;
-        return {
-          available: rpcAvailable,
-          error: rpcAvailable ? undefined : `The username "@${normalized}" is already taken.`
-        };
+    // 1. Try security-definer RPC function first
+    const { data: rpcAvailable, error: rpcError } = await supabase.rpc(
+      'check_username_available',
+      {
+        candidate_username: normalized,
+        current_user_id: currentUserId || null
       }
+    );
 
-      if (rpcError && (rpcError.code === 'PGRST202' || isIgnorableSchemaOrTableError(rpcError))) {
-        rpcCheckAvailableSupported = false;
-      }
+    if (!rpcError && typeof rpcAvailable === 'boolean') {
+      return {
+        available: rpcAvailable,
+        error: rpcAvailable ? undefined : `The username "@${normalized}" is already taken.`
+      };
     }
 
-    // 2. Fallback: direct case-insensitive query if profiles table exists
-    if (profilesTableAvailable === false) {
-      return { available: true };
-    }
-
+    // 2. Fallback: case-insensitive query on safe public_student_profiles view (never querying private profiles table across users)
     let query = supabase
-      .from('profiles')
+      .from('public_student_profiles')
       .select('id')
       .ilike('username', normalized)
       .limit(1);
@@ -192,13 +178,9 @@ export async function checkUsernameAvailability(
 
     const { data, error } = await query;
     if (error) {
-      if (error.code === 'PGRST205' || error.code === '42P01' || isIgnorableSchemaOrTableError(error)) {
-        profilesTableAvailable = false;
-      }
       return { available: true };
     }
 
-    profilesTableAvailable = true;
     const taken = Boolean(data && data.length > 0);
     return {
       available: !taken,
@@ -398,121 +380,128 @@ export async function fetchAuthenticatedUserProfile(
     };
   }
 
-  try {
-    // 1. Fetch from public.profiles if table is available
-    if (profilesTableAvailable !== false) {
-      const { data: profileRow, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
+  const appMeta = authUser.app_metadata || {};
+  let moderatorRole: 'moderator' | 'admin' | null =
+    appMeta.role === 'admin' || appMeta.role === 'moderator' ? appMeta.role : null;
 
-      if (profileError) {
-        if (profileError.code === 'PGRST205' || profileError.code === '42P01') {
-          profilesTableAvailable = false;
-        }
-      } else if (profileRow) {
-        profilesTableAvailable = true;
-        displayName =
-          profileRow.display_name ||
-          extractCleanDisplayName(profileRow.full_name) ||
-          profileRow.name ||
-          displayName;
-        username = profileRow.username || username;
-        avatarUrl = profileRow.avatar_url || avatarUrl;
-        bio = profileRow.bio ?? bio;
-        if (typeof profileRow.setup_completed === 'boolean') {
-          setupCompleted = profileRow.setup_completed;
-        }
-      } else if (!profileRow && displayName && username && emailConfirmed) {
-        profilesTableAvailable = true;
-        // Ensure initial profile row exists only after email verification is confirmed
-        await supabase
-          .from('profiles')
-          .upsert(
-            {
-              id: userId,
-              display_name: displayName,
-              full_name: displayName,
-              username,
-              avatar_url: avatarUrl || null,
-              bio: bio || null,
-              setup_completed: setupCompleted
-            },
-            { onConflict: 'id' }
-          )
-          .then(() => {}, () => {});
+  try {
+    // 1. Fetch from public.profiles
+    const { data: profileRow, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (!profileError && profileRow) {
+      displayName =
+        profileRow.display_name ||
+        extractCleanDisplayName(profileRow.full_name) ||
+        profileRow.name ||
+        displayName;
+      username = profileRow.username || username;
+      avatarUrl = profileRow.avatar_url || avatarUrl;
+      bio = profileRow.bio ?? bio;
+      if (typeof profileRow.setup_completed === 'boolean') {
+        setupCompleted = profileRow.setup_completed;
       }
+    } else if (!profileError && !profileRow && displayName && username && emailConfirmed) {
+      // Ensure initial profile row exists only after email verification is confirmed
+      await supabase
+        .from('profiles')
+        .upsert(
+          {
+            id: userId,
+            display_name: displayName,
+            full_name: displayName,
+            username,
+            avatar_url: avatarUrl || null,
+            bio: bio || null,
+            setup_completed: setupCompleted
+          },
+          { onConflict: 'id' }
+        )
+        .then(() => {}, () => {});
     }
 
-    // 2. Fetch from public.academic_information
-    if (profilesTableAvailable !== false) {
-      const { data: academicRow, error: academicError } = await supabase
-        .from('academic_information')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle();
+    // 2. Fetch from private owner-only public.academic_information
+    const { data: academicRow, error: academicError } = await supabase
+      .from('academic_information')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-      if (!academicError && academicRow) {
-        educationLevel = (academicRow.education_level as EducationLevel) || educationLevel;
-        undergraduateStage =
-          (academicRow.academic_stage as UndergraduateStage) || undergraduateStage;
-        majorOrField = academicRow.major || majorOrField;
-        institution = academicRow.institution_name || institution;
-        academicYear = academicRow.academic_year || academicYear;
-        semester = (academicRow.semester as AcademicSemester) || semester;
-      }
+    if (!academicError && academicRow) {
+      educationLevel = (academicRow.education_level as EducationLevel) || educationLevel;
+      undergraduateStage =
+        (academicRow.academic_stage as UndergraduateStage) || undergraduateStage;
+      majorOrField = academicRow.major || majorOrField;
+      institution = academicRow.institution_name || institution;
+      academicYear = academicRow.academic_year || academicYear;
+      semester = (academicRow.semester as AcademicSemester) || semester;
+    }
 
-      // 3. Fetch from public.user_settings_preferences
-      const { data: prefsRow, error: prefsError } = await supabase
-        .from('user_settings_preferences')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle();
+    // 3. Fetch from private owner-only public.user_settings_preferences
+    const { data: prefsRow, error: prefsError } = await supabase
+      .from('user_settings_preferences')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-      if (!prefsError && prefsRow) {
-        const priv = prefsRow.privacy_settings || {};
-        const app = prefsRow.appearance_settings || {};
-        const study = prefsRow.study_preferences || {};
-        const disc = prefsRow.content_discovery_preferences || {};
+    if (!prefsError && prefsRow) {
+      const priv = prefsRow.privacy_settings || {};
+      const app = prefsRow.appearance_settings || {};
+      const study = prefsRow.study_preferences || {};
+      const disc = prefsRow.content_discovery_preferences || {};
 
-        settings = {
-          publicBadgeEnabled:
-            typeof priv.public_badge_enabled === 'boolean' ? priv.public_badge_enabled : true,
-          showUniOnNotes:
-            typeof priv.show_uni_on_notes === 'boolean' ? priv.show_uni_on_notes : true,
-          flareLocked:
-            typeof app.flare_locked === 'boolean'
-              ? app.flare_locked
-              : settings.flareLocked ?? true,
-          rayColor: app.ray_color || settings.rayColor || '#9ca3af',
-          rayOrigin: app.ray_origin || settings.rayOrigin || 'top-center',
-          rayBrightness:
-            typeof app.ray_brightness === 'number' && !Number.isNaN(app.ray_brightness)
-              ? Math.min(1.0, Math.max(0.05, app.ray_brightness))
-              : settings.rayBrightness ?? 0.5
-        };
+      settings = {
+        publicBadgeEnabled:
+          typeof priv.public_badge_enabled === 'boolean' ? priv.public_badge_enabled : true,
+        showUniOnNotes:
+          typeof priv.show_uni_on_notes === 'boolean' ? priv.show_uni_on_notes : true,
+        flareLocked:
+          typeof app.flare_locked === 'boolean'
+            ? app.flare_locked
+            : settings.flareLocked ?? true,
+        rayColor: app.ray_color || settings.rayColor || '#9ca3af',
+        rayOrigin: app.ray_origin || settings.rayOrigin || 'top-center',
+        rayBrightness:
+          typeof app.ray_brightness === 'number' && !Number.isNaN(app.ray_brightness)
+            ? Math.min(1.0, Math.max(0.05, app.ray_brightness))
+            : settings.rayBrightness ?? 0.5
+      };
 
-        preferences = {
-          preferredSubjects: Array.isArray(prefsRow.preferred_subjects)
-            ? prefsRow.preferred_subjects
-            : [],
-          studyStyle: study.study_style || '',
-          sessionLength: study.session_length || '',
-          collaborationMode: study.collaboration_mode || '',
-          preferredLanguage: prefsRow.preferred_language || 'en',
-          themePreference: prefsRow.theme_preference || 'dark',
-          prioritizeVerifiedNotes:
-            typeof disc.prioritize_verified_notes === 'boolean'
-              ? disc.prioritize_verified_notes
-              : true,
-          prioritizeMyInstitution:
-            typeof disc.prioritize_my_institution === 'boolean'
-              ? disc.prioritize_my_institution
-              : true,
-          includePastExams:
-            typeof disc.include_past_exams === 'boolean' ? disc.include_past_exams : true
-        };
+      preferences = {
+        preferredSubjects: Array.isArray(prefsRow.preferred_subjects)
+          ? prefsRow.preferred_subjects
+          : [],
+        studyStyle: study.study_style || '',
+        sessionLength: study.session_length || '',
+        collaborationMode: study.collaboration_mode || '',
+        preferredLanguage: prefsRow.preferred_language || 'en',
+        themePreference: prefsRow.theme_preference || 'dark',
+        prioritizeVerifiedNotes:
+          typeof disc.prioritize_verified_notes === 'boolean'
+            ? disc.prioritize_verified_notes
+            : true,
+        prioritizeMyInstitution:
+          typeof disc.prioritize_my_institution === 'boolean'
+            ? disc.prioritize_my_institution
+            : true,
+        includePastExams:
+          typeof disc.include_past_exams === 'boolean' ? disc.include_past_exams : true
+      };
+    }
+
+    // 4. Check server-side moderator role via SECURITY DEFINER RPC (zero direct moderator_roles table access)
+    if (!moderatorRole) {
+      const { data: modRole, error: modErr } = await supabase.rpc('get_my_moderator_role');
+      const resolvedModeratorRole = !modErr && typeof modRole === 'string' ? modRole : 'student';
+      if (
+        resolvedModeratorRole === 'admin' ||
+        resolvedModeratorRole === 'super_admin' ||
+        resolvedModeratorRole === 'moderator'
+      ) {
+        moderatorRole = resolvedModeratorRole === 'moderator' ? 'moderator' : 'admin';
       }
     }
   } catch {
@@ -597,6 +586,8 @@ export async function fetchAuthenticatedUserProfile(
       : undefined,
     settings,
     preferences,
+    isModerator: Boolean(moderatorRole),
+    moderatorRole,
     isGuest: false
   };
 
@@ -667,24 +658,22 @@ export async function saveRegisteredUserAppearanceSettings(
 
   if (!supabase) return;
 
-  // 2. Persist in public.user_settings_preferences if table is available
-  if (profilesTableAvailable !== false) {
-    try {
-      await supabase.from('user_settings_preferences').upsert(
-        {
-          user_id: userId,
-          appearance_settings: {
-            flare_locked: cleanAppearance.flareLocked,
-            ray_color: cleanAppearance.rayColor,
-            ray_origin: cleanAppearance.rayOrigin,
-            ray_brightness: cleanAppearance.rayBrightness
-          }
-        },
-        { onConflict: 'user_id' }
-      );
-    } catch {
-      // Ignore if table not yet migrated
-    }
+  // 2. Persist in public.user_settings_preferences
+  try {
+    await supabase.from('user_settings_preferences').upsert(
+      {
+        user_id: userId,
+        appearance_settings: {
+          flare_locked: cleanAppearance.flareLocked,
+          ray_color: cleanAppearance.rayColor,
+          ray_origin: cleanAppearance.rayOrigin,
+          ray_brightness: cleanAppearance.rayBrightness
+        }
+      },
+      { onConflict: 'user_id' }
+    );
+  } catch {
+    // Ignore if table not yet migrated
   }
 
   // 3. Persist in Supabase Auth user_metadata so settings follow the registered user across browsers/devices
@@ -788,77 +777,70 @@ export async function saveUserProfileToSupabase(
   }
 
   // 3. Upsert public.profiles with clean display_name and full_name (no comment-tag payloads)
-  if (profilesTableAvailable !== false) {
-    const { error: profileError } = await supabase.from('profiles').upsert(
-      {
-        id: userId,
-        username: cleanUsername,
-        display_name: cleanDisplayName,
-        full_name: cleanDisplayName,
-        avatar_url: cleanAvatar,
-        bio: cleanBio,
-        setup_completed: payload.setupCompleted
-      },
-      { onConflict: 'id' }
-    );
+  const { error: profileError } = await supabase.from('profiles').upsert(
+    {
+      id: userId,
+      username: cleanUsername,
+      display_name: cleanDisplayName,
+      full_name: cleanDisplayName,
+      avatar_url: cleanAvatar,
+      bio: cleanBio,
+      setup_completed: payload.setupCompleted
+    },
+    { onConflict: 'id' }
+  );
 
-    if (profileError) {
-      const lowerMsg = String(profileError.message || '').toLowerCase();
-      if (
-        profileError.code === '23505' ||
-        lowerMsg.includes('unique') ||
-        lowerMsg.includes('idx_profiles_username_lower')
-      ) {
-        return {
-          success: false,
-          error: `The username "@${cleanUsername}" is already taken by another account.`
-        };
-      }
+  if (profileError) {
+    const lowerMsg = String(profileError.message || '').toLowerCase();
+    if (
+      profileError.code === '23505' ||
+      lowerMsg.includes('unique') ||
+      lowerMsg.includes('idx_profiles_username_lower')
+    ) {
+      return {
+        success: false,
+        error: `The username "@${cleanUsername}" is already taken by another account.`
+      };
+    }
 
-      if (profileError.code === 'PGRST204' || profileError.code === '42703') {
-        // Fallback if existing profiles table uses full_name instead of display_name
-        await supabase
-          .from('profiles')
-          .upsert(
-            {
-              id: userId,
-              username: cleanUsername,
-              full_name: cleanDisplayName,
-              avatar_url: cleanAvatar
-            },
-            { onConflict: 'id' }
-          )
-          .then(() => {}, () => {});
-      } else if (profileError.code === 'PGRST205' || profileError.code === '42P01') {
-        profilesTableAvailable = false;
-      } else if (!isIgnorableSchemaOrTableError(profileError)) {
-        return { success: false, error: profileError.message };
-      }
-    } else {
-      profilesTableAvailable = true;
+    if (profileError.code === 'PGRST204' || profileError.code === '42703') {
+      // Fallback if existing profiles table uses full_name instead of display_name
+      await supabase
+        .from('profiles')
+        .upsert(
+          {
+            id: userId,
+            username: cleanUsername,
+            full_name: cleanDisplayName,
+            avatar_url: cleanAvatar
+          },
+          { onConflict: 'id' }
+        )
+        .then(() => {}, () => {});
+    } else if (!isIgnorableSchemaOrTableError(profileError)) {
+      return { success: false, error: profileError.message };
     }
   }
 
-  if (profilesTableAvailable !== false) {
-    const { error: academicError } = await supabase.from('academic_information').upsert(
-      {
-        user_id: userId,
-        education_level: eduLevel,
-        academic_stage: acadStage,
-        major: cleanMajor,
-        institution_name: cleanInstitution,
-        academic_year: cleanYear,
-        semester: cleanSemester
-      },
-      { onConflict: 'user_id' }
-    );
+  // 4. Upsert private owner-only public.academic_information
+  const { error: academicError } = await supabase.from('academic_information').upsert(
+    {
+      user_id: userId,
+      education_level: eduLevel,
+      academic_stage: acadStage,
+      major: cleanMajor,
+      institution_name: cleanInstitution,
+      academic_year: cleanYear,
+      semester: cleanSemester
+    },
+    { onConflict: 'user_id' }
+  );
 
-    if (academicError && !isIgnorableSchemaOrTableError(academicError)) {
-      return { success: false, error: academicError.message };
-    }
+  if (academicError && !isIgnorableSchemaOrTableError(academicError)) {
+    return { success: false, error: academicError.message };
   }
 
-  // 5. Upsert public.user_settings_preferences
+  // 5. Upsert private owner-only public.user_settings_preferences
   const finalSettings: UserSettingsData = {
     ...DEFAULT_USER_SETTINGS,
     ...(payload.settings || {})
@@ -875,40 +857,38 @@ export async function saveUserProfileToSupabase(
     rayBrightness: finalSettings.rayBrightness ?? 0.5
   });
 
-  if (profilesTableAvailable !== false) {
-    const { error: prefsError } = await supabase.from('user_settings_preferences').upsert(
-      {
-        user_id: userId,
-        privacy_settings: {
-          public_badge_enabled: finalSettings.publicBadgeEnabled,
-          show_uni_on_notes: finalSettings.showUniOnNotes
-        },
-        appearance_settings: {
-          flare_locked: finalSettings.flareLocked ?? true,
-          ray_color: finalSettings.rayColor ?? '#9ca3af',
-          ray_origin: finalSettings.rayOrigin ?? 'top-center',
-          ray_brightness: finalSettings.rayBrightness ?? 0.5
-        },
-        preferred_subjects: finalPreferences.preferredSubjects,
-        study_preferences: {
-          study_style: finalPreferences.studyStyle || '',
-          session_length: finalPreferences.sessionLength || '',
-          collaboration_mode: finalPreferences.collaborationMode || ''
-        },
-        preferred_language: finalPreferences.preferredLanguage,
-        theme_preference: finalPreferences.themePreference,
-        content_discovery_preferences: {
-          prioritize_verified_notes: finalPreferences.prioritizeVerifiedNotes,
-          prioritize_my_institution: finalPreferences.prioritizeMyInstitution,
-          include_past_exams: finalPreferences.includePastExams
-        }
+  const { error: prefsError } = await supabase.from('user_settings_preferences').upsert(
+    {
+      user_id: userId,
+      privacy_settings: {
+        public_badge_enabled: finalSettings.publicBadgeEnabled,
+        show_uni_on_notes: finalSettings.showUniOnNotes
       },
-      { onConflict: 'user_id' }
-    );
+      appearance_settings: {
+        flare_locked: finalSettings.flareLocked ?? true,
+        ray_color: finalSettings.rayColor ?? '#9ca3af',
+        ray_origin: finalSettings.rayOrigin ?? 'top-center',
+        ray_brightness: finalSettings.rayBrightness ?? 0.5
+      },
+      preferred_subjects: finalPreferences.preferredSubjects,
+      study_preferences: {
+        study_style: finalPreferences.studyStyle || '',
+        session_length: finalPreferences.sessionLength || '',
+        collaboration_mode: finalPreferences.collaborationMode || ''
+      },
+      preferred_language: finalPreferences.preferredLanguage,
+      theme_preference: finalPreferences.themePreference,
+      content_discovery_preferences: {
+        prioritize_verified_notes: finalPreferences.prioritizeVerifiedNotes,
+        prioritize_my_institution: finalPreferences.prioritizeMyInstitution,
+        include_past_exams: finalPreferences.includePastExams
+      }
+    },
+    { onConflict: 'user_id' }
+  );
 
-    if (prefsError && !isIgnorableSchemaOrTableError(prefsError)) {
-      return { success: false, error: prefsError.message };
-    }
+  if (prefsError && !isIgnorableSchemaOrTableError(prefsError)) {
+    return { success: false, error: prefsError.message };
   }
 
   // 6. Sync core metadata and appearance settings to Supabase Auth user_metadata
@@ -942,6 +922,24 @@ export async function saveUserProfileToSupabase(
     clearSetupDraft(userId);
     try {
       localStorage.removeItem(PENDING_SIGNUP_DRAFT_KEY);
+    } catch {}
+  }
+
+  // Preserve server-assigned moderator status (never client-editable)
+  const appMeta = authUser.app_metadata || {};
+  let moderatorRole: 'moderator' | 'admin' | null =
+    appMeta.role === 'admin' || appMeta.role === 'moderator' ? appMeta.role : null;
+  if (!moderatorRole) {
+    try {
+      const { data: modRole, error: modErr } = await supabase.rpc('get_my_moderator_role');
+      const resolvedModeratorRole = !modErr && typeof modRole === 'string' ? modRole : 'student';
+      if (
+        resolvedModeratorRole === 'admin' ||
+        resolvedModeratorRole === 'super_admin' ||
+        resolvedModeratorRole === 'moderator'
+      ) {
+        moderatorRole = resolvedModeratorRole === 'moderator' ? 'moderator' : 'admin';
+      }
     } catch {}
   }
 
@@ -983,6 +981,8 @@ export async function saveUserProfileToSupabase(
       : undefined,
     settings: finalSettings,
     preferences: finalPreferences,
+    isModerator: Boolean(moderatorRole),
+    moderatorRole,
     isGuest: false
   };
 
@@ -997,20 +997,29 @@ export async function saveUserProfileToSupabase(
 // SUPABASE STORAGE AVATAR UPLOAD (with safe client-side resize fallback)
 // ============================================================================
 
+export const MAX_AVATAR_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB strict avatar limit
+
 export async function uploadProfileAvatar(
   supabase: SupabaseClient,
   userId: string,
   file: File
 ): Promise<{ url?: string; error?: string }> {
-  if (!file.type.startsWith('image/')) {
-    return { error: 'Please select a valid image file (PNG, JPG, WEBP, or GIF).' };
+  const lowerName = (file.name || '').toLowerCase();
+  const allowedMimes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+  if (
+    !allowedMimes.has(file.type) ||
+    file.type === 'image/svg+xml' ||
+    lowerName.endsWith('.svg')
+  ) {
+    return { error: 'Please select a valid raster image file (PNG, JPG, WEBP, or GIF). SVG files are not permitted.' };
   }
-  if (file.size > 5 * 1024 * 1024) {
-    return { error: 'Image size must be under 5 MB.' };
+  if (file.size > MAX_AVATAR_SIZE_BYTES) {
+    return { error: 'Avatar image size must be under 2 MB.' };
   }
 
-  const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const objectPath = `${userId}/avatar-${Date.now()}.${ext || 'png'}`;
+  const rawExt = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const safeExt = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(rawExt) ? rawExt : 'png';
+  const objectPath = `${userId}/avatar-${Date.now()}.${safeExt}`;
 
   try {
     const { error: uploadError } = await supabase.storage
