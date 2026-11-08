@@ -166,7 +166,7 @@ export const PrivacyPolicyView: React.FC<PrivacyPolicyViewProps> = ({
             <div>
               <div className="text-xs font-bold text-white mb-0.5">Verified Infrastructure</div>
               <p className="text-[11px] text-white/65 leading-relaxed">
-                Powered by Supabase (Auth, Database &amp; Storage), Vercel (Hosting), and Resend (Email).
+                Powered by Supabase (Auth, Database &amp; Storage), Cloudflare (Hosting), and Resend (Email).
               </p>
             </div>
           </div>

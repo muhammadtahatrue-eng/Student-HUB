@@ -108,44 +108,87 @@ export function classifySupabaseError(
 const DEFAULT_SUPABASE_URL = 'https://mfyngivzwyjgcnzhodud.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_Bpa3IEI_19hEqC5dwM6QiQ_VCMRlSfn';
 
-// Load stored config or default
+function normalizeProjectUrl(urlString: string | null | undefined): string {
+  if (!urlString || typeof urlString !== 'string') return '';
+  return urlString.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+// Load authoritative environment/default configuration or validated custom config
 export function getSavedSupabaseConfig(): SupabaseConfig {
+  const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+  const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+
+  const hasValidEnv =
+    isValidHttpUrl(envUrl) && Boolean(envKey) && envKey.trim() !== 'your-anon-key';
+  const authoritativeUrl = hasValidEnv ? envUrl.trim() : DEFAULT_SUPABASE_URL;
+  const authoritativeKey = hasValidEnv ? envKey.trim() : DEFAULT_SUPABASE_ANON_KEY;
+  const normalizedAuthoritativeUrl = normalizeProjectUrl(authoritativeUrl);
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (isValidHttpUrl(parsed.url) && parsed.anonKey && parsed.anonKey.trim() !== 'your-anon-key') {
-        return {
-          url: parsed.url.trim(),
-          anonKey: parsed.anonKey.trim(),
-          storageBucket: parsed.storageBucket || 'study-materials',
-          isConnected: Boolean(parsed.isConnected),
-          lastTestedAt: parsed.lastTestedAt || null
-        };
+      const storedUrl = typeof parsed?.url === 'string' ? parsed.url.trim() : '';
+      const storedKey = typeof parsed?.anonKey === 'string' ? parsed.anonKey.trim() : '';
+      const hasValidStored =
+        isValidHttpUrl(storedUrl) &&
+        Boolean(storedKey) &&
+        storedKey !== 'your-anon-key' &&
+        parsed.isConnected !== false;
+
+      if (hasValidStored) {
+        const normalizedStoredUrl = normalizeProjectUrl(storedUrl);
+
+        if (hasValidEnv) {
+          // When VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are provided at build time,
+          // they are authoritative. Ignore and clear any stale localStorage config for another project or key.
+          if (
+            normalizedStoredUrl === normalizedAuthoritativeUrl &&
+            storedKey === authoritativeKey
+          ) {
+            return {
+              url: authoritativeUrl,
+              anonKey: authoritativeKey,
+              storageBucket: parsed.storageBucket || 'study-materials',
+              isConnected: true,
+              lastTestedAt: parsed.lastTestedAt || null
+            };
+          }
+          localStorage.removeItem(STORAGE_KEY_CONFIG);
+        } else {
+          // In local/dev environments without build-time env vars, honor valid connected custom config
+          return {
+            url: storedUrl,
+            anonKey: storedKey,
+            storageBucket: parsed.storageBucket || 'study-materials',
+            isConnected: true,
+            lastTestedAt: parsed.lastTestedAt || null
+          };
+        }
+      } else {
+        // Remove disconnected ("demo mode") or malformed localStorage config so it cannot override live auth
+        localStorage.removeItem(STORAGE_KEY_CONFIG);
       }
     }
   } catch {
     // Ignore storage parse issues
   }
 
-  const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-  const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
-
-  const hasValidEnv = isValidHttpUrl(envUrl) && Boolean(envKey) && envKey !== 'your-anon-key';
-  const finalUrl = hasValidEnv ? envUrl.trim() : DEFAULT_SUPABASE_URL;
-  const finalKey = hasValidEnv ? envKey.trim() : DEFAULT_SUPABASE_ANON_KEY;
-
   return {
-    url: finalUrl,
-    anonKey: finalKey,
+    url: authoritativeUrl,
+    anonKey: authoritativeKey,
     storageBucket: 'study-materials',
-    isConnected: Boolean(isValidHttpUrl(finalUrl) && finalKey),
+    isConnected: Boolean(isValidHttpUrl(authoritativeUrl) && authoritativeKey),
     lastTestedAt: null
   };
 }
 
 export function saveSupabaseConfig(config: SupabaseConfig): void {
   try {
+    if (!config.isConnected || !isValidHttpUrl(config.url) || !config.anonKey) {
+      localStorage.removeItem(STORAGE_KEY_CONFIG);
+      return;
+    }
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
   } catch {
     // Ignore storage issues
@@ -307,22 +350,25 @@ function getActiveUserIdFromStorage(): string | undefined {
  */
 export function clearUserSpecificLocalState(userId?: string): void {
   try {
+    const effectiveUserId = userId || getActiveUserIdFromStorage();
     localStorage.removeItem('studyvault_active_user');
+    localStorage.removeItem('xeusar_pending_signup_draft');
     localStorage.removeItem(STORAGE_KEY_UPVOTES);
     localStorage.removeItem('xeusar_followed_universities_v3');
     localStorage.removeItem('xeusar_community_upvotes_v3');
     localStorage.removeItem('xeusar_program_upvotes_v2');
     localStorage.removeItem('xeusar_followed_programs_v2');
     localStorage.removeItem('xeusar_forum_followed_topics_v1');
-    if (userId) {
-      localStorage.removeItem(`${STORAGE_KEY_UPVOTES}_${userId}`);
-      localStorage.removeItem(`xeusar_followed_universities_v3_${userId}`);
-      localStorage.removeItem(`xeusar_community_upvotes_v3_${userId}`);
-      localStorage.removeItem(`xeusar_program_upvotes_v2_${userId}`);
-      localStorage.removeItem(`xeusar_followed_programs_v2_${userId}`);
-      localStorage.removeItem(`xeusar_forum_followed_topics_v1_${userId}`);
-      localStorage.removeItem(`xeusar_profile_setup_draft_${userId}`);
-      localStorage.removeItem(`xeusar_forum_post_draft_v1_${userId}`);
+    if (effectiveUserId) {
+      localStorage.removeItem(`${STORAGE_KEY_UPVOTES}_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_followed_universities_v3_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_community_upvotes_v3_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_program_upvotes_v2_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_followed_programs_v2_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_forum_followed_topics_v1_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_profile_setup_draft_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_forum_post_draft_v1_${effectiveUserId}`);
+      localStorage.removeItem(`xeusar_user_appearance_v1_${effectiveUserId}`);
     }
     // Remove any local-only unsynced notes that belonged to the signed-out user
     const rawNotes = localStorage.getItem(STORAGE_KEY_NOTES);
@@ -336,6 +382,27 @@ export function clearUserSpecificLocalState(userId?: string): void {
       }
     }
   } catch {}
+}
+
+/**
+ * Centralized sign-out helper used across all logout entry points.
+ * Signs out of Supabase Auth and clears all authenticated user-specific local state.
+ */
+export async function signOutCurrentUser(
+  supabaseClient?: SupabaseClient | null,
+  userId?: string
+): Promise<void> {
+  const effectiveUserId = userId || getActiveUserIdFromStorage();
+  const client = supabaseClient ?? getSupabaseInstance();
+  try {
+    if (client) {
+      await client.auth.signOut();
+    }
+  } catch {
+    // Ignore transient network errors so local state cleanup always completes
+  } finally {
+    clearUserSpecificLocalState(effectiveUserId);
+  }
 }
 
 export function getDeletedNoteIds(): Set<string> {

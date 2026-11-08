@@ -176,7 +176,7 @@ export const PRIVACY_POLICY_SECTIONS: PrivacySectionItem[] = [
           'Used for authentication and backend services, including database functionality and cloud storage where configured.'
       },
       {
-        name: 'Vercel',
+        name: 'Cloudflare',
         role: 'Website Hosting & Delivery',
         description: 'Used to host and deliver the Xeusar website.'
       },
@@ -212,7 +212,7 @@ export const PRIVACY_POLICY_SECTIONS: PrivacySectionItem[] = [
       {
         title: 'Infrastructure Service Providers',
         bullets: [
-          'We share necessary technical and account data with Supabase, Vercel, and Resend strictly to host the website, authenticate accounts, store uploaded files and database records, and deliver verification emails.'
+          'We share necessary technical and account data with Supabase, Cloudflare, and Resend strictly to host the website, authenticate accounts, store uploaded files and database records, and deliver verification emails.'
         ]
       },
       {
@@ -284,7 +284,7 @@ export const PRIVACY_POLICY_SECTIONS: PrivacySectionItem[] = [
     shortTitle: 'International Processing',
     title: 'International Processing',
     paragraphs: [
-      'Xeusar is accessible globally, and our infrastructure service providers (including Vercel, Supabase, and Resend) may process and store data on cloud servers located in the United States, the European Union, or other regions outside your country of residence.',
+      'Xeusar is accessible globally, and our infrastructure service providers (including Cloudflare, Supabase, and Resend) may process and store data on cloud servers located in the United States, the European Union, or other regions outside your country of residence.',
       'Data protection laws in these jurisdictions may differ from those in your home country. By using Xeusar, you understand that your information may be transferred to and processed in these regions by our service providers in accordance with this Privacy Policy and applicable legal safeguards.'
     ]
   },

@@ -1,96 +1,25 @@
 <!doctype html>
-<html lang="en" style="background-color: #050505; color: #ffffff;">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StudyVault - Student Study-Material Platform</title>
+    <title>Xeusar</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta name="description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
-    <meta property="og:title" content="StudyVault - Student Study-Material Platform" />
+    <meta property="og:title" content="Xeusar" />
     <meta property="og:description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <style>html,body{color:#fff;min-height:100vh;margin:0;padding:0;background-color:#050505!important}</style>
-    <script>
-      // 1. GitHub Pages SPA path and trailing-slash handler
-      (function() {
-        try {
-          var p = window.location.pathname;
-          // Ensure repository URLs have a trailing slash so relative paths resolve cleanly
-          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
-            window.location.replace(window.location.protocol + '//' + window.location.host + p + '/' + window.location.search + window.location.hash);
-            return;
-          }
-
-          // 2. Decode SPA redirect passed from 404.html
-          var search = window.location.search;
-          if (search && search.length > 1 && search.charAt(1) === '/') {
-            var parts = search.slice(1).split('&').map(function(s) {
-              return s.replace(/~and~/g, '&');
-            });
-            var restoredPath = parts[0];
-            var restoredQuery = parts.slice(1).join('&');
-            var baseDir = p.endsWith('/') ? p : p.substring(0, p.lastIndexOf('/') + 1);
-            var newUrl = baseDir + (restoredPath.startsWith('/') ? restoredPath.slice(1) : restoredPath) +
-              (restoredQuery ? '?' + restoredQuery : '') +
-              window.location.hash;
-            window.history.replaceState(null, '', newUrl);
-          }
-        } catch (e) {
-          console.warn('URL normalizer error:', e);
-        }
-      })();
-
-      // 3. Global hard reset helper
-      window.__studyVaultHardReset = function() {
-        try {
-          localStorage.clear();
-          sessionStorage.clear();
-          if (window.caches) {
-            caches.keys().then(function(names) {
-              names.forEach(function(n) { caches.delete(n); });
-            });
-          }
-        } catch (err) {}
-        window.location.href = window.location.pathname;
-      };
-
-      // 4. Capture any early unhandled errors before React mounts to aid troubleshooting
-      window.__studyVaultBootErrors = [];
-      window.addEventListener('error', function(e) {
-        window.__studyVaultBootErrors.push(e.message || (e.error && e.error.message) || String(e));
-        var diagEl = document.getElementById('boot-error-details');
-        if (diagEl) {
-          diagEl.style.display = 'block';
-          diagEl.textContent = 'Script Error: ' + (e.message || 'Check browser console');
-        }
-      });
-    </script>
-    <script type="module" crossorigin src="./assets/index-EckfxiaE.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CCkEFTAQ.css">
+    <style>html,body{color:#fff;background-color:#05070a;min-height:100%;margin:0;padding:0}</style>
+    <script type="module" crossorigin src="/assets/app.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/app.css">
   </head>
-  <body class="bg-[#050505] text-white">
-    <div id="root">
-      <!-- Pre-mount fallback displayed momentarily before React bundle mounts -->
-      <div id="app-loading-fallback" style="min-height: 100vh; background-color: #050505; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 1.5rem; text-align: center;">
-        <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: #00f0ff; font-weight: bold; font-size: 1.25rem;">
-          SV
-        </div>
-        <h1 style="font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem 0; letter-spacing: -0.025em; color: #ffffff;">StudyVault</h1>
-        <p style="font-size: 0.875rem; color: #94a3b8; margin: 0 0 1.5rem 0; max-width: 320px;">
-          Loading student resources and academic programs...
-        </p>
-        <div style="display: flex; gap: 0.75rem;">
-          <button onclick="window.location.reload()" style="background-color: #00f0ff; color: #000000; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
-            Reload
-          </button>
-          <button onclick="window.__studyVaultHardReset()" style="background-color: rgba(255, 255, 255, 0.1); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">
-            Reset Cache
-          </button>
-        </div>
-        <div id="boot-error-details" style="display: none; margin-top: 1rem; padding: 0.5rem 0.75rem; background: rgba(244, 63, 94, 0.15); border: 1px solid rgba(244, 63, 94, 0.3); border-radius: 8px; font-size: 0.75rem; color: #f43f5e; max-width: 420px; font-family: monospace; word-break: break-all;"></div>
-      </div>
-    </div>
+  <body class="bg-[#05070a] text-white">
+    <div id="root"></div>
   </body>
 </html>
+

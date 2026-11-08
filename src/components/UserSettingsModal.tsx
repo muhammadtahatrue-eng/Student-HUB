@@ -40,7 +40,7 @@ import {
   AcademicSemester,
   AcademicProfileInfo
 } from '../types/index.ts';
-import { getSupabaseInstance } from '../lib/supabaseClient.ts';
+import { getSupabaseInstance, signOutCurrentUser } from '../lib/supabaseClient.ts';
 import { RaysOrigin } from './LightRays.tsx';
 import { HecUniversitySelect } from './university/HecUniversitySelect.tsx';
 import { registerStudentToUniversity, findUniversityByNameOrFuzzy } from '../lib/universityStore.ts';
@@ -64,6 +64,7 @@ interface UserSettingsModalProps {
   onChangeRayBrightness?: (brightness: number) => void;
   onResetFlare?: () => void;
   onOpenAuthModal?: (mode: 'signin' | 'signup') => void;
+  onSignOut?: () => void;
 }
 
 const FLARE_PRESET_COLORS: { name: string; hex: string; isRgb?: boolean }[] = [
@@ -336,6 +337,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   onChangeRayBrightness,
   onResetFlare,
   onOpenAuthModal,
+  onSignOut,
 }) => {
   const [activeTab, setActiveTab] = useState<UserSettingsTab>(initialTab);
   const [editName, setEditName] = useState('');
@@ -593,8 +595,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     }
   };
 
-  const handleSignOut = () => {
-    localStorage.removeItem('studyvault_active_user');
+  const handleSignOut = async () => {
+    if (onSignOut) {
+      onClose();
+      await onSignOut();
+      return;
+    }
+    const supabase = getSupabaseInstance(supabaseConfig);
+    await signOutCurrentUser(supabase, user?.id);
     onUserChange(null);
     onClose();
   };

@@ -1,0 +1,655 @@
+-- =============================================================================
+-- XEUSAR v4 COMPLETE SECURITY & PUBLIC SYNC REPAIR — PART 4 OF 4
+-- Grants, Column-Level UPDATE Firewall, RLS Policies, Storage & Verification
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 18. GLOBAL REVOCATIONS, TABLE GRANTS & COLUMN-LEVEL UPDATE LISTS (Section 4.2)
+-- -----------------------------------------------------------------------------
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, anon, authenticated;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC, anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC, anon, authenticated;
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, service_role;
+
+-- 18.1 Public View & Read Grants for anon and authenticated
+GRANT SELECT ON public.public_student_profiles TO anon, authenticated;
+
+GRANT SELECT ON
+  public.academic_information,
+  public.universities,
+  public.departments,
+  public.courses,
+  public.academic_programs,
+  public.stored_files,
+  public.study_notes,
+  public.forum_topics,
+  public.forum_posts,
+  public.forum_comments,
+  public.program_discussions,
+  public.program_discussion_comments,
+  public.program_doubts,
+  public.program_doubt_answers,
+  public.university_discussions,
+  public.university_discussion_comments,
+  public.university_doubts,
+  public.university_doubt_answers
+TO anon, authenticated;
+
+-- 18.2 Authenticated Owner-Only SELECT / INSERT / DELETE Table Grants
+GRANT SELECT, INSERT ON
+  public.profiles,
+  public.academic_information,
+  public.user_settings_preferences,
+  public.universities,
+  public.departments,
+  public.courses,
+  public.academic_programs,
+  public.forum_reports
+TO authenticated;
+
+GRANT SELECT, INSERT, DELETE ON
+  public.program_enrollments,
+  public.university_follows,
+  public.stored_files,
+  public.study_notes,
+  public.study_note_upvotes,
+  public.forum_topics,
+  public.forum_posts,
+  public.forum_comments,
+  public.forum_bookmarks,
+  public.program_discussions,
+  public.program_discussion_comments,
+  public.program_doubts,
+  public.program_doubt_answers,
+  public.university_discussions,
+  public.university_discussion_comments,
+  public.university_doubts,
+  public.university_doubt_answers
+TO authenticated;
+
+GRANT SELECT ON
+  public.forum_post_votes,
+  public.forum_comment_votes,
+  public.community_item_votes
+TO authenticated;
+
+-- Zero client grants on public.moderator_roles, public.study_note_downloads, public.migration_orphan_quarantine
+
+-- 18.3 Upsert-Safe Column-Level UPDATE Grants (Privileged Counters, Roles & Flags Excluded!)
+-- Identity/PK columns are included so PostgREST .upsert() passes SQL privilege checks before
+-- enforce_privileged_columns() locks them to OLD.<col>, while counters/roles remain strictly revoked.
+GRANT UPDATE (id, username, display_name, full_name, avatar_url, bio, setup_completed, created_at, updated_at)
+  ON public.profiles TO authenticated;
+
+GRANT UPDATE (
+  id, user_id, university_id, program_id, education_level, academic_stage,
+  institution_name, degree_program, major, field_of_study, academic_year,
+  semester, current_semester, student_id_number, graduation_year, created_at, updated_at
+) ON public.academic_information TO authenticated;
+
+GRANT UPDATE (
+  id, user_id, account_settings, privacy_settings, notification_settings,
+  appearance_settings, preferred_subjects, study_preferences, preferred_language,
+  theme_preference, theme, content_discovery_preferences, email_notifications,
+  forum_notifications, resource_alerts, public_profile, show_academic_info, created_at, updated_at
+) ON public.user_settings_preferences TO authenticated;
+
+GRANT UPDATE (
+  id, name, short_name, slug, location, country, website, description,
+  logo_url, banner_url, type, access_scope, created_by, created_at, updated_at
+) ON public.universities TO authenticated;
+
+GRANT UPDATE (id, university_id, name, code, description, faculty_head, created_by, created_at, updated_at)
+  ON public.departments TO authenticated;
+
+GRANT UPDATE (
+  id, university_id, department_id, code, name, title, description,
+  semester, credits, instructor, created_by, created_at, updated_at
+) ON public.courses TO authenticated;
+
+GRANT UPDATE (
+  id, university_id, title, name, code, category, level, duration, description,
+  syllabus_summary, career_paths, subjects, access_scope, created_by, created_at, updated_at
+) ON public.academic_programs TO authenticated;
+
+GRANT UPDATE (
+  id, content_hash, sha256_hash, storage_bucket, storage_path, file_url,
+  original_filename, mime_type, size_bytes, is_public, uploaded_by, created_by, created_at, updated_at
+) ON public.stored_files TO authenticated;
+
+GRANT UPDATE (
+  id, title, subject, course_code, course_id, university, university_id, program_id,
+  department, department_id, semester, academic_year, professor, note_type, resource_type,
+  description, summary, content, tags, pages, page_count, file_url, storage_bucket,
+  storage_path, file_name, file_type, mime_type, file_size, file_size_bytes, content_hash,
+  file_sha256, file_id, preview_url, author_id, uploader_id, author_name, author_avatar,
+  author_university, is_public, is_published, is_restricted, created_at, updated_at
+) ON public.study_notes TO authenticated;
+
+GRANT UPDATE (
+  id, name, title, slug, description, icon, color, category, sort_order, is_locked, created_by, created_at, updated_at
+) ON public.forum_topics TO authenticated;
+
+GRANT UPDATE (
+  id, topic_id, title, content, author_id, author_name, author_username,
+  author_avatar, tags, is_resolved, created_at, updated_at
+) ON public.forum_posts TO authenticated;
+
+GRANT UPDATE (
+  id, post_id, parent_id, content, author_id, author_name, author_username, author_avatar, created_at, updated_at
+) ON public.forum_comments TO authenticated;
+
+GRANT UPDATE (
+  id, program_id, title, content, category, tags, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.program_discussions TO authenticated;
+
+GRANT UPDATE (
+  id, discussion_id, parent_id, content, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.program_discussion_comments TO authenticated;
+
+GRANT UPDATE (
+  id, program_id, title, question, content, subject, tags, author_id, author_name, author_avatar, is_resolved, created_at, updated_at
+) ON public.program_doubts TO authenticated;
+
+GRANT UPDATE (
+  id, doubt_id, content, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.program_doubt_answers TO authenticated;
+
+GRANT UPDATE (
+  id, university_id, department_id, course_id, title, content, category, tags, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.university_discussions TO authenticated;
+
+GRANT UPDATE (
+  id, discussion_id, parent_id, content, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.university_discussion_comments TO authenticated;
+
+GRANT UPDATE (
+  id, university_id, department_id, course_id, title, question, content, subject, tags, author_id, author_name, author_avatar, is_resolved, created_at, updated_at
+) ON public.university_doubts TO authenticated;
+
+GRANT UPDATE (
+  id, doubt_id, content, author_id, author_name, author_avatar, created_at, updated_at
+) ON public.university_doubt_answers TO authenticated;
+
+-- 18.4 Function Execution Grants
+GRANT EXECUTE ON FUNCTION public.is_platform_admin() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.get_my_moderator_role() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.can_access_study_note(text, uuid) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.can_access_stored_file(text, text, uuid) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.increment_downloads(text, text, text) TO anon, authenticated, service_role;
+
+GRANT EXECUTE ON FUNCTION public.upsert_stored_file(text, text, text, text, text, text, bigint, boolean) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.toggle_study_note_upvote(text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.vote_forum_post(text, smallint) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.vote_forum_comment(text, smallint) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.toggle_community_vote(text, text, integer) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.toggle_program_enrollment(text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.toggle_university_follow(text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.accept_doubt_answer(text, text, text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.moderate_content_item(text, text, jsonb) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.resolve_quarantined_record(uuid, text, text, text) TO authenticated, service_role;
+
+-- -----------------------------------------------------------------------------
+-- 19. ROW LEVEL SECURITY ENABLEMENT & POLICIES (All 30 Tables)
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_tbl text;
+  v_pol RECORD;
+BEGIN
+  -- Enable RLS on all 30 tables (without FORCE RLS so postgres SECURITY DEFINER helpers never recurse)
+  FOREACH v_tbl IN ARRAY ARRAY[
+    'profiles', 'academic_information', 'user_settings_preferences', 'moderator_roles',
+    'universities', 'departments', 'courses', 'academic_programs',
+    'program_enrollments', 'university_follows',
+    'stored_files', 'study_notes', 'study_note_upvotes', 'study_note_downloads',
+    'forum_topics', 'forum_posts', 'forum_comments', 'forum_post_votes',
+    'forum_comment_votes', 'forum_bookmarks', 'forum_reports',
+    'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+    'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers',
+    'community_item_votes', 'migration_orphan_quarantine'
+  ]
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_tbl);
+    FOR v_pol IN
+      SELECT policyname FROM pg_policies WHERE schemaname = 'public' AND tablename = v_tbl
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', v_pol.policyname, v_tbl);
+    END LOOP;
+  END LOOP;
+END;
+$$;
+
+-- 19.1 Identity, Academic Profile & Settings Policies
+CREATE POLICY profiles_select_owner_or_admin ON public.profiles
+  FOR SELECT TO authenticated
+  USING (id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY profiles_insert_owner ON public.profiles
+  FOR INSERT TO authenticated
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY profiles_update_owner_or_admin ON public.profiles
+  FOR UPDATE TO authenticated
+  USING (id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY profiles_delete_admin ON public.profiles
+  FOR DELETE TO authenticated
+  USING (public.is_platform_admin());
+
+CREATE POLICY academic_info_select_opt_in_or_owner ON public.academic_information
+  FOR SELECT TO anon, authenticated
+  USING (
+    user_id = auth.uid()
+    OR public.is_platform_admin()
+    OR EXISTS (
+      SELECT 1
+      FROM public.user_settings_preferences usp
+      WHERE usp.user_id = academic_information.user_id
+        AND usp.public_profile = true
+        AND usp.show_academic_info = true
+    )
+  );
+
+CREATE POLICY academic_info_insert_owner ON public.academic_information
+  FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY academic_info_update_owner ON public.academic_information
+  FOR UPDATE TO authenticated
+  USING (user_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (user_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY user_settings_all_owner ON public.user_settings_preferences
+  FOR ALL TO authenticated
+  USING (user_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (user_id = auth.uid() OR public.is_platform_admin());
+
+-- 19.2 Catalog Policies (universities, departments, courses, academic_programs)
+DO $$
+DECLARE
+  v_tbl text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY['universities', 'departments', 'courses', 'academic_programs']
+  LOOP
+    EXECUTE format('CREATE POLICY %I_select_public ON public.%I FOR SELECT TO anon, authenticated USING (true)', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_insert_auth ON public.%I FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL AND coalesce(created_by, auth.uid()) = auth.uid())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_update_owner_admin ON public.%I FOR UPDATE TO authenticated USING (created_by = auth.uid() OR public.is_platform_admin()) WITH CHECK (created_by = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_delete_admin ON public.%I FOR DELETE TO authenticated USING (public.is_platform_admin())', v_tbl, v_tbl);
+  END LOOP;
+END;
+$$;
+
+-- 19.3 Enrollments, Follows, Upvotes, Votes & Bookmarks (Owner-Only Ledger Access)
+DO $$
+DECLARE
+  v_tbl text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY['program_enrollments', 'university_follows', 'study_note_upvotes', 'forum_bookmarks']
+  LOOP
+    EXECUTE format('CREATE POLICY %I_select_owner ON public.%I FOR SELECT TO authenticated USING (user_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_insert_owner ON public.%I FOR INSERT TO authenticated WITH CHECK (user_id = auth.uid())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_delete_owner ON public.%I FOR DELETE TO authenticated USING (user_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+  END LOOP;
+
+  FOREACH v_tbl IN ARRAY ARRAY['forum_post_votes', 'forum_comment_votes', 'community_item_votes']
+  LOOP
+    EXECUTE format('CREATE POLICY %I_select_owner ON public.%I FOR SELECT TO authenticated USING (user_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+  END LOOP;
+END;
+$$;
+
+-- 19.4 Stored Files & Study Notes Policies (Gated via can_access_stored_file & can_access_study_note)
+CREATE POLICY stored_files_select_access ON public.stored_files
+  FOR SELECT TO anon, authenticated
+  USING (public.can_access_stored_file(storage_bucket, storage_path, auth.uid()));
+
+CREATE POLICY stored_files_insert_owner ON public.stored_files
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() IS NOT NULL AND coalesce(uploaded_by, created_by, auth.uid()) = auth.uid());
+
+CREATE POLICY stored_files_update_owner_admin ON public.stored_files
+  FOR UPDATE TO authenticated
+  USING (uploaded_by = auth.uid() OR created_by = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (uploaded_by = auth.uid() OR created_by = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY stored_files_delete_owner_admin ON public.stored_files
+  FOR DELETE TO authenticated
+  USING (uploaded_by = auth.uid() OR created_by = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY study_notes_select_access ON public.study_notes
+  FOR SELECT TO anon, authenticated
+  USING (public.can_access_study_note(id, auth.uid()));
+
+CREATE POLICY study_notes_insert_owner ON public.study_notes
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() IS NOT NULL AND coalesce(author_id, uploader_id, auth.uid()) = auth.uid());
+
+CREATE POLICY study_notes_update_owner_admin ON public.study_notes
+  FOR UPDATE TO authenticated
+  USING (author_id = auth.uid() OR uploader_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (author_id = auth.uid() OR uploader_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY study_notes_delete_owner_admin ON public.study_notes
+  FOR DELETE TO authenticated
+  USING (author_id = auth.uid() OR uploader_id = auth.uid() OR public.is_platform_admin());
+
+-- 19.5 Forum Policies (forum_topics, forum_posts, forum_comments, forum_reports)
+CREATE POLICY forum_topics_select_public ON public.forum_topics
+  FOR SELECT TO anon, authenticated USING (true);
+
+CREATE POLICY forum_topics_write_admin ON public.forum_topics
+  FOR ALL TO authenticated
+  USING (public.is_platform_admin())
+  WITH CHECK (public.is_platform_admin());
+
+CREATE POLICY forum_posts_select_visible ON public.forum_posts
+  FOR SELECT TO anon, authenticated
+  USING (moderation_status = 'approved' OR author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_posts_insert_unlocked ON public.forum_posts
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND coalesce(author_id, auth.uid()) = auth.uid()
+    AND EXISTS (SELECT 1 FROM public.forum_topics ft WHERE ft.id = topic_id AND NOT ft.is_locked)
+  );
+
+CREATE POLICY forum_posts_update_owner_admin ON public.forum_posts
+  FOR UPDATE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_posts_delete_owner_admin ON public.forum_posts
+  FOR DELETE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_comments_select_visible ON public.forum_comments
+  FOR SELECT TO anon, authenticated
+  USING (moderation_status = 'approved' OR author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_comments_insert_unlocked ON public.forum_comments
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND coalesce(author_id, auth.uid()) = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM public.forum_posts fp
+      WHERE fp.id = post_id AND NOT fp.is_locked AND fp.moderation_status = 'approved'
+    )
+  );
+
+CREATE POLICY forum_comments_update_owner_admin ON public.forum_comments
+  FOR UPDATE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_comments_delete_owner_admin ON public.forum_comments
+  FOR DELETE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_reports_select_owner_admin ON public.forum_reports
+  FOR SELECT TO authenticated
+  USING (reporter_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY forum_reports_insert_owner ON public.forum_reports
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() IS NOT NULL AND coalesce(reporter_id, auth.uid()) = auth.uid());
+
+-- 19.6 Program & University Community Policies (Tables 22 - 29)
+DO $$
+DECLARE
+  v_tbl text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY[
+    'program_discussions', 'program_doubts', 'program_doubt_answers',
+    'university_discussions', 'university_doubts', 'university_doubt_answers'
+  ]
+  LOOP
+    EXECUTE format('CREATE POLICY %I_select_visible ON public.%I FOR SELECT TO anon, authenticated USING (moderation_status = ''approved'' OR author_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_insert_owner ON public.%I FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL AND coalesce(author_id, auth.uid()) = auth.uid())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_update_owner_admin ON public.%I FOR UPDATE TO authenticated USING (author_id = auth.uid() OR public.is_platform_admin()) WITH CHECK (author_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+    EXECUTE format('CREATE POLICY %I_delete_owner_admin ON public.%I FOR DELETE TO authenticated USING (author_id = auth.uid() OR public.is_platform_admin())', v_tbl, v_tbl);
+  END LOOP;
+END;
+$$;
+
+CREATE POLICY prog_disc_comments_select_visible ON public.program_discussion_comments
+  FOR SELECT TO anon, authenticated
+  USING (moderation_status = 'approved' OR author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY prog_disc_comments_insert_unlocked ON public.program_discussion_comments
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND coalesce(author_id, auth.uid()) = auth.uid()
+    AND EXISTS (SELECT 1 FROM public.program_discussions pd WHERE pd.id = discussion_id AND NOT pd.is_locked)
+  );
+
+CREATE POLICY prog_disc_comments_update_owner_admin ON public.program_discussion_comments
+  FOR UPDATE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY prog_disc_comments_delete_owner_admin ON public.program_discussion_comments
+  FOR DELETE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY uni_disc_comments_select_visible ON public.university_discussion_comments
+  FOR SELECT TO anon, authenticated
+  USING (moderation_status = 'approved' OR author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY uni_disc_comments_insert_unlocked ON public.university_discussion_comments
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND coalesce(author_id, auth.uid()) = auth.uid()
+    AND EXISTS (SELECT 1 FROM public.university_discussions ud WHERE ud.id = discussion_id AND NOT ud.is_locked)
+  );
+
+CREATE POLICY uni_disc_comments_update_owner_admin ON public.university_discussion_comments
+  FOR UPDATE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin())
+  WITH CHECK (author_id = auth.uid() OR public.is_platform_admin());
+
+CREATE POLICY uni_disc_comments_delete_owner_admin ON public.university_discussion_comments
+  FOR DELETE TO authenticated
+  USING (author_id = auth.uid() OR public.is_platform_admin());
+
+-- -----------------------------------------------------------------------------
+-- 20. DUAL-BUCKET STORAGE ARCHITECTURE & STORAGE RLS POLICIES (Section 6.2 & 6.3)
+-- -----------------------------------------------------------------------------
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES
+  (
+    'avatars',
+    'avatars',
+    true,
+    2097152,
+    ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+  ),
+  (
+    'study-materials',
+    'study-materials',
+    true,
+    5242880,
+    ARRAY[
+      'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+      'text/plain', 'text/markdown', 'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ]
+  ),
+  (
+    'study-materials-restricted',
+    'study-materials-restricted',
+    false,
+    5242880,
+    ARRAY[
+      'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+      'text/plain', 'text/markdown', 'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ]
+  )
+ON CONFLICT (id) DO UPDATE
+SET
+  public = EXCLUDED.public,
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+-- Drop legacy Xeusar storage policies before creating canonical v4 policies
+DO $$
+DECLARE
+  v_pol RECORD;
+BEGIN
+  FOR v_pol IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'storage'
+      AND tablename = 'objects'
+      AND (
+        policyname ILIKE '%xeusar%'
+        OR policyname ILIKE '%avatar%'
+        OR policyname ILIKE '%study_material%'
+        OR policyname ILIKE '%study-material%'
+      )
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON storage.objects', v_pol.policyname);
+  END LOOP;
+END;
+$$;
+
+CREATE POLICY xeusar_storage_select_policy ON storage.objects
+  FOR SELECT TO anon, authenticated
+  USING (
+    bucket_id IN ('avatars', 'study-materials', 'study-materials-restricted')
+    AND public.can_access_stored_file(bucket_id, name, auth.uid())
+  );
+
+CREATE POLICY xeusar_storage_insert_owner_folder ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id IN ('avatars', 'study-materials', 'study-materials-restricted')
+    AND auth.uid() IS NOT NULL
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR (
+        bucket_id IN ('study-materials', 'study-materials-restricted')
+        AND (storage.foldername(name))[1] = 'notes'
+        AND (storage.foldername(name))[2] = auth.uid()::text
+      )
+    )
+  );
+
+CREATE POLICY xeusar_storage_update_owner_folder ON storage.objects
+  FOR UPDATE TO authenticated
+  USING (
+    bucket_id IN ('avatars', 'study-materials', 'study-materials-restricted')
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR (
+        bucket_id IN ('study-materials', 'study-materials-restricted')
+        AND (storage.foldername(name))[1] = 'notes'
+        AND (storage.foldername(name))[2] = auth.uid()::text
+      )
+      OR public.is_platform_admin()
+    )
+  )
+  WITH CHECK (
+    bucket_id IN ('avatars', 'study-materials', 'study-materials-restricted')
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR (
+        bucket_id IN ('study-materials', 'study-materials-restricted')
+        AND (storage.foldername(name))[1] = 'notes'
+        AND (storage.foldername(name))[2] = auth.uid()::text
+      )
+      OR public.is_platform_admin()
+    )
+  );
+
+CREATE POLICY xeusar_storage_delete_owner_folder ON storage.objects
+  FOR DELETE TO authenticated
+  USING (
+    bucket_id IN ('avatars', 'study-materials', 'study-materials-restricted')
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR (
+        bucket_id IN ('study-materials', 'study-materials-restricted')
+        AND (storage.foldername(name))[1] = 'notes'
+        AND (storage.foldername(name))[2] = auth.uid()::text
+      )
+      OR public.is_platform_admin()
+    )
+  );
+
+-- -----------------------------------------------------------------------------
+-- 21. AUTOMATED POST-MIGRATION ASSERTIONS (Section 10 Verification Gate)
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_rls_off integer;
+  v_bad_privs integer;
+  v_pages_type text;
+BEGIN
+  -- Assert RLS is enabled on all 31 tables (29 domain + community_item_votes + migration_orphan_quarantine)
+  SELECT count(*) INTO v_rls_off
+  FROM pg_tables
+  WHERE schemaname = 'public'
+    AND tablename IN (
+      'profiles', 'academic_information', 'user_settings_preferences', 'moderator_roles',
+      'universities', 'departments', 'courses', 'academic_programs',
+      'program_enrollments', 'university_follows',
+      'stored_files', 'study_notes', 'study_note_upvotes', 'study_note_downloads',
+      'forum_topics', 'forum_posts', 'forum_comments', 'forum_post_votes',
+      'forum_comment_votes', 'forum_bookmarks', 'forum_reports',
+      'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+      'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers',
+      'community_item_votes', 'migration_orphan_quarantine'
+    )
+    AND rowsecurity = false;
+
+  IF v_rls_off > 0 THEN
+    RAISE EXCEPTION 'Post-migration assertion failed: % tables do not have RLS enabled', v_rls_off;
+  END IF;
+
+  -- Assert study_notes.pages is jsonb
+  SELECT data_type INTO v_pages_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'pages';
+
+  IF v_pages_type <> 'jsonb' THEN
+    RAISE EXCEPTION 'Post-migration assertion failed: study_notes.pages is %, expected jsonb', v_pages_type;
+  END IF;
+
+  -- Assert anon and authenticated have ZERO UPDATE privileges on counter/role/moderation columns
+  SELECT count(*) INTO v_bad_privs
+  FROM information_schema.column_privileges
+  WHERE table_schema = 'public'
+    AND grantee IN ('anon', 'authenticated')
+    AND privilege_type = 'UPDATE'
+    AND (
+      (table_name = 'profiles' AND column_name IN ('role', 'points', 'email'))
+      OR (table_name = 'academic_information' AND column_name = 'enrollment_verified')
+      OR (table_name = 'study_notes' AND column_name IN ('upvotes', 'downloads', 'views_count', 'rating', 'is_verified', 'moderation_status'))
+      OR (table_name = 'forum_posts' AND column_name IN ('upvotes', 'downvotes', 'score', 'comments_count', 'views_count', 'is_pinned', 'is_locked', 'moderation_status'))
+      OR (table_name = 'forum_comments' AND column_name IN ('upvotes', 'downvotes', 'score', 'is_accepted', 'moderation_status'))
+    );
+
+  IF v_bad_privs > 0 THEN
+    RAISE EXCEPTION 'Post-migration assertion failed: % privileged columns still have UPDATE granted to anon/authenticated', v_bad_privs;
+  END IF;
+END;
+$$;
+
+COMMIT;

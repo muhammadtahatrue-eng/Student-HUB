@@ -318,7 +318,7 @@ export const TERMS_SECTIONS: TermsSectionItem[] = [
     title: 'Privacy and Security',
     paragraphs: [
       'Our handling of personal information is explained in our dedicated Privacy Policy.',
-      'Users should review the Privacy Policy to understand what information is collected, how it is used and stored, which third-party infrastructure providers we use (Supabase, Vercel, and Resend), and what choices or rights are available.',
+      'Users should review the Privacy Policy to understand what information is collected, how it is used and stored, which third-party infrastructure providers we use (Supabase, Cloudflare, and Resend), and what choices or rights are available.',
       'We take reasonable measures to protect the platform, but no internet service can guarantee absolute security.'
     ]
   },

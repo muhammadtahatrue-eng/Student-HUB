@@ -1,0 +1,598 @@
+-- =============================================================================
+-- XEUSAR v4 COMPLETE SECURITY & PUBLIC SYNC REPAIR — PART 2 OF 4
+-- Schema Reconciliation, UUID-to-TEXT Conversion, Class A/B Quarantine & FKs
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 10. IDEMPOTENT COLUMN RECONCILIATION & TARGETED UUID-TO-TEXT CONVERSION
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_rec RECORD;
+  v_fk RECORD;
+  v_pages_type text;
+  v_tags_type text;
+BEGIN
+  -- 10.1 Fix study_notes.pages if a prior migration typed it as integer instead of jsonb
+  SELECT data_type INTO v_pages_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'pages';
+
+  IF v_pages_type IN ('integer', 'bigint', 'smallint') THEN
+    ALTER TABLE public.study_notes ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1;
+    EXECUTE 'UPDATE public.study_notes SET page_count = GREATEST(1, COALESCE(pages, 1))';
+    ALTER TABLE public.study_notes DROP COLUMN pages;
+    ALTER TABLE public.study_notes ADD COLUMN pages jsonb NOT NULL DEFAULT '[]'::jsonb;
+  END IF;
+
+  -- 10.2 Ensure critical reconciled columns exist on legacy tables before conversion
+  ALTER TABLE public.profiles
+    ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS full_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS setup_completed boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'student',
+    ADD COLUMN IF NOT EXISTS points integer NOT NULL DEFAULT 0;
+
+  ALTER TABLE public.academic_information
+    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS education_level text NOT NULL DEFAULT 'undergraduate',
+    ADD COLUMN IF NOT EXISTS academic_stage text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS institution_name text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS degree_program text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS major text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS field_of_study text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS academic_year text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS current_semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS student_id_number text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS graduation_year integer DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS enrollment_verified boolean NOT NULL DEFAULT false;
+
+  ALTER TABLE public.user_settings_preferences
+    ADD COLUMN IF NOT EXISTS account_settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS privacy_settings jsonb NOT NULL DEFAULT '{"public_badge_enabled": true, "show_uni_on_notes": true}'::jsonb,
+    ADD COLUMN IF NOT EXISTS notification_settings jsonb NOT NULL DEFAULT '{"email_Resource_updates": true, "discussion_replies": true}'::jsonb,
+    ADD COLUMN IF NOT EXISTS appearance_settings jsonb NOT NULL DEFAULT '{"compact_mode": false}'::jsonb,
+    ADD COLUMN IF NOT EXISTS preferred_subjects text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS study_preferences jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS preferred_language text NOT NULL DEFAULT 'en',
+    ADD COLUMN IF NOT EXISTS theme_preference text NOT NULL DEFAULT 'system',
+    ADD COLUMN IF NOT EXISTS theme text NOT NULL DEFAULT 'system',
+    ADD COLUMN IF NOT EXISTS content_discovery_preferences jsonb NOT NULL DEFAULT '{"prioritize_User_uni": true, "hide_archived": false}'::jsonb,
+    ADD COLUMN IF NOT EXISTS public_profile boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS show_academic_info boolean NOT NULL DEFAULT false;
+
+  ALTER TABLE public.stored_files
+    ADD COLUMN IF NOT EXISTS content_hash text,
+    ADD COLUMN IF NOT EXISTS sha256_hash text,
+    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
+    ADD COLUMN IF NOT EXISTS file_url text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS uploaded_by uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS reference_count integer NOT NULL DEFAULT 1;
+
+  ALTER TABLE public.study_notes
+    ADD COLUMN IF NOT EXISTS pages jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
+    ADD COLUMN IF NOT EXISTS storage_path text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS content_hash text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS file_sha256 text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS file_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS course_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS uploader_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS is_published boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS is_restricted boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved';
+
+  -- Convert jsonb tags to text[] on study_notes if needed
+  SELECT data_type INTO v_tags_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'tags';
+
+  IF v_tags_type = 'jsonb' THEN
+    ALTER TABLE public.study_notes
+      ALTER COLUMN tags DROP DEFAULT,
+      ALTER COLUMN tags TYPE text[] USING (
+        CASE
+          WHEN jsonb_typeof(tags) = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(tags))
+          ELSE '{}'::text[]
+        END
+      ),
+      ALTER COLUMN tags SET DEFAULT '{}'::text[];
+  END IF;
+
+  -- 10.3 Targeted UUID-to-TEXT conversion (Section 7.1)
+  -- Saves only FKs touching the specific UUID columns being converted, converts them, and restores FKs
+  CREATE TEMP TABLE IF NOT EXISTS _saved_fk_defs (
+    conname text PRIMARY KEY,
+    table_name text NOT NULL,
+    condef text NOT NULL
+  ) ON COMMIT DROP;
+
+  FOR v_rec IN
+    SELECT c.table_name, c.column_name
+    FROM information_schema.columns c
+    WHERE c.table_schema = 'public'
+      AND c.data_type = 'uuid'
+      AND (c.table_name, c.column_name) IN (
+        ('universities', 'id'),
+        ('departments', 'id'), ('departments', 'university_id'),
+        ('courses', 'id'), ('courses', 'university_id'), ('courses', 'department_id'),
+        ('academic_programs', 'id'), ('academic_programs', 'university_id'),
+        ('academic_information', 'university_id'), ('academic_information', 'program_id'),
+        ('program_enrollments', 'program_id'),
+        ('university_follows', 'university_id'),
+        ('stored_files', 'id'),
+        ('study_notes', 'id'), ('study_notes', 'file_id'), ('study_notes', 'university_id'),
+        ('study_notes', 'program_id'), ('study_notes', 'department_id'), ('study_notes', 'course_id'),
+        ('study_note_upvotes', 'note_id'),
+        ('study_note_downloads', 'note_id'),
+        ('forum_topics', 'id'),
+        ('forum_posts', 'id'), ('forum_posts', 'topic_id'),
+        ('forum_comments', 'id'), ('forum_comments', 'post_id'), ('forum_comments', 'parent_id'),
+        ('forum_post_votes', 'post_id'),
+        ('forum_comment_votes', 'comment_id'),
+        ('forum_bookmarks', 'post_id'),
+        ('forum_reports', 'target_id'), ('forum_reports', 'post_id'), ('forum_reports', 'comment_id'),
+        ('program_discussions', 'id'), ('program_discussions', 'program_id'),
+        ('program_discussion_comments', 'id'), ('program_discussion_comments', 'discussion_id'), ('program_discussion_comments', 'parent_id'),
+        ('program_doubts', 'id'), ('program_doubts', 'program_id'), ('program_doubts', 'accepted_answer_id'),
+        ('program_doubt_answers', 'id'), ('program_doubt_answers', 'doubt_id'),
+        ('university_discussions', 'id'), ('university_discussions', 'university_id'),
+        ('university_discussions', 'department_id'), ('university_discussions', 'course_id'),
+        ('university_discussion_comments', 'id'), ('university_discussion_comments', 'discussion_id'), ('university_discussion_comments', 'parent_id'),
+        ('university_doubts', 'id'), ('university_doubts', 'university_id'),
+        ('university_doubts', 'department_id'), ('university_doubts', 'course_id'), ('university_doubts', 'accepted_answer_id'),
+        ('university_doubt_answers', 'id'), ('university_doubt_answers', 'doubt_id'),
+        ('community_item_votes', 'item_id')
+      )
+  LOOP
+    FOR v_fk IN
+      SELECT DISTINCT con.conname, rel.relname AS tbl_name, pg_get_constraintdef(con.oid) AS condef
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+      LEFT JOIN pg_class confrel ON confrel.oid = con.confrelid
+      LEFT JOIN pg_attribute a_src ON a_src.attrelid = con.conrelid AND a_src.attnum = ANY(con.conkey)
+      LEFT JOIN pg_attribute a_tgt ON a_tgt.attrelid = con.confrelid AND a_tgt.attnum = ANY(con.confkey)
+      WHERE nsp.nspname = 'public'
+        AND con.contype = 'f'
+        AND (
+          (rel.relname = v_rec.table_name AND a_src.attname = v_rec.column_name)
+          OR (confrel.relname = v_rec.table_name AND a_tgt.attname = v_rec.column_name)
+        )
+    LOOP
+      INSERT INTO _saved_fk_defs (conname, table_name, condef)
+      VALUES (v_fk.conname, v_fk.tbl_name, v_fk.condef)
+      ON CONFLICT (conname) DO NOTHING;
+
+      EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT IF EXISTS %I', v_fk.tbl_name, v_fk.conname);
+    END LOOP;
+
+    EXECUTE format(
+      'ALTER TABLE public.%I ALTER COLUMN %I TYPE text USING %I::text',
+      v_rec.table_name, v_rec.column_name, v_rec.column_name
+    );
+  END LOOP;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 11. CLASS A: SAFE AUTOMATIC DATA REPAIRS (DETERMINISTIC ONLY)
+-- -----------------------------------------------------------------------------
+-- 11.1 Backfill missing profiles, academic_information & user_settings_preferences from auth.users
+INSERT INTO public.profiles (id, email, display_name, full_name, username)
+SELECT
+  u.id,
+  u.email,
+  coalesce(nullif(btrim(u.raw_user_meta_data->>'display_name'), ''), nullif(btrim(u.raw_user_meta_data->>'full_name'), ''), split_part(coalesce(u.email, 'Student'), '@', 1), 'Student'),
+  coalesce(nullif(btrim(u.raw_user_meta_data->>'full_name'), ''), nullif(btrim(u.raw_user_meta_data->>'display_name'), ''), split_part(coalesce(u.email, 'Student'), '@', 1), 'Student'),
+  CASE
+    WHEN (u.raw_user_meta_data->>'username') ~ '^[a-zA-Z0-9_.-]{2,40}$'
+     AND NOT EXISTS (SELECT 1 FROM public.profiles p2 WHERE p2.username = u.raw_user_meta_data->>'username')
+    THEN u.raw_user_meta_data->>'username'
+    ELSE NULL
+  END
+FROM auth.users u
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.academic_information (user_id)
+SELECT p.id FROM public.profiles p
+ON CONFLICT (user_id) DO NOTHING;
+
+INSERT INTO public.user_settings_preferences (user_id)
+SELECT p.id FROM public.profiles p
+ON CONFLICT (user_id) DO NOTHING;
+
+-- 11.2 Sync stored_files content_hash <-> sha256_hash and link study_notes.file_id
+UPDATE public.stored_files
+SET
+  content_hash = coalesce(nullif(btrim(content_hash), ''), nullif(btrim(sha256_hash), ''), md5(storage_bucket || ':' || storage_path)),
+  sha256_hash  = coalesce(nullif(btrim(sha256_hash), ''), nullif(btrim(content_hash), ''), md5(storage_bucket || ':' || storage_path)),
+  uploaded_by  = coalesce(uploaded_by, created_by),
+  created_by   = coalesce(created_by, uploaded_by)
+WHERE content_hash IS NULL OR sha256_hash IS NULL OR uploaded_by IS DISTINCT FROM created_by;
+
+ALTER TABLE public.stored_files
+  ALTER COLUMN content_hash SET NOT NULL,
+  ALTER COLUMN sha256_hash SET NOT NULL;
+
+UPDATE public.study_notes sn
+SET
+  content_hash = coalesce(nullif(btrim(sn.content_hash), ''), nullif(btrim(sn.file_sha256), '')),
+  file_sha256  = coalesce(nullif(btrim(sn.file_sha256), ''), nullif(btrim(sn.content_hash), '')),
+  author_id    = coalesce(sn.author_id, sn.uploader_id),
+  uploader_id  = coalesce(sn.uploader_id, sn.author_id)
+WHERE sn.content_hash IS DISTINCT FROM sn.file_sha256
+   OR sn.author_id IS DISTINCT FROM sn.uploader_id;
+
+UPDATE public.study_notes sn
+SET file_id = sf.id
+FROM public.stored_files sf
+WHERE sn.file_id IS NULL
+  AND sn.content_hash IS NOT NULL
+  AND sf.content_hash = sn.content_hash;
+
+-- 11.3 Seed canonical forum_topics (Trap 6 Fix: ensures standard frontend topics exist)
+INSERT INTO public.forum_topics (id, name, title, slug, description, icon, color, category, sort_order)
+VALUES
+  ('general', 'General Discussion', 'General Discussion', 'general', 'General student discussions and study questions', 'MessageSquare', '#4F46E5', 'General', 1),
+  ('computer-science', 'Computer Science & AI', 'Computer Science & AI', 'computer-science', 'Programming, algorithms, AI, and software engineering', 'Code', '#0EA5E9', 'Academic', 2),
+  ('mathematics', 'Mathematics & Logic', 'Mathematics & Logic', 'mathematics', 'Calculus, discrete structures, linear algebra, and statistics', 'Calculator', '#8B5CF6', 'Academic', 3),
+  ('engineering', 'Engineering & Hardware', 'Engineering & Hardware', 'engineering', 'Electrical, mechanical, civil, and embedded systems', 'Cpu', '#F59E0B', 'Academic', 4),
+  ('exam-prep', 'Exam Prep & Past Papers', 'Exam Prep & Past Papers', 'exam-prep', 'Entry tests, midterms, finals, and study strategies', 'BookOpen', '#10B981', 'Study', 5),
+  ('career-internships', 'Careers & Scholarships', 'Careers & Scholarships', 'career-internships', 'Internships, scholarships, and career guidance', 'Briefcase', '#EC4899', 'Career', 6),
+  ('university-life', 'Campus & University Life', 'Campus & University Life', 'university-life', 'Admissions, societies, hostels, and student life', 'GraduationCap', '#6366F1', 'Community', 7),
+  ('announcements', 'Platform Announcements', 'Platform Announcements', 'announcements', 'Official Xeusar updates and community announcements', 'Megaphone', '#EF4444', 'Official', 8)
+ON CONFLICT (id) DO NOTHING;
+
+-- 11.4 Nullify dangling nullable auth.users references (preserving row & logging audit record)
+DO $$
+DECLARE
+  v_rec RECORD;
+BEGIN
+  FOR v_rec IN
+    SELECT * FROM (VALUES
+      ('universities', 'id', 'created_by'),
+      ('departments', 'id', 'created_by'),
+      ('courses', 'id', 'created_by'),
+      ('academic_programs', 'id', 'created_by'),
+      ('stored_files', 'id', 'uploaded_by'),
+      ('stored_files', 'id', 'created_by'),
+      ('study_notes', 'id', 'author_id'),
+      ('study_notes', 'id', 'uploader_id'),
+      ('study_note_downloads', 'id', 'user_id'),
+      ('forum_topics', 'id', 'created_by'),
+      ('forum_posts', 'id', 'author_id'),
+      ('forum_comments', 'id', 'author_id'),
+      ('forum_reports', 'id', 'reviewed_by'),
+      ('program_discussions', 'id', 'author_id'),
+      ('program_discussion_comments', 'id', 'author_id'),
+      ('program_doubts', 'id', 'author_id'),
+      ('program_doubt_answers', 'id', 'author_id'),
+      ('university_discussions', 'id', 'author_id'),
+      ('university_discussion_comments', 'id', 'author_id'),
+      ('university_doubts', 'id', 'author_id'),
+      ('university_doubt_answers', 'id', 'author_id'),
+      ('moderator_roles', 'user_id', 'assigned_by')
+    ) AS t(src_table, pk_col, fk_col)
+  LOOP
+    EXECUTE format($sql$
+      INSERT INTO public.migration_orphan_quarantine
+        (source_table, source_pk, missing_fk_column, missing_fk_value, target_table, quarantine_class, reason, row_payload, resolved_at, resolution_notes)
+      SELECT
+        %1$L, s.%2$I::text, %3$L, s.%3$I::text, 'auth.users', 'CLASS_C_ADMIN_RESOLVED',
+        'Class A auto-repair: nullable user FK referenced deleted auth.users row; set to NULL while preserving content row',
+        to_jsonb(s), now(), 'Auto-nullified dangling nullable user pointer'
+      FROM public.%1$I s
+      WHERE s.%3$I IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.%3$I)
+      ON CONFLICT (source_table, source_pk, missing_fk_column) DO NOTHING;
+
+      UPDATE public.%1$I s
+      SET %3$I = NULL
+      WHERE s.%3$I IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.%3$I);
+    $sql$, v_rec.src_table, v_rec.pk_col, v_rec.fk_col);
+  END LOOP;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 12. CLASS B: CONSERVATIVE ORPHAN QUARANTINE (ZERO DATA LOSS / ZERO FABRICATION)
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_rec RECORD;
+BEGIN
+  -- 12.1 Nullable catalog FKs: preserve live row by setting missing FK to NULL after recording audit snapshot
+  FOR v_rec IN
+    SELECT * FROM (VALUES
+      ('academic_information', 'id', 'university_id', 'universities', 'id'),
+      ('academic_information', 'id', 'program_id', 'academic_programs', 'id'),
+      ('courses', 'id', 'department_id', 'departments', 'id'),
+      ('academic_programs', 'id', 'university_id', 'universities', 'id'),
+      ('study_notes', 'id', 'file_id', 'stored_files', 'id'),
+      ('study_notes', 'id', 'content_hash', 'stored_files', 'content_hash'),
+      ('study_notes', 'id', 'university_id', 'universities', 'id'),
+      ('study_notes', 'id', 'program_id', 'academic_programs', 'id'),
+      ('study_notes', 'id', 'department_id', 'departments', 'id'),
+      ('study_notes', 'id', 'course_id', 'courses', 'id'),
+      ('forum_reports', 'id', 'post_id', 'forum_posts', 'id'),
+      ('forum_reports', 'id', 'comment_id', 'forum_comments', 'id'),
+      ('university_discussions', 'id', 'department_id', 'departments', 'id'),
+      ('university_discussions', 'id', 'course_id', 'courses', 'id'),
+      ('university_doubts', 'id', 'department_id', 'departments', 'id'),
+      ('university_doubts', 'id', 'course_id', 'courses', 'id')
+    ) AS t(src_table, pk_col, fk_col, tgt_table, tgt_col)
+  LOOP
+    EXECUTE format($sql$
+      INSERT INTO public.migration_orphan_quarantine
+        (source_table, source_pk, missing_fk_column, missing_fk_value, target_table, quarantine_class, reason, row_payload, resolved_at, resolution_notes)
+      SELECT
+        %1$L, s.%2$I::text, %3$L, s.%3$I::text, %4$L, 'CLASS_C_ADMIN_RESOLVED',
+        'Nullable catalog FK pointed to missing target; snapshot saved and column set to NULL',
+        to_jsonb(s), now(), 'Nullable FK cleared safely'
+      FROM public.%1$I s
+      WHERE s.%3$I IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM public.%4$I tgt WHERE tgt.%5$I = s.%3$I)
+      ON CONFLICT (source_table, source_pk, missing_fk_column) DO NOTHING;
+
+      UPDATE public.%1$I s
+      SET %3$I = NULL
+      WHERE s.%3$I IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM public.%4$I tgt WHERE tgt.%5$I = s.%3$I);
+    $sql$, v_rec.src_table, v_rec.pk_col, v_rec.fk_col, v_rec.tgt_table, v_rec.tgt_col);
+  END LOOP;
+
+  -- 12.2 Required NOT NULL parent FKs: quarantine full JSONB payload into CLASS_B_QUARANTINED before deleting from live table
+  FOR v_rec IN
+    SELECT * FROM (VALUES
+      ('departments', 'id', 'university_id', 'universities', 'id'),
+      ('courses', 'id', 'university_id', 'universities', 'id'),
+      ('program_enrollments', 'id', 'program_id', 'academic_programs', 'id'),
+      ('university_follows', 'id', 'university_id', 'universities', 'id'),
+      ('forum_posts', 'id', 'topic_id', 'forum_topics', 'id'),
+      ('forum_comments', 'id', 'post_id', 'forum_posts', 'id'),
+      ('program_discussions', 'id', 'program_id', 'academic_programs', 'id'),
+      ('program_discussion_comments', 'id', 'discussion_id', 'program_discussions', 'id'),
+      ('program_doubts', 'id', 'program_id', 'academic_programs', 'id'),
+      ('program_doubt_answers', 'id', 'doubt_id', 'program_doubts', 'id'),
+      ('university_discussions', 'id', 'university_id', 'universities', 'id'),
+      ('university_discussion_comments', 'id', 'discussion_id', 'university_discussions', 'id'),
+      ('university_doubts', 'id', 'university_id', 'universities', 'id'),
+      ('university_doubt_answers', 'id', 'doubt_id', 'university_doubts', 'id'),
+      ('study_note_upvotes', 'id', 'note_id', 'study_notes', 'id'),
+      ('study_note_downloads', 'id', 'note_id', 'study_notes', 'id'),
+      ('forum_post_votes', 'id', 'post_id', 'forum_posts', 'id'),
+      ('forum_comment_votes', 'id', 'comment_id', 'forum_comments', 'id'),
+      ('forum_bookmarks', 'id', 'post_id', 'forum_posts', 'id')
+    ) AS t(src_table, pk_col, fk_col, tgt_table, tgt_col)
+  LOOP
+    EXECUTE format($sql$
+      INSERT INTO public.migration_orphan_quarantine
+        (source_table, source_pk, missing_fk_column, missing_fk_value, target_table, quarantine_class, reason, row_payload)
+      SELECT
+        %1$L, s.%2$I::text, %3$L, s.%3$I::text, %4$L, 'CLASS_B_QUARANTINED',
+        format('Required parent row in %%s (%%s = %%s) does not exist', %4$L, %5$L, coalesce(s.%3$I::text, 'NULL')),
+        to_jsonb(s)
+      FROM public.%1$I s
+      WHERE s.%3$I IS NULL
+         OR NOT EXISTS (SELECT 1 FROM public.%4$I tgt WHERE tgt.%5$I = s.%3$I)
+      ON CONFLICT (source_table, source_pk, missing_fk_column) DO NOTHING;
+
+      DELETE FROM public.%1$I s
+      WHERE (s.%3$I IS NULL OR NOT EXISTS (SELECT 1 FROM public.%4$I tgt WHERE tgt.%5$I = s.%3$I))
+        AND EXISTS (
+          SELECT 1 FROM public.migration_orphan_quarantine q
+          WHERE q.source_table = %1$L
+            AND q.source_pk = s.%2$I::text
+            AND q.missing_fk_column = %3$L
+        );
+    $sql$, v_rec.src_table, v_rec.pk_col, v_rec.fk_col, v_rec.tgt_table, v_rec.tgt_col);
+  END LOOP;
+
+  -- 12.3 Self-referential comment trees: quarantine broken parent_id subtrees without flattening parent_id = NULL
+  FOR v_rec IN
+    SELECT * FROM (VALUES
+      ('forum_comments'),
+      ('program_discussion_comments'),
+      ('university_discussion_comments')
+    ) AS t(tbl_name)
+  LOOP
+    EXECUTE format($sql$
+      WITH RECURSIVE broken_tree AS (
+        SELECT c.id, c.parent_id
+        FROM public.%1$I c
+        WHERE c.parent_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM public.%1$I p WHERE p.id = c.parent_id)
+        UNION ALL
+        SELECT child.id, child.parent_id
+        FROM public.%1$I child
+        JOIN broken_tree bt ON child.parent_id = bt.id
+      )
+      INSERT INTO public.migration_orphan_quarantine
+        (source_table, source_pk, missing_fk_column, missing_fk_value, target_table, quarantine_class, reason, row_payload)
+      SELECT
+        %1$L, c.id::text, 'parent_id', c.parent_id::text, %1$L, 'CLASS_B_QUARANTINED',
+        'Reply belongs to a comment thread whose ancestor parent_id does not exist; quarantined to preserve thread hierarchy',
+        to_jsonb(c)
+      FROM public.%1$I c
+      JOIN broken_tree bt ON bt.id = c.id
+      ON CONFLICT (source_table, source_pk, missing_fk_column) DO NOTHING;
+
+      DELETE FROM public.%1$I c
+      WHERE EXISTS (
+        SELECT 1 FROM public.migration_orphan_quarantine q
+        WHERE q.source_table = %1$L
+          AND q.source_pk = c.id::text
+          AND q.missing_fk_column = 'parent_id'
+      );
+    $sql$, v_rec.tbl_name);
+  END LOOP;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 13. DUPLICATE VOTE DEDUPLICATION & COUNTER RECALCULATION (Section 5.1 #4)
+-- -----------------------------------------------------------------------------
+DELETE FROM public.study_note_upvotes a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY note_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+  FROM public.study_note_upvotes
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+DELETE FROM public.forum_post_votes a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY post_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+  FROM public.forum_post_votes
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+DELETE FROM public.forum_comment_votes a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY comment_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+  FROM public.forum_comment_votes
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+DELETE FROM public.community_item_votes a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY item_type, item_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+  FROM public.community_item_votes
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+DELETE FROM public.program_enrollments a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY program_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+  FROM public.program_enrollments
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+DELETE FROM public.university_follows a
+USING (
+  SELECT id, row_number() OVER (PARTITION BY university_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+  FROM public.university_follows
+) b
+WHERE a.id = b.id AND b.rn > 1;
+
+-- Recalculate aggregate counters from ledger tables (preserving legacy non-zero counts if ledger was empty)
+UPDATE public.study_notes sn
+SET upvotes = GREATEST(
+  CASE WHEN EXISTS (SELECT 1 FROM public.study_note_upvotes u WHERE u.note_id = sn.id) THEN 0 ELSE sn.upvotes END,
+  (SELECT count(*)::integer FROM public.study_note_upvotes u WHERE u.note_id = sn.id)
+);
+
+UPDATE public.forum_posts fp
+SET
+  upvotes   = CASE WHEN EXISTS (SELECT 1 FROM public.forum_post_votes v WHERE v.post_id = fp.id)
+                   THEN (SELECT count(*)::integer FROM public.forum_post_votes v WHERE v.post_id = fp.id AND v.vote_type = 1)
+                   ELSE fp.upvotes END,
+  downvotes = CASE WHEN EXISTS (SELECT 1 FROM public.forum_post_votes v WHERE v.post_id = fp.id)
+                   THEN (SELECT count(*)::integer FROM public.forum_post_votes v WHERE v.post_id = fp.id AND v.vote_type = -1)
+                   ELSE fp.downvotes END,
+  comments_count = (SELECT count(*)::integer FROM public.forum_comments fc WHERE fc.post_id = fp.id AND fc.moderation_status = 'approved');
+
+UPDATE public.forum_posts SET score = upvotes - downvotes;
+
+UPDATE public.forum_comments fc
+SET
+  upvotes   = CASE WHEN EXISTS (SELECT 1 FROM public.forum_comment_votes v WHERE v.comment_id = fc.id)
+                   THEN (SELECT count(*)::integer FROM public.forum_comment_votes v WHERE v.comment_id = fc.id AND v.vote_type = 1)
+                   ELSE fc.upvotes END,
+  downvotes = CASE WHEN EXISTS (SELECT 1 FROM public.forum_comment_votes v WHERE v.comment_id = fc.id)
+                   THEN (SELECT count(*)::integer FROM public.forum_comment_votes v WHERE v.comment_id = fc.id AND v.vote_type = -1)
+                   ELSE fc.downvotes END;
+
+UPDATE public.forum_comments SET score = upvotes - downvotes;
+
+UPDATE public.academic_programs ap
+SET
+  enrolled_count    = GREATEST(ap.enrolled_count, (SELECT count(*)::integer FROM public.program_enrollments pe WHERE pe.program_id = ap.id)),
+  discussions_count = (SELECT count(*)::integer FROM public.program_discussions pd WHERE pd.program_id = ap.id AND pd.moderation_status = 'approved'),
+  doubts_count      = (SELECT count(*)::integer FROM public.program_doubts pd WHERE pd.program_id = ap.id AND pd.moderation_status = 'approved');
+
+UPDATE public.universities u
+SET
+  followers_count = GREATEST(u.followers_count, (SELECT count(*)::integer FROM public.university_follows uf WHERE uf.university_id = u.id)),
+  courses_count   = (SELECT count(*)::integer FROM public.courses c WHERE c.university_id = u.id),
+  resources_count = (SELECT count(*)::integer FROM public.study_notes sn WHERE sn.university_id = u.id AND sn.moderation_status = 'approved');
+
+-- -----------------------------------------------------------------------------
+-- 14. IDEMPOTENT FOREIGN KEY ATTACHMENT (Section 3 Relationship Map)
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_fk RECORD;
+BEGIN
+  FOR v_fk IN
+    SELECT * FROM (VALUES
+      ('academic_information', 'university_id', 'universities', 'id', 'SET NULL', 'academic_information_university_id_fkey'),
+      ('academic_information', 'program_id', 'academic_programs', 'id', 'SET NULL', 'academic_information_program_id_fkey'),
+      ('departments', 'university_id', 'universities', 'id', 'CASCADE', 'departments_university_id_fkey'),
+      ('courses', 'university_id', 'universities', 'id', 'CASCADE', 'courses_university_id_fkey'),
+      ('courses', 'department_id', 'departments', 'id', 'SET NULL', 'courses_department_id_fkey'),
+      ('academic_programs', 'university_id', 'universities', 'id', 'SET NULL', 'academic_programs_university_id_fkey'),
+      ('program_enrollments', 'program_id', 'academic_programs', 'id', 'CASCADE', 'program_enrollments_program_id_fkey'),
+      ('university_follows', 'university_id', 'universities', 'id', 'CASCADE', 'university_follows_university_id_fkey'),
+      ('study_notes', 'file_id', 'stored_files', 'id', 'SET NULL', 'study_notes_file_id_fkey'),
+      ('study_notes', 'content_hash', 'stored_files', 'content_hash', 'SET NULL', 'study_notes_content_hash_fkey'),
+      ('study_notes', 'university_id', 'universities', 'id', 'SET NULL', 'study_notes_university_id_fkey'),
+      ('study_notes', 'program_id', 'academic_programs', 'id', 'SET NULL', 'study_notes_program_id_fkey'),
+      ('study_notes', 'department_id', 'departments', 'id', 'SET NULL', 'study_notes_department_id_fkey'),
+      ('study_notes', 'course_id', 'courses', 'id', 'SET NULL', 'study_notes_course_id_fkey'),
+      ('study_note_upvotes', 'note_id', 'study_notes', 'id', 'CASCADE', 'study_note_upvotes_note_id_fkey'),
+      ('study_note_downloads', 'note_id', 'study_notes', 'id', 'CASCADE', 'study_note_downloads_note_id_fkey'),
+      ('forum_posts', 'topic_id', 'forum_topics', 'id', 'RESTRICT', 'forum_posts_topic_id_fkey'),
+      ('forum_comments', 'post_id', 'forum_posts', 'id', 'CASCADE', 'forum_comments_post_id_fkey'),
+      ('forum_comments', 'parent_id', 'forum_comments', 'id', 'CASCADE', 'forum_comments_parent_id_fkey'),
+      ('forum_post_votes', 'post_id', 'forum_posts', 'id', 'CASCADE', 'forum_post_votes_post_id_fkey'),
+      ('forum_comment_votes', 'comment_id', 'forum_comments', 'id', 'CASCADE', 'forum_comment_votes_comment_id_fkey'),
+      ('forum_bookmarks', 'post_id', 'forum_posts', 'id', 'CASCADE', 'forum_bookmarks_post_id_fkey'),
+      ('forum_reports', 'post_id', 'forum_posts', 'id', 'CASCADE', 'forum_reports_post_id_fkey'),
+      ('forum_reports', 'comment_id', 'forum_comments', 'id', 'CASCADE', 'forum_reports_comment_id_fkey'),
+      ('program_discussions', 'program_id', 'academic_programs', 'id', 'CASCADE', 'program_discussions_program_id_fkey'),
+      ('program_discussion_comments', 'discussion_id', 'program_discussions', 'id', 'CASCADE', 'program_discussion_comments_discussion_id_fkey'),
+      ('program_discussion_comments', 'parent_id', 'program_discussion_comments', 'id', 'CASCADE', 'program_discussion_comments_parent_id_fkey'),
+      ('program_doubts', 'program_id', 'academic_programs', 'id', 'CASCADE', 'program_doubts_program_id_fkey'),
+      ('program_doubt_answers', 'doubt_id', 'program_doubts', 'id', 'CASCADE', 'program_doubt_answers_doubt_id_fkey'),
+      ('university_discussions', 'university_id', 'universities', 'id', 'CASCADE', 'university_discussions_university_id_fkey'),
+      ('university_discussions', 'department_id', 'departments', 'id', 'SET NULL', 'university_discussions_department_id_fkey'),
+      ('university_discussions', 'course_id', 'courses', 'id', 'SET NULL', 'university_discussions_course_id_fkey'),
+      ('university_discussion_comments', 'discussion_id', 'university_discussions', 'id', 'CASCADE', 'university_discussion_comments_discussion_id_fkey'),
+      ('university_discussion_comments', 'parent_id', 'university_discussion_comments', 'id', 'CASCADE', 'university_discussion_comments_parent_id_fkey'),
+      ('university_doubts', 'university_id', 'universities', 'id', 'CASCADE', 'university_doubts_university_id_fkey'),
+      ('university_doubts', 'department_id', 'departments', 'id', 'SET NULL', 'university_doubts_department_id_fkey'),
+      ('university_doubts', 'course_id', 'courses', 'id', 'SET NULL', 'university_doubts_course_id_fkey'),
+      ('university_doubt_answers', 'doubt_id', 'university_doubts', 'id', 'CASCADE', 'university_doubt_answers_doubt_id_fkey')
+    ) AS t(src_table, src_col, tgt_table, tgt_col, on_del, con_name)
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+      JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY(con.conkey)
+      WHERE nsp.nspname = 'public'
+        AND con.contype = 'f'
+        AND rel.relname = v_fk.src_table
+        AND att.attname = v_fk.src_col
+    ) THEN
+      EXECUTE format(
+        'ALTER TABLE public.%I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES public.%I(%I) ON DELETE %s',
+        v_fk.src_table, v_fk.con_name, v_fk.src_col, v_fk.tgt_table, v_fk.tgt_col, v_fk.on_del
+      );
+    END IF;
+  END LOOP;
+END;
+$$;

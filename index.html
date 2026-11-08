@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xeusar</title>
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <link rel="shortcut icon" href="./favicon.svg" />
-    <link rel="apple-touch-icon" href="./favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta name="description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
     <meta property="og:title" content="Xeusar" />
     <meta property="og:description" content="Free student study-material sharing platform with real-time course search, PDF note preview and uploads, and Supabase integration." />
@@ -23,47 +23,10 @@
         min-height: 100%;
       }
     </style>
-    <script>
-      // Ensure trailing slash on GitHub Pages directory URLs so relative assets resolve properly
-      if (window.location.hostname.endsWith('github.io') && 
-          window.location.pathname.length > 1 && 
-          !window.location.pathname.endsWith('/') && 
-          !window.location.pathname.split('/').pop().includes('.')) {
-        window.location.replace(window.location.pathname + '/' + window.location.search + window.location.hash);
-      }
-    </script>
   </head>
   <body class="bg-[#05070a] text-white">
     <div id="root"></div>
-    <script type="module" src="./src/main.tsx"></script>
-    <script>
-      // Automatic fallback when GitHub Pages serves raw /index.html from repository root "/ (root)"
-      (function () {
-        var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
-        var rawEntry = document.querySelector('script[src*="src/main.tsx"]');
-        if (!isViteDev && rawEntry) {
-          rawEntry.remove();
-          var css = document.createElement('link');
-          css.rel = 'stylesheet';
-          css.href = './assets/app.css';
-          css.onerror = function () {
-            css.href = './docs/assets/app.css';
-          };
-          document.head.appendChild(css);
-
-          var js = document.createElement('script');
-          js.type = 'module';
-          js.src = './assets/app.js';
-          js.onerror = function () {
-            var fallbackJs = document.createElement('script');
-            fallbackJs.type = 'module';
-            fallbackJs.src = './docs/assets/app.js';
-            document.body.appendChild(fallbackJs);
-          };
-          document.body.appendChild(js);
-        }
-      })();
-    </script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
 

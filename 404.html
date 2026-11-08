@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Xeusar</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Fallback for static hosts without native SPA rewrite:
+      // Preserve the requested nested route in the hash rather than stripping it back to the homepage.
+      (function () {
+        var l = window.location;
+        var cleanPath = l.pathname.replace(/^\/+|\/+$/g, '');
+        if (l.hostname.endsWith('github.io')) {
+          var parts = cleanPath.split('/');
+          var repo = parts.shift() || '';
+          var subRoute = parts.join('/');
+          var targetHash = l.hash || (subRoute ? '#' + subRoute : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' + (repo ? repo + '/' : '') +
+            l.search +
+            targetHash
+          );
+        } else {
+          var routeHash = l.hash || (cleanPath ? '#' + cleanPath : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' +
+            l.search +
+            routeHash
+          );
+        }
+      })();
+    </script>
+  </head>
+  <body style="background-color: #05070a; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+    <div style="text-align: center;">
+      <h2 style="font-size: 1.25rem; font-weight: 600; color: #00f0ff; margin-bottom: 0.5rem;">Xeusar</h2>
+      <p style="color: #94a3b8; font-size: 0.875rem;">Loading application...</p>
+    </div>
+  </body>
+</html>

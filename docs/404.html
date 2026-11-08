@@ -3,47 +3,41 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StudyVault - Loading...</title>
-    <style>
-      body {
-        background-color: #050505;
-        color: #ffffff;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
-        margin: 0;
-      }
-    </style>
+    <title>Xeusar</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
-      // Single Page Application redirect for GitHub Pages
-      (function() {
+      // Fallback for static hosts without native SPA rewrite:
+      // Preserve the requested nested route in the hash rather than stripping it back to the homepage.
+      (function () {
         var l = window.location;
-        var pathSegments = l.pathname.slice(1).split('/');
-        var isGithubIo = l.hostname.endsWith('github.io');
-        // If repo name is the first segment (e.g. username.github.io/repo-name)
-        var repoName = (isGithubIo && pathSegments.length > 0 && pathSegments[0]) ? pathSegments[0] : '';
-        
-        var repoPrefix = repoName ? '/' + repoName : '';
-        var remainingPath = repoName ? pathSegments.slice(1).join('/') : pathSegments.join('/');
-
-        var redirectTarget = l.protocol + '//' + l.host + repoPrefix + '/?' +
-          (remainingPath ? '/' + remainingPath : '') +
-          (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
-          l.hash;
-
-        l.replace(redirectTarget);
+        var cleanPath = l.pathname.replace(/^\/+|\/+$/g, '');
+        if (l.hostname.endsWith('github.io')) {
+          var parts = cleanPath.split('/');
+          var repo = parts.shift() || '';
+          var subRoute = parts.join('/');
+          var targetHash = l.hash || (subRoute ? '#' + subRoute : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' + (repo ? repo + '/' : '') +
+            l.search +
+            targetHash
+          );
+        } else {
+          var routeHash = l.hash || (cleanPath ? '#' + cleanPath : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' +
+            l.search +
+            routeHash
+          );
+        }
       })();
     </script>
   </head>
-  <body>
+  <body style="background-color: #05070a; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
     <div style="text-align: center;">
-      <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; color: #00f0ff; font-weight: bold; font-size: 1.15rem;">
-        SV
-      </div>
-      <h2 style="font-size: 1.25rem; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.02em;">StudyVault</h2>
-      <p style="color: #94a3b8; font-size: 0.875rem; margin: 0;">Restoring page route...</p>
+      <h2 style="font-size: 1.25rem; font-weight: 600; color: #00f0ff; margin-bottom: 0.5rem;">Xeusar</h2>
+      <p style="color: #94a3b8; font-size: 0.875rem;">Loading application...</p>
     </div>
   </body>
 </html>

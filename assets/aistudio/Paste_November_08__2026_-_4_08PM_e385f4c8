@@ -1,0 +1,1483 @@
+-- =============================================================================
+-- XEUSAR v4 COMPLETE SECURITY & PUBLIC SYNC REPAIR — PART 3 OF 4
+-- Access Control Helpers, Privileged-Column Triggers & SECURITY DEFINER RPCs
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 15. RESTRICTED-STORAGE & STUDY NOTE AUTHORIZATION FUNCTIONS (Section 6.3)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.can_access_study_note(
+  p_note_id text,
+  p_user_id uuid DEFAULT auth.uid()
+)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_note RECORD;
+  v_uni_scope text;
+  v_prog_scope text;
+  v_uni_ok boolean := true;
+  v_prog_ok boolean := true;
+BEGIN
+  IF p_note_id IS NULL OR btrim(p_note_id) = '' THEN
+    RETURN false;
+  END IF;
+
+  SELECT
+    sn.id,
+    sn.author_id,
+    sn.uploader_id,
+    sn.moderation_status,
+    sn.is_published,
+    sn.is_public,
+    sn.is_restricted,
+    sn.university_id,
+    sn.program_id
+  INTO v_note
+  FROM public.study_notes sn
+  WHERE sn.id = p_note_id;
+
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+
+  -- Rule 1: Uploader / Owner / Moderator always has access
+  IF p_user_id IS NOT NULL AND (
+    v_note.author_id = p_user_id
+    OR v_note.uploader_id = p_user_id
+    OR public.is_platform_admin()
+  ) THEN
+    RETURN true;
+  END IF;
+
+  -- Rule 2: Moderation & publication gate
+  IF v_note.moderation_status <> 'approved'
+     OR v_note.is_published = false
+     OR v_note.is_public = false THEN
+    RETURN false;
+  END IF;
+
+  IF v_note.university_id IS NOT NULL THEN
+    SELECT u.access_scope INTO v_uni_scope
+    FROM public.universities u
+    WHERE u.id = v_note.university_id;
+  END IF;
+
+  IF v_note.program_id IS NOT NULL THEN
+    SELECT ap.access_scope INTO v_prog_scope
+    FROM public.academic_programs ap
+    WHERE ap.id = v_note.program_id;
+  END IF;
+
+  -- Rule 3: Unrestricted public note
+  IF v_note.is_restricted = false
+     AND coalesce(v_uni_scope, 'public') = 'public'
+     AND coalesce(v_prog_scope, 'public') = 'public' THEN
+    RETURN true;
+  END IF;
+
+  -- Rule 4: Restricted note requires authenticated membership
+  IF p_user_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  IF v_note.university_id IS NOT NULL AND (
+    v_note.is_restricted = true
+    OR coalesce(v_uni_scope, 'public') IN ('members_only', 'verified_members_only')
+  ) THEN
+    v_uni_ok := EXISTS (
+      SELECT 1
+      FROM public.academic_information ai
+      WHERE ai.user_id = p_user_id
+        AND ai.university_id = v_note.university_id
+        AND (coalesce(v_uni_scope, 'public') <> 'verified_members_only' OR ai.enrollment_verified = true)
+    ) OR (
+      coalesce(v_uni_scope, 'public') <> 'verified_members_only'
+      AND EXISTS (
+        SELECT 1
+        FROM public.university_follows uf
+        WHERE uf.user_id = p_user_id
+          AND uf.university_id = v_note.university_id
+      )
+    );
+  END IF;
+
+  IF v_note.program_id IS NOT NULL AND (
+    v_note.is_restricted = true
+    OR coalesce(v_prog_scope, 'public') = 'enrolled_only'
+  ) THEN
+    v_prog_ok := EXISTS (
+      SELECT 1
+      FROM public.program_enrollments pe
+      WHERE pe.user_id = p_user_id
+        AND pe.program_id = v_note.program_id
+    ) OR EXISTS (
+      SELECT 1
+      FROM public.academic_information ai
+      WHERE ai.user_id = p_user_id
+        AND ai.program_id = v_note.program_id
+    );
+  END IF;
+
+  RETURN (v_uni_ok AND v_prog_ok);
+END;
+$$;
+ALTER FUNCTION public.can_access_study_note(text, uuid) OWNER TO postgres;
+
+CREATE OR REPLACE FUNCTION public.can_access_stored_file(
+  p_bucket text,
+  p_path text,
+  p_user_id uuid DEFAULT auth.uid()
+)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_first_seg text;
+  v_second_seg text;
+BEGIN
+  IF p_bucket IS NULL OR p_path IS NULL OR btrim(p_path) = '' THEN
+    RETURN false;
+  END IF;
+
+  IF p_bucket = 'avatars' THEN
+    RETURN true;
+  END IF;
+
+  v_first_seg := split_part(ltrim(p_path, '/'), '/', 1);
+  v_second_seg := split_part(ltrim(p_path, '/'), '/', 2);
+
+  -- Path owner or platform moderator/admin always has access
+  IF p_user_id IS NOT NULL AND (
+    v_first_seg = p_user_id::text
+    OR (v_first_seg = 'notes' AND v_second_seg = p_user_id::text)
+    OR public.is_platform_admin()
+    OR EXISTS (
+      SELECT 1
+      FROM public.stored_files sf
+      WHERE sf.storage_bucket = p_bucket
+        AND sf.storage_path = p_path
+        AND (sf.uploaded_by = p_user_id OR sf.created_by = p_user_id)
+    )
+  ) THEN
+    RETURN true;
+  END IF;
+
+  IF p_bucket = 'study-materials' THEN
+    RETURN EXISTS (
+      SELECT 1
+      FROM public.study_notes sn
+      LEFT JOIN public.stored_files sf
+        ON sf.id = sn.file_id OR sf.content_hash = sn.content_hash
+      WHERE (
+        (sn.storage_bucket = 'study-materials' AND sn.storage_path = p_path)
+        OR (sf.storage_bucket = 'study-materials' AND sf.storage_path = p_path)
+      )
+        AND sn.is_public = true
+        AND sn.is_published = true
+        AND sn.is_restricted = false
+        AND sn.moderation_status = 'approved'
+    );
+  END IF;
+
+  IF p_bucket = 'study-materials-restricted' THEN
+    IF p_user_id IS NULL THEN
+      RETURN false;
+    END IF;
+
+    RETURN EXISTS (
+      SELECT 1
+      FROM public.study_notes sn
+      LEFT JOIN public.stored_files sf
+        ON sf.id = sn.file_id OR sf.content_hash = sn.content_hash
+      WHERE (
+        sn.storage_path = p_path
+        OR (sf.storage_bucket = 'study-materials-restricted' AND sf.storage_path = p_path)
+      )
+        AND public.can_access_study_note(sn.id, p_user_id)
+    );
+  END IF;
+
+  RETURN false;
+END;
+$$;
+ALTER FUNCTION public.can_access_stored_file(text, text, uuid) OWNER TO postgres;
+
+-- -----------------------------------------------------------------------------
+-- 16. AUTH SIGNUP, ALIAS SYNC, PRIVILEGED-COLUMN & COUNTER TRIGGERS
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_display text;
+  v_username text;
+BEGIN
+  v_display := coalesce(
+    nullif(btrim(NEW.raw_user_meta_data->>'display_name'), ''),
+    nullif(btrim(NEW.raw_user_meta_data->>'full_name'), ''),
+    nullif(split_part(coalesce(NEW.email, ''), '@', 1), ''),
+    'Student'
+  );
+
+  v_username := nullif(btrim(NEW.raw_user_meta_data->>'username'), '');
+  IF v_username IS NOT NULL AND (
+    v_username !~ '^[a-zA-Z0-9_.-]{2,40}$'
+    OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.username = v_username)
+  ) THEN
+    v_username := NULL;
+  END IF;
+
+  INSERT INTO public.profiles (id, username, display_name, full_name, email)
+  VALUES (NEW.id, v_username, v_display, v_display, NEW.email)
+  ON CONFLICT (id) DO UPDATE
+    SET email = coalesce(public.profiles.email, EXCLUDED.email);
+
+  INSERT INTO public.academic_information (user_id)
+  VALUES (NEW.id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  INSERT INTO public.user_settings_preferences (user_id)
+  VALUES (NEW.id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  RETURN NEW;
+END;
+$$;
+ALTER FUNCTION public.handle_new_user() OWNER TO postgres;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- SECURITY INVOKER privileged-column firewall & alias synchronizer (Section 4.1)
+CREATE OR REPLACE FUNCTION public.enforce_privileged_columns()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_unprivileged boolean := (
+    current_user IN ('authenticated', 'anon')
+    AND NOT public.is_platform_admin()
+  );
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    NEW.created_at := OLD.created_at;
+    NEW.updated_at := now();
+  ELSE
+    NEW.created_at := coalesce(NEW.created_at, now());
+    NEW.updated_at := coalesce(NEW.updated_at, now());
+  END IF;
+
+  CASE TG_TABLE_NAME
+    WHEN 'profiles' THEN
+      NEW.display_name := coalesce(nullif(btrim(NEW.display_name), ''), nullif(btrim(NEW.full_name), ''), 'Student');
+      NEW.full_name    := coalesce(nullif(btrim(NEW.full_name), ''), NEW.display_name);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.id := coalesce(auth.uid(), NEW.id);
+        NEW.role := 'student';
+        NEW.points := 0;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        IF NEW.role IS DISTINCT FROM OLD.role OR NEW.points IS DISTINCT FROM OLD.points THEN
+          RAISE EXCEPTION 'Cannot modify privileged profile columns (role, points)' USING ERRCODE = '42501';
+        END IF;
+        NEW.id := OLD.id;
+        NEW.email := OLD.email;
+      END IF;
+
+    WHEN 'academic_information' THEN
+      NEW.major := coalesce(nullif(btrim(NEW.major), ''), nullif(btrim(NEW.field_of_study), ''), '');
+      NEW.field_of_study := coalesce(nullif(btrim(NEW.field_of_study), ''), NEW.major);
+      NEW.semester := coalesce(nullif(btrim(NEW.semester), ''), nullif(btrim(NEW.current_semester), ''), '');
+      NEW.current_semester := coalesce(nullif(btrim(NEW.current_semester), ''), NEW.semester);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.user_id := coalesce(auth.uid(), NEW.user_id);
+        NEW.enrollment_verified := false;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        IF NEW.enrollment_verified IS DISTINCT FROM OLD.enrollment_verified THEN
+          RAISE EXCEPTION 'Cannot self-verify academic enrollment' USING ERRCODE = '42501';
+        END IF;
+        NEW.id := OLD.id;
+        NEW.user_id := OLD.user_id;
+      END IF;
+
+    WHEN 'user_settings_preferences' THEN
+      NEW.theme_preference := coalesce(nullif(btrim(NEW.theme_preference), ''), nullif(btrim(NEW.theme), ''), 'system');
+      NEW.theme := coalesce(nullif(btrim(NEW.theme), ''), NEW.theme_preference);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.user_id := coalesce(auth.uid(), NEW.user_id);
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.user_id := OLD.user_id;
+      END IF;
+
+    WHEN 'stored_files' THEN
+      NEW.content_hash := coalesce(nullif(btrim(NEW.content_hash), ''), nullif(btrim(NEW.sha256_hash), ''));
+      NEW.sha256_hash  := coalesce(nullif(btrim(NEW.sha256_hash), ''), NEW.content_hash);
+      IF NEW.storage_bucket = 'study-materials-restricted' THEN
+        NEW.is_public := false;
+        NEW.file_url := '';
+      END IF;
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.uploaded_by := auth.uid();
+        NEW.created_by := auth.uid();
+        NEW.reference_count := 1;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        -- Preserve immutable ownership/hash fields on client upserts (Trap 1 & Trap 2 protection)
+        NEW.id := OLD.id;
+        NEW.content_hash := OLD.content_hash;
+        NEW.sha256_hash := OLD.sha256_hash;
+        NEW.uploaded_by := OLD.uploaded_by;
+        NEW.created_by := OLD.created_by;
+        NEW.reference_count := OLD.reference_count;
+        -- Never downgrade an existing public file to restricted in-place
+        IF OLD.storage_bucket = 'study-materials' AND OLD.is_public = true THEN
+          NEW.storage_bucket := OLD.storage_bucket;
+          NEW.storage_path := OLD.storage_path;
+          NEW.is_public := true;
+          NEW.file_url := coalesce(nullif(OLD.file_url, ''), NEW.file_url);
+        END IF;
+      END IF;
+
+    WHEN 'study_notes' THEN
+      NEW.content_hash   := coalesce(nullif(btrim(NEW.content_hash), ''), nullif(btrim(NEW.file_sha256), ''));
+      NEW.file_sha256    := coalesce(nullif(btrim(NEW.file_sha256), ''), NEW.content_hash);
+      NEW.file_type      := coalesce(nullif(btrim(NEW.file_type), ''), nullif(btrim(NEW.mime_type), ''), 'application/pdf');
+      NEW.mime_type      := coalesce(nullif(btrim(NEW.mime_type), ''), NEW.file_type);
+      NEW.file_size      := GREATEST(coalesce(NEW.file_size, 0), coalesce(NEW.file_size_bytes, 0));
+      NEW.file_size_bytes := NEW.file_size;
+      IF NEW.is_restricted = true OR NEW.is_public = false OR NEW.is_published = false THEN
+        NEW.storage_bucket := 'study-materials-restricted';
+        NEW.file_url := '';
+      END IF;
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.uploader_id := auth.uid();
+        NEW.upvotes := 0;
+        NEW.downloads := 0;
+        NEW.views_count := 0;
+        NEW.rating := 0.00;
+        NEW.is_verified := false;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        IF NEW.upvotes IS DISTINCT FROM OLD.upvotes
+           OR NEW.downloads IS DISTINCT FROM OLD.downloads
+           OR NEW.is_verified IS DISTINCT FROM OLD.is_verified
+           OR NEW.moderation_status IS DISTINCT FROM OLD.moderation_status THEN
+          RAISE EXCEPTION 'Cannot directly modify privileged study_notes counters or moderation flags' USING ERRCODE = '42501';
+        END IF;
+        NEW.id := OLD.id;
+        NEW.author_id := OLD.author_id;
+        NEW.uploader_id := OLD.uploader_id;
+        NEW.views_count := OLD.views_count;
+        NEW.rating := OLD.rating;
+      END IF;
+
+    WHEN 'universities' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.created_by := auth.uid();
+        NEW.is_verified := false;
+        NEW.followers_count := 0;
+        NEW.courses_count := 0;
+        NEW.resources_count := 0;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.created_by := OLD.created_by;
+        NEW.is_verified := OLD.is_verified;
+        NEW.followers_count := OLD.followers_count;
+        NEW.courses_count := OLD.courses_count;
+        NEW.resources_count := OLD.resources_count;
+      END IF;
+
+    WHEN 'departments' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.created_by := auth.uid();
+        NEW.courses_count := 0;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.university_id := OLD.university_id;
+        NEW.created_by := OLD.created_by;
+        NEW.courses_count := OLD.courses_count;
+      END IF;
+
+    WHEN 'courses' THEN
+      NEW.name := coalesce(nullif(btrim(NEW.name), ''), nullif(btrim(NEW.title), ''), 'Course');
+      NEW.title := coalesce(nullif(btrim(NEW.title), ''), NEW.name);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.created_by := auth.uid();
+        NEW.resources_count := 0;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.university_id := OLD.university_id;
+        NEW.created_by := OLD.created_by;
+        NEW.resources_count := OLD.resources_count;
+      END IF;
+
+    WHEN 'academic_programs' THEN
+      NEW.title := coalesce(nullif(btrim(NEW.title), ''), nullif(btrim(NEW.name), ''), 'Program');
+      NEW.name := coalesce(nullif(btrim(NEW.name), ''), NEW.title);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.created_by := auth.uid();
+        NEW.is_verified := false;
+        NEW.enrolled_count := 0;
+        NEW.discussions_count := 0;
+        NEW.doubts_count := 0;
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.created_by := OLD.created_by;
+        NEW.is_verified := OLD.is_verified;
+        NEW.enrolled_count := OLD.enrolled_count;
+        NEW.discussions_count := OLD.discussions_count;
+        NEW.doubts_count := OLD.doubts_count;
+      END IF;
+
+    WHEN 'forum_topics' THEN
+      NEW.name := coalesce(nullif(btrim(NEW.name), ''), nullif(btrim(NEW.title), ''), 'Topic');
+      NEW.title := coalesce(nullif(btrim(NEW.title), ''), NEW.name);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        RAISE EXCEPTION 'Only platform moderators can create forum topics' USING ERRCODE = '42501';
+      END IF;
+
+    WHEN 'forum_posts' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.author_role := public.get_my_moderator_role();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.score := 0;
+        NEW.comments_count := 0;
+        NEW.views_count := 0;
+        NEW.is_pinned := false;
+        NEW.is_locked := false;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        IF NEW.upvotes IS DISTINCT FROM OLD.upvotes
+           OR NEW.downvotes IS DISTINCT FROM OLD.downvotes
+           OR NEW.is_pinned IS DISTINCT FROM OLD.is_pinned
+           OR NEW.is_locked IS DISTINCT FROM OLD.is_locked
+           OR NEW.moderation_status IS DISTINCT FROM OLD.moderation_status THEN
+          RAISE EXCEPTION 'Cannot directly modify privileged forum_posts fields' USING ERRCODE = '42501';
+        END IF;
+        NEW.id := OLD.id;
+        NEW.author_id := OLD.author_id;
+        NEW.author_role := OLD.author_role;
+        NEW.score := OLD.score;
+        NEW.comments_count := OLD.comments_count;
+        NEW.views_count := OLD.views_count;
+      END IF;
+
+    WHEN 'forum_comments' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.author_role := public.get_my_moderator_role();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.score := 0;
+        NEW.is_accepted := false;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        IF NEW.upvotes IS DISTINCT FROM OLD.upvotes
+           OR NEW.downvotes IS DISTINCT FROM OLD.downvotes
+           OR NEW.is_accepted IS DISTINCT FROM OLD.is_accepted
+           OR NEW.moderation_status IS DISTINCT FROM OLD.moderation_status THEN
+          RAISE EXCEPTION 'Cannot directly modify privileged forum_comments fields' USING ERRCODE = '42501';
+        END IF;
+        NEW.id := OLD.id;
+        NEW.post_id := OLD.post_id;
+        NEW.parent_id := OLD.parent_id;
+        NEW.author_id := OLD.author_id;
+        NEW.author_role := OLD.author_role;
+        NEW.score := OLD.score;
+      END IF;
+
+    WHEN 'program_discussions', 'university_discussions' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.comments_count := 0;
+        NEW.views_count := 0;
+        NEW.is_pinned := false;
+        NEW.is_locked := false;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.author_id := OLD.author_id;
+        NEW.upvotes := OLD.upvotes;
+        NEW.downvotes := OLD.downvotes;
+        NEW.comments_count := OLD.comments_count;
+        NEW.views_count := OLD.views_count;
+        NEW.is_pinned := OLD.is_pinned;
+        NEW.is_locked := OLD.is_locked;
+        NEW.moderation_status := OLD.moderation_status;
+      END IF;
+
+    WHEN 'program_discussion_comments', 'university_discussion_comments' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.discussion_id := OLD.discussion_id;
+        NEW.parent_id := OLD.parent_id;
+        NEW.author_id := OLD.author_id;
+        NEW.upvotes := OLD.upvotes;
+        NEW.downvotes := OLD.downvotes;
+        NEW.moderation_status := OLD.moderation_status;
+      END IF;
+
+    WHEN 'program_doubts', 'university_doubts' THEN
+      NEW.title := coalesce(nullif(btrim(NEW.title), ''), nullif(btrim(NEW.question), ''), 'Question');
+      NEW.question := coalesce(nullif(btrim(NEW.question), ''), NEW.title);
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.answers_count := 0;
+        NEW.views_count := 0;
+        NEW.is_resolved := false;
+        NEW.accepted_answer_id := NULL;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.author_id := OLD.author_id;
+        NEW.upvotes := OLD.upvotes;
+        NEW.downvotes := OLD.downvotes;
+        NEW.answers_count := OLD.answers_count;
+        NEW.views_count := OLD.views_count;
+        NEW.accepted_answer_id := OLD.accepted_answer_id;
+        NEW.moderation_status := OLD.moderation_status;
+      END IF;
+
+    WHEN 'program_doubt_answers', 'university_doubt_answers' THEN
+      IF TG_OP = 'INSERT' AND v_unprivileged THEN
+        NEW.author_id := auth.uid();
+        NEW.upvotes := 0;
+        NEW.downvotes := 0;
+        NEW.is_accepted := false;
+        NEW.moderation_status := 'approved';
+      ELSIF TG_OP = 'UPDATE' AND v_unprivileged THEN
+        NEW.id := OLD.id;
+        NEW.doubt_id := OLD.doubt_id;
+        NEW.author_id := OLD.author_id;
+        NEW.upvotes := OLD.upvotes;
+        NEW.downvotes := OLD.downvotes;
+        NEW.is_accepted := OLD.is_accepted;
+        NEW.moderation_status := OLD.moderation_status;
+      END IF;
+
+    ELSE
+      NULL;
+  END CASE;
+
+  RETURN NEW;
+END;
+$$;
+
+-- Attach enforce_privileged_columns() across all content and profile tables
+DO $$
+DECLARE
+  v_tbl text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY[
+    'profiles', 'academic_information', 'user_settings_preferences',
+    'universities', 'departments', 'courses', 'academic_programs',
+    'stored_files', 'study_notes',
+    'forum_topics', 'forum_posts', 'forum_comments',
+    'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+    'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers'
+  ]
+  LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_enforce_privileged_%I ON public.%I', v_tbl, v_tbl);
+    EXECUTE format(
+      'CREATE TRIGGER trg_enforce_privileged_%I BEFORE INSERT OR UPDATE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.enforce_privileged_columns()',
+      v_tbl, v_tbl
+    );
+  END LOOP;
+END;
+$$;
+
+-- Single-source study_note_upvotes counter trigger (Trap 3 Fix: SECURITY DEFINER owned by postgres)
+CREATE OR REPLACE FUNCTION public.sync_study_note_upvotes_counter()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE public.study_notes
+    SET upvotes = upvotes + 1, updated_at = now()
+    WHERE id = NEW.note_id;
+    RETURN NEW;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE public.study_notes
+    SET upvotes = GREATEST(0, upvotes - 1), updated_at = now()
+    WHERE id = OLD.note_id;
+    RETURN OLD;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+ALTER FUNCTION public.sync_study_note_upvotes_counter() OWNER TO postgres;
+
+DROP TRIGGER IF EXISTS trg_sync_study_note_upvotes_counter ON public.study_note_upvotes;
+CREATE TRIGGER trg_sync_study_note_upvotes_counter
+  AFTER INSERT OR DELETE ON public.study_note_upvotes
+  FOR EACH ROW EXECUTE FUNCTION public.sync_study_note_upvotes_counter();
+
+-- Parent comment / answer / post count synchronizer (SECURITY DEFINER owned by postgres)
+CREATE OR REPLACE FUNCTION public.sync_parent_collection_counts()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_delta integer := CASE WHEN TG_OP = 'INSERT' THEN 1 ELSE -1 END;
+BEGIN
+  CASE TG_TABLE_NAME
+    WHEN 'forum_posts' THEN
+      UPDATE public.forum_topics
+      SET posts_count = GREATEST(0, posts_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.topic_id ELSE OLD.topic_id END;
+    WHEN 'forum_comments' THEN
+      UPDATE public.forum_posts
+      SET
+        comments_count = GREATEST(0, comments_count + v_delta),
+        last_activity_at = CASE WHEN TG_OP = 'INSERT' THEN now() ELSE last_activity_at END,
+        updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.post_id ELSE OLD.post_id END;
+    WHEN 'program_discussions' THEN
+      UPDATE public.academic_programs
+      SET discussions_count = GREATEST(0, discussions_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.program_id ELSE OLD.program_id END;
+    WHEN 'program_discussion_comments' THEN
+      UPDATE public.program_discussions
+      SET comments_count = GREATEST(0, comments_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.discussion_id ELSE OLD.discussion_id END;
+    WHEN 'program_doubts' THEN
+      UPDATE public.academic_programs
+      SET doubts_count = GREATEST(0, doubts_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.program_id ELSE OLD.program_id END;
+    WHEN 'program_doubt_answers' THEN
+      UPDATE public.program_doubts
+      SET answers_count = GREATEST(0, answers_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.doubt_id ELSE OLD.doubt_id END;
+    WHEN 'university_discussion_comments' THEN
+      UPDATE public.university_discussions
+      SET comments_count = GREATEST(0, comments_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.discussion_id ELSE OLD.discussion_id END;
+    WHEN 'university_doubt_answers' THEN
+      UPDATE public.university_doubts
+      SET answers_count = GREATEST(0, answers_count + v_delta), updated_at = now()
+      WHERE id = CASE WHEN TG_OP = 'INSERT' THEN NEW.doubt_id ELSE OLD.doubt_id END;
+  END CASE;
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+ALTER FUNCTION public.sync_parent_collection_counts() OWNER TO postgres;
+
+DO $$
+DECLARE
+  v_tbl text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY[
+    'forum_posts', 'forum_comments',
+    'program_discussions', 'program_discussion_comments',
+    'program_doubts', 'program_doubt_answers',
+    'university_discussion_comments', 'university_doubt_answers'
+  ]
+  LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_sync_counts_%I ON public.%I', v_tbl, v_tbl);
+    EXECUTE format(
+      'CREATE TRIGGER trg_sync_counts_%I AFTER INSERT OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.sync_parent_collection_counts()',
+      v_tbl, v_tbl
+    );
+  END LOOP;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 17. CONTROLLED MUTATION RPCs (SECURITY DEFINER, OWNER = postgres)
+-- -----------------------------------------------------------------------------
+
+-- 17.1 Safe cross-user stored_files registration (Trap 2 Fix)
+CREATE OR REPLACE FUNCTION public.upsert_stored_file(
+  p_content_hash text,
+  p_storage_bucket text DEFAULT 'study-materials',
+  p_storage_path text DEFAULT '',
+  p_file_url text DEFAULT '',
+  p_original_filename text DEFAULT '',
+  p_mime_type text DEFAULT 'application/pdf',
+  p_size_bytes bigint DEFAULT 0,
+  p_is_public boolean DEFAULT true
+)
+RETURNS public.stored_files
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_hash text := nullif(btrim(p_content_hash), '');
+  v_bucket text := coalesce(nullif(btrim(p_storage_bucket), ''), 'study-materials');
+  v_row public.stored_files;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to register stored files' USING ERRCODE = '42501';
+  END IF;
+  IF v_hash IS NULL THEN
+    RAISE EXCEPTION 'content_hash is required' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO public.stored_files (
+    content_hash, sha256_hash, storage_bucket, storage_path, file_url,
+    original_filename, mime_type, size_bytes, is_public, uploaded_by, created_by, reference_count
+  )
+  VALUES (
+    v_hash, v_hash, v_bucket, p_storage_path,
+    CASE WHEN v_bucket = 'study-materials-restricted' THEN '' ELSE coalesce(p_file_url, '') END,
+    coalesce(p_original_filename, ''), coalesce(p_mime_type, 'application/pdf'),
+    GREATEST(0, coalesce(p_size_bytes, 0)),
+    CASE WHEN v_bucket = 'study-materials-restricted' THEN false ELSE coalesce(p_is_public, true) END,
+    v_uid, v_uid, 1
+  )
+  ON CONFLICT (content_hash) DO UPDATE
+    SET
+      reference_count = public.stored_files.reference_count + 1,
+      updated_at = now()
+  RETURNING * INTO v_row;
+
+  RETURN v_row;
+END;
+$$;
+ALTER FUNCTION public.upsert_stored_file(text, text, text, text, text, text, bigint, boolean) OWNER TO postgres;
+
+-- 17.2 Voting System #1: Study Note Upvotes (Single-source trigger updates study_notes.upvotes)
+CREATE OR REPLACE FUNCTION public.toggle_study_note_upvote(p_note_id text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_rows integer := 0;
+  v_upvoted boolean := false;
+  v_upvotes integer := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to upvote study notes' USING ERRCODE = '42501';
+  END IF;
+  IF NOT public.can_access_study_note(p_note_id, v_uid) THEN
+    RAISE EXCEPTION 'Study note % not found or access denied', p_note_id USING ERRCODE = '42501';
+  END IF;
+
+  PERFORM 1 FROM public.study_notes WHERE id = p_note_id FOR UPDATE;
+
+  DELETE FROM public.study_note_upvotes
+  WHERE note_id = p_note_id AND user_id = v_uid;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+
+  IF v_rows > 0 THEN
+    v_upvoted := false;
+  ELSE
+    INSERT INTO public.study_note_upvotes (note_id, user_id)
+    VALUES (p_note_id, v_uid)
+    ON CONFLICT (note_id, user_id) DO NOTHING;
+    v_upvoted := true;
+  END IF;
+
+  SELECT sn.upvotes INTO v_upvotes
+  FROM public.study_notes sn
+  WHERE sn.id = p_note_id;
+
+  RETURN jsonb_build_object(
+    'note_id', p_note_id,
+    'upvoted', v_upvoted,
+    'upvotes', coalesce(v_upvotes, 0)
+  );
+END;
+$$;
+ALTER FUNCTION public.toggle_study_note_upvote(text) OWNER TO postgres;
+
+-- 17.3 Download Deduplication & Rate-Limiting (Section 5.2)
+CREATE OR REPLACE FUNCTION public.increment_downloads(
+  note_id text DEFAULT NULL,
+  row_id text DEFAULT NULL,
+  p_session_hash text DEFAULT NULL
+)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, extensions
+AS $$
+DECLARE
+  v_note_id text := coalesce(nullif(btrim(note_id), ''), nullif(btrim(row_id), ''));
+  v_uid uuid := auth.uid();
+  v_headers jsonb;
+  v_raw text;
+  v_fp text;
+  v_rows integer := 0;
+  v_downloads integer := 0;
+BEGIN
+  IF v_note_id IS NULL THEN
+    RAISE EXCEPTION 'note_id or row_id is required' USING ERRCODE = '22023';
+  END IF;
+
+  IF NOT public.can_access_study_note(v_note_id, v_uid) THEN
+    RAISE EXCEPTION 'Access denied to study note %', v_note_id USING ERRCODE = '42501';
+  END IF;
+
+  IF v_uid IS NOT NULL THEN
+    v_fp := 'u:' || v_uid::text;
+    INSERT INTO public.study_note_downloads (note_id, user_id, actor_fingerprint, downloaded_date)
+    VALUES (v_note_id, v_uid, v_fp, (now() AT TIME ZONE 'utc')::date)
+    ON CONFLICT (note_id, user_id) WHERE user_id IS NOT NULL DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+  ELSE
+    BEGIN
+      v_headers := coalesce(nullif(current_setting('request.headers', true), ''), '{}')::jsonb;
+    EXCEPTION WHEN OTHERS THEN
+      v_headers := '{}'::jsonb;
+    END;
+
+    v_raw := coalesce(nullif(btrim(p_session_hash), ''), '')
+             || '|' || coalesce(v_headers->>'x-forwarded-for', '')
+             || '|' || coalesce(v_headers->>'user-agent', '');
+
+    v_fp := 'anon:' || encode(extensions.digest(v_raw::bytea, 'sha256'), 'hex');
+
+    INSERT INTO public.study_note_downloads (note_id, user_id, actor_fingerprint, downloaded_date)
+    VALUES (v_note_id, NULL, v_fp, (now() AT TIME ZONE 'utc')::date)
+    ON CONFLICT (note_id, actor_fingerprint, downloaded_date) WHERE user_id IS NULL DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+  END IF;
+
+  IF v_rows = 1 THEN
+    UPDATE public.study_notes sn
+    SET downloads = sn.downloads + 1, updated_at = now()
+    WHERE sn.id = v_note_id
+    RETURNING sn.downloads INTO v_downloads;
+  ELSE
+    SELECT sn.downloads INTO v_downloads
+    FROM public.study_notes sn
+    WHERE sn.id = v_note_id;
+  END IF;
+
+  RETURN coalesce(v_downloads, 0);
+END;
+$$;
+ALTER FUNCTION public.increment_downloads(text, text, text) OWNER TO postgres;
+
+-- 17.4 Voting System #2: Forum Post Votes (Section 5.1)
+CREATE OR REPLACE FUNCTION public.vote_forum_post(
+  p_post_id text,
+  p_vote_type smallint
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_existing smallint;
+  v_rows integer := 0;
+  v_up integer;
+  v_down integer;
+  v_score integer;
+  v_final_vote smallint := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to vote on forum posts' USING ERRCODE = '42501';
+  END IF;
+  IF p_vote_type NOT IN (-1, 0, 1) THEN
+    RAISE EXCEPTION 'Invalid vote_type % (must be -1, 0, or 1)', p_vote_type USING ERRCODE = '22023';
+  END IF;
+
+  PERFORM 1
+  FROM public.forum_posts fp
+  WHERE fp.id = p_post_id
+    AND (fp.moderation_status = 'approved' OR fp.author_id = v_uid OR public.is_platform_admin())
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Forum post % not found or not accessible', p_post_id USING ERRCODE = '42501';
+  END IF;
+
+  SELECT v.vote_type INTO v_existing
+  FROM public.forum_post_votes v
+  WHERE v.post_id = p_post_id AND v.user_id = v_uid;
+
+  IF p_vote_type = 0 THEN
+    IF v_existing IS NOT NULL THEN
+      DELETE FROM public.forum_post_votes
+      WHERE post_id = p_post_id AND user_id = v_uid AND vote_type = v_existing;
+      GET DIAGNOSTICS v_rows = ROW_COUNT;
+      IF v_rows = 1 THEN
+        UPDATE public.forum_posts
+        SET
+          upvotes   = CASE WHEN v_existing = 1 THEN GREATEST(0, upvotes - 1) ELSE upvotes END,
+          downvotes = CASE WHEN v_existing = -1 THEN GREATEST(0, downvotes - 1) ELSE downvotes END,
+          score     = (CASE WHEN v_existing = 1 THEN GREATEST(0, upvotes - 1) ELSE upvotes END)
+                    - (CASE WHEN v_existing = -1 THEN GREATEST(0, downvotes - 1) ELSE downvotes END),
+          updated_at = now()
+        WHERE id = p_post_id;
+      END IF;
+    END IF;
+    v_final_vote := 0;
+
+  ELSIF v_existing IS NULL THEN
+    INSERT INTO public.forum_post_votes (post_id, user_id, vote_type)
+    VALUES (p_post_id, v_uid, p_vote_type)
+    ON CONFLICT (post_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      UPDATE public.forum_posts
+      SET
+        upvotes   = CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE upvotes END,
+        downvotes = CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE downvotes END,
+        score     = (CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE upvotes END)
+                  - (CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE downvotes END),
+        updated_at = now()
+      WHERE id = p_post_id;
+    END IF;
+    v_final_vote := p_vote_type;
+
+  ELSIF v_existing <> p_vote_type THEN
+    UPDATE public.forum_post_votes
+    SET vote_type = p_vote_type, updated_at = now()
+    WHERE post_id = p_post_id AND user_id = v_uid AND vote_type = v_existing;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      UPDATE public.forum_posts
+      SET
+        upvotes   = CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE GREATEST(0, upvotes - 1) END,
+        downvotes = CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE GREATEST(0, downvotes - 1) END,
+        score     = (CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE GREATEST(0, upvotes - 1) END)
+                  - (CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE GREATEST(0, downvotes - 1) END),
+        updated_at = now()
+      WHERE id = p_post_id;
+    END IF;
+    v_final_vote := p_vote_type;
+  ELSE
+    v_final_vote := v_existing;
+  END IF;
+
+  SELECT fp.upvotes, fp.downvotes, fp.score INTO v_up, v_down, v_score
+  FROM public.forum_posts fp
+  WHERE fp.id = p_post_id;
+
+  RETURN jsonb_build_object(
+    'post_id', p_post_id,
+    'vote_type', v_final_vote,
+    'upvotes', coalesce(v_up, 0),
+    'downvotes', coalesce(v_down, 0),
+    'score', coalesce(v_score, 0)
+  );
+END;
+$$;
+ALTER FUNCTION public.vote_forum_post(text, smallint) OWNER TO postgres;
+
+-- 17.5 Voting System #3: Forum Comment Votes (Section 5.1)
+CREATE OR REPLACE FUNCTION public.vote_forum_comment(
+  p_comment_id text,
+  p_vote_type smallint
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_existing smallint;
+  v_rows integer := 0;
+  v_up integer;
+  v_down integer;
+  v_score integer;
+  v_final_vote smallint := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to vote on forum comments' USING ERRCODE = '42501';
+  END IF;
+  IF p_vote_type NOT IN (-1, 0, 1) THEN
+    RAISE EXCEPTION 'Invalid vote_type % (must be -1, 0, or 1)', p_vote_type USING ERRCODE = '22023';
+  END IF;
+
+  PERFORM 1
+  FROM public.forum_comments fc
+  JOIN public.forum_posts fp ON fp.id = fc.post_id
+  WHERE fc.id = p_comment_id
+    AND (fc.moderation_status = 'approved' OR fc.author_id = v_uid OR public.is_platform_admin())
+    AND (fp.moderation_status = 'approved' OR fp.author_id = v_uid OR public.is_platform_admin())
+  FOR UPDATE OF fc;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Forum comment % not found or not accessible', p_comment_id USING ERRCODE = '42501';
+  END IF;
+
+  SELECT v.vote_type INTO v_existing
+  FROM public.forum_comment_votes v
+  WHERE v.comment_id = p_comment_id AND v.user_id = v_uid;
+
+  IF p_vote_type = 0 THEN
+    IF v_existing IS NOT NULL THEN
+      DELETE FROM public.forum_comment_votes
+      WHERE comment_id = p_comment_id AND user_id = v_uid AND vote_type = v_existing;
+      GET DIAGNOSTICS v_rows = ROW_COUNT;
+      IF v_rows = 1 THEN
+        UPDATE public.forum_comments
+        SET
+          upvotes   = CASE WHEN v_existing = 1 THEN GREATEST(0, upvotes - 1) ELSE upvotes END,
+          downvotes = CASE WHEN v_existing = -1 THEN GREATEST(0, downvotes - 1) ELSE downvotes END,
+          score     = (CASE WHEN v_existing = 1 THEN GREATEST(0, upvotes - 1) ELSE upvotes END)
+                    - (CASE WHEN v_existing = -1 THEN GREATEST(0, downvotes - 1) ELSE downvotes END),
+          updated_at = now()
+        WHERE id = p_comment_id;
+      END IF;
+    END IF;
+    v_final_vote := 0;
+
+  ELSIF v_existing IS NULL THEN
+    INSERT INTO public.forum_comment_votes (comment_id, user_id, vote_type)
+    VALUES (p_comment_id, v_uid, p_vote_type)
+    ON CONFLICT (comment_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      UPDATE public.forum_comments
+      SET
+        upvotes   = CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE upvotes END,
+        downvotes = CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE downvotes END,
+        score     = (CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE upvotes END)
+                  - (CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE downvotes END),
+        updated_at = now()
+      WHERE id = p_comment_id;
+    END IF;
+    v_final_vote := p_vote_type;
+
+  ELSIF v_existing <> p_vote_type THEN
+    UPDATE public.forum_comment_votes
+    SET vote_type = p_vote_type, updated_at = now()
+    WHERE comment_id = p_comment_id AND user_id = v_uid AND vote_type = v_existing;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      UPDATE public.forum_comments
+      SET
+        upvotes   = CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE GREATEST(0, upvotes - 1) END,
+        downvotes = CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE GREATEST(0, downvotes - 1) END,
+        score     = (CASE WHEN p_vote_type = 1 THEN upvotes + 1 ELSE GREATEST(0, upvotes - 1) END)
+                  - (CASE WHEN p_vote_type = -1 THEN downvotes + 1 ELSE GREATEST(0, downvotes - 1) END),
+        updated_at = now()
+      WHERE id = p_comment_id;
+    END IF;
+    v_final_vote := p_vote_type;
+  ELSE
+    v_final_vote := v_existing;
+  END IF;
+
+  SELECT fc.upvotes, fc.downvotes, fc.score INTO v_up, v_down, v_score
+  FROM public.forum_comments fc
+  WHERE fc.id = p_comment_id;
+
+  RETURN jsonb_build_object(
+    'comment_id', p_comment_id,
+    'vote_type', v_final_vote,
+    'upvotes', coalesce(v_up, 0),
+    'downvotes', coalesce(v_down, 0),
+    'score', coalesce(v_score, 0)
+  );
+END;
+$$;
+ALTER FUNCTION public.vote_forum_comment(text, smallint) OWNER TO postgres;
+
+-- 17.6 Voting Systems #4 - #7: Community Item Votes (Programs & Universities)
+CREATE OR REPLACE FUNCTION public.toggle_community_vote(
+  p_item_type text,
+  p_item_id text,
+  p_vote_type integer DEFAULT 1
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_target_table text;
+  v_existing smallint;
+  v_rows integer := 0;
+  v_up_delta integer := 0;
+  v_down_delta integer := 0;
+  v_final_vote smallint := 0;
+  v_up integer := 0;
+  v_down integer := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required to vote' USING ERRCODE = '42501';
+  END IF;
+  IF p_vote_type NOT IN (-1, 0, 1) THEN
+    RAISE EXCEPTION 'Invalid p_vote_type % (must be -1, 0, or 1)', p_vote_type USING ERRCODE = '22023';
+  END IF;
+
+  v_target_table := CASE p_item_type
+    WHEN 'program_discussion' THEN 'program_discussions'
+    WHEN 'program_discussion_comment' THEN 'program_discussion_comments'
+    WHEN 'program_doubt' THEN 'program_doubts'
+    WHEN 'program_doubt_answer' THEN 'program_doubt_answers'
+    WHEN 'university_discussion' THEN 'university_discussions'
+    WHEN 'university_discussion_comment' THEN 'university_discussion_comments'
+    WHEN 'university_doubt' THEN 'university_doubts'
+    WHEN 'university_doubt_answer' THEN 'university_doubt_answers'
+    ELSE NULL
+  END;
+
+  IF v_target_table IS NULL THEN
+    RAISE EXCEPTION 'Unsupported community item_type: %', p_item_type USING ERRCODE = '22023';
+  END IF;
+
+  EXECUTE format(
+    'SELECT upvotes, downvotes FROM public.%I WHERE id = $1 AND (moderation_status = ''approved'' OR author_id = $2 OR public.is_platform_admin()) FOR UPDATE',
+    v_target_table
+  ) INTO v_up, v_down USING p_item_id, v_uid;
+
+  IF v_up IS NULL THEN
+    RAISE EXCEPTION 'Target % (%) not found or not accessible', p_item_type, p_item_id USING ERRCODE = '42501';
+  END IF;
+
+  SELECT v.vote_type INTO v_existing
+  FROM public.community_item_votes v
+  WHERE v.item_type = p_item_type AND v.item_id = p_item_id AND v.user_id = v_uid;
+
+  IF p_vote_type = 0 OR (v_existing IS NOT NULL AND v_existing = p_vote_type) THEN
+    IF v_existing IS NOT NULL THEN
+      DELETE FROM public.community_item_votes
+      WHERE item_type = p_item_type AND item_id = p_item_id AND user_id = v_uid AND vote_type = v_existing;
+      GET DIAGNOSTICS v_rows = ROW_COUNT;
+      IF v_rows = 1 THEN
+        v_up_delta := CASE WHEN v_existing = 1 THEN -1 ELSE 0 END;
+        v_down_delta := CASE WHEN v_existing = -1 THEN -1 ELSE 0 END;
+      END IF;
+    END IF;
+    v_final_vote := 0;
+
+  ELSIF v_existing IS NULL THEN
+    INSERT INTO public.community_item_votes (item_type, item_id, user_id, vote_type)
+    VALUES (p_item_type, p_item_id, v_uid, p_vote_type::smallint)
+    ON CONFLICT (item_type, item_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      v_up_delta := CASE WHEN p_vote_type = 1 THEN 1 ELSE 0 END;
+      v_down_delta := CASE WHEN p_vote_type = -1 THEN 1 ELSE 0 END;
+    END IF;
+    v_final_vote := p_vote_type::smallint;
+
+  ELSE
+    UPDATE public.community_item_votes
+    SET vote_type = p_vote_type::smallint, updated_at = now()
+    WHERE item_type = p_item_type AND item_id = p_item_id AND user_id = v_uid AND vote_type = v_existing;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows = 1 THEN
+      v_up_delta := CASE WHEN p_vote_type = 1 THEN 1 ELSE -1 END;
+      v_down_delta := CASE WHEN p_vote_type = -1 THEN 1 ELSE -1 END;
+    END IF;
+    v_final_vote := p_vote_type::smallint;
+  END IF;
+
+  IF v_up_delta <> 0 OR v_down_delta <> 0 THEN
+    EXECUTE format(
+      'UPDATE public.%I SET upvotes = GREATEST(0, upvotes + $1), downvotes = GREATEST(0, downvotes + $2), updated_at = now() WHERE id = $3 RETURNING upvotes, downvotes',
+      v_target_table
+    ) INTO v_up, v_down USING v_up_delta, v_down_delta, p_item_id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'item_type', p_item_type,
+    'item_id', p_item_id,
+    'vote_type', v_final_vote,
+    'upvotes', coalesce(v_up, 0),
+    'downvotes', coalesce(v_down, 0)
+  );
+END;
+$$;
+ALTER FUNCTION public.toggle_community_vote(text, text, integer) OWNER TO postgres;
+
+-- 17.7 Program Enrollment & University Follow RPCs
+CREATE OR REPLACE FUNCTION public.toggle_program_enrollment(p_program_id text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_rows integer := 0;
+  v_enrolled boolean := false;
+  v_count integer := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required' USING ERRCODE = '42501';
+  END IF;
+
+  PERFORM 1 FROM public.academic_programs WHERE id = p_program_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Program % not found', p_program_id USING ERRCODE = '22023';
+  END IF;
+
+  DELETE FROM public.program_enrollments WHERE program_id = p_program_id AND user_id = v_uid;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+
+  IF v_rows > 0 THEN
+    v_enrolled := false;
+    UPDATE public.academic_programs
+    SET enrolled_count = GREATEST(0, enrolled_count - 1), updated_at = now()
+    WHERE id = p_program_id
+    RETURNING enrolled_count INTO v_count;
+  ELSE
+    INSERT INTO public.program_enrollments (program_id, user_id)
+    VALUES (p_program_id, v_uid)
+    ON CONFLICT (program_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_enrolled := true;
+    UPDATE public.academic_programs
+    SET enrolled_count = enrolled_count + v_rows, updated_at = now()
+    WHERE id = p_program_id
+    RETURNING enrolled_count INTO v_count;
+  END IF;
+
+  RETURN jsonb_build_object('program_id', p_program_id, 'enrolled', v_enrolled, 'enrolled_count', coalesce(v_count, 0));
+END;
+$$;
+ALTER FUNCTION public.toggle_program_enrollment(text) OWNER TO postgres;
+
+CREATE OR REPLACE FUNCTION public.toggle_university_follow(p_university_id text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_rows integer := 0;
+  v_following boolean := false;
+  v_count integer := 0;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required' USING ERRCODE = '42501';
+  END IF;
+
+  PERFORM 1 FROM public.universities WHERE id = p_university_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'University % not found', p_university_id USING ERRCODE = '22023';
+  END IF;
+
+  DELETE FROM public.university_follows WHERE university_id = p_university_id AND user_id = v_uid;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+
+  IF v_rows > 0 THEN
+    v_following := false;
+    UPDATE public.universities
+    SET followers_count = GREATEST(0, followers_count - 1), updated_at = now()
+    WHERE id = p_university_id
+    RETURNING followers_count INTO v_count;
+  ELSE
+    INSERT INTO public.university_follows (university_id, user_id)
+    VALUES (p_university_id, v_uid)
+    ON CONFLICT (university_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_following := true;
+    UPDATE public.universities
+    SET followers_count = followers_count + v_rows, updated_at = now()
+    WHERE id = p_university_id
+    RETURNING followers_count INTO v_count;
+  END IF;
+
+  RETURN jsonb_build_object('university_id', p_university_id, 'following', v_following, 'followers_count', coalesce(v_count, 0));
+END;
+$$;
+ALTER FUNCTION public.toggle_university_follow(text) OWNER TO postgres;
+
+-- 17.8 Doubt Answer Acceptance RPC (Section 5.3)
+CREATE OR REPLACE FUNCTION public.accept_doubt_answer(
+  p_scope text,
+  p_doubt_id text,
+  p_answer_id text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_author_id uuid;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_scope = 'program' THEN
+    SELECT author_id INTO v_author_id FROM public.program_doubts WHERE id = p_doubt_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Program doubt % not found', p_doubt_id USING ERRCODE = '22023'; END IF;
+    IF v_author_id IS DISTINCT FROM v_uid AND NOT public.is_platform_admin() THEN
+      RAISE EXCEPTION 'Only the doubt author or a platform moderator can accept an answer' USING ERRCODE = '42501';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.program_doubt_answers WHERE id = p_answer_id AND doubt_id = p_doubt_id) THEN
+      RAISE EXCEPTION 'Answer % does not belong to doubt %', p_answer_id, p_doubt_id USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE public.program_doubt_answers SET is_accepted = (id = p_answer_id), updated_at = now() WHERE doubt_id = p_doubt_id;
+    UPDATE public.program_doubts SET is_resolved = true, accepted_answer_id = p_answer_id, updated_at = now() WHERE id = p_doubt_id;
+
+  ELSIF p_scope = 'university' THEN
+    SELECT author_id INTO v_author_id FROM public.university_doubts WHERE id = p_doubt_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'University doubt % not found', p_doubt_id USING ERRCODE = '22023'; END IF;
+    IF v_author_id IS DISTINCT FROM v_uid AND NOT public.is_platform_admin() THEN
+      RAISE EXCEPTION 'Only the doubt author or a platform moderator can accept an answer' USING ERRCODE = '42501';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.university_doubt_answers WHERE id = p_answer_id AND doubt_id = p_doubt_id) THEN
+      RAISE EXCEPTION 'Answer % does not belong to doubt %', p_answer_id, p_doubt_id USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE public.university_doubt_answers SET is_accepted = (id = p_answer_id), updated_at = now() WHERE doubt_id = p_doubt_id;
+    UPDATE public.university_doubts SET is_resolved = true, accepted_answer_id = p_answer_id, updated_at = now() WHERE id = p_doubt_id;
+  ELSE
+    RAISE EXCEPTION 'Invalid p_scope % (must be program or university)', p_scope USING ERRCODE = '22023';
+  END IF;
+
+  RETURN jsonb_build_object('scope', p_scope, 'doubt_id', p_doubt_id, 'accepted_answer_id', p_answer_id, 'is_resolved', true);
+END;
+$$;
+ALTER FUNCTION public.accept_doubt_answer(text, text, text) OWNER TO postgres;
+
+-- 17.9 Content Moderation RPC (Section 4.2 Note)
+CREATE OR REPLACE FUNCTION public.moderate_content_item(
+  p_table text,
+  p_id text,
+  p_patch jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NOT public.is_platform_admin() THEN
+    RAISE EXCEPTION 'Moderator or administrator privileges required' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_table NOT IN (
+    'study_notes', 'forum_topics', 'forum_posts', 'forum_comments',
+    'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+    'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers',
+    'universities', 'academic_programs'
+  ) THEN
+    RAISE EXCEPTION 'Unsupported moderation table: %', p_table USING ERRCODE = '22023';
+  END IF;
+
+  IF p_patch ? 'moderation_status' THEN
+    EXECUTE format('UPDATE public.%I SET moderation_status = $1, updated_at = now() WHERE id = $2', p_table)
+    USING (p_patch->>'moderation_status'), p_id;
+  END IF;
+  IF p_patch ? 'is_pinned' THEN
+    EXECUTE format('UPDATE public.%I SET is_pinned = $1, updated_at = now() WHERE id = $2', p_table)
+    USING (p_patch->>'is_pinned')::boolean, p_id;
+  END IF;
+  IF p_patch ? 'is_locked' THEN
+    EXECUTE format('UPDATE public.%I SET is_locked = $1, updated_at = now() WHERE id = $2', p_table)
+    USING (p_patch->>'is_locked')::boolean, p_id;
+  END IF;
+  IF p_patch ? 'is_verified' THEN
+    EXECUTE format('UPDATE public.%I SET is_verified = $1, updated_at = now() WHERE id = $2', p_table)
+    USING (p_patch->>'is_verified')::boolean, p_id;
+  END IF;
+
+  RETURN jsonb_build_object('table', p_table, 'id', p_id, 'status', 'moderated');
+END;
+$$;
+ALTER FUNCTION public.moderate_content_item(text, text, jsonb) OWNER TO postgres;
+
+-- 17.10 Class C Quarantine Resolution RPC (Section 7.2)
+CREATE OR REPLACE FUNCTION public.resolve_quarantined_record(
+  p_quarantine_id uuid,
+  p_action text,
+  p_new_fk_value text DEFAULT NULL,
+  p_notes text DEFAULT ''
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_q public.migration_orphan_quarantine;
+  v_payload jsonb;
+BEGIN
+  IF NOT public.is_platform_admin() THEN
+    RAISE EXCEPTION 'Administrator privileges required to resolve quarantined records' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_q
+  FROM public.migration_orphan_quarantine
+  WHERE quarantine_id = p_quarantine_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Quarantine record % not found', p_quarantine_id USING ERRCODE = '22023';
+  END IF;
+
+  IF p_action = 'archive' THEN
+    UPDATE public.migration_orphan_quarantine
+    SET
+      quarantine_class = 'CLASS_C_ARCHIVED',
+      resolved_at = now(),
+      resolved_by = auth.uid(),
+      resolution_notes = coalesce(p_notes, '')
+    WHERE quarantine_id = p_quarantine_id;
+
+    RETURN jsonb_build_object('quarantine_id', p_quarantine_id, 'status', 'CLASS_C_ARCHIVED');
+
+  ELSIF p_action = 'restore' THEN
+    v_payload := CASE
+      WHEN p_new_fk_value IS NOT NULL THEN jsonb_set(v_q.row_payload, ARRAY[v_q.missing_fk_column], to_jsonb(p_new_fk_value), true)
+      ELSE v_q.row_payload
+    END;
+
+    EXECUTE format(
+      'INSERT INTO public.%I SELECT * FROM jsonb_populate_record(NULL::public.%I, $1) ON CONFLICT DO NOTHING',
+      v_q.source_table, v_q.source_table
+    ) USING v_payload;
+
+    UPDATE public.migration_orphan_quarantine
+    SET
+      quarantine_class = 'CLASS_C_ADMIN_RESOLVED',
+      resolved_at = now(),
+      resolved_by = auth.uid(),
+      resolution_notes = coalesce(p_notes, '')
+    WHERE quarantine_id = p_quarantine_id;
+
+    RETURN jsonb_build_object('quarantine_id', p_quarantine_id, 'status', 'CLASS_C_ADMIN_RESOLVED', 'source_table', v_q.source_table);
+  ELSE
+    RAISE EXCEPTION 'Invalid p_action % (must be restore or archive)', p_action USING ERRCODE = '22023';
+  END IF;
+END;
+$$;
+ALTER FUNCTION public.resolve_quarantined_record(uuid, text, text, text) OWNER TO postgres;

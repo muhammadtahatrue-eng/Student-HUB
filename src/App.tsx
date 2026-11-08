@@ -22,7 +22,8 @@ import {
   incrementDownloadCountLocal,
   syncNoteDownloadToSupabase,
   isValidHttpUrl,
-  clearUserSpecificLocalState
+  clearUserSpecificLocalState,
+  signOutCurrentUser
 } from './lib/supabaseClient.ts';
 import { LightRays, RaysOrigin } from './components/LightRays.tsx';
 import { Navbar } from './components/Navbar.tsx';
@@ -123,12 +124,21 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState<AppTab>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace(/^#/, '');
+      const search = window.location.search;
       const pathname = window.location.pathname.replace(/\/+$/, '');
-      if (hash.includes('type=recovery') || hash === 'reset-password') return 'reset-password';
-      if (hash === 'login') return 'login';
-      if (hash === 'signup') return 'signup';
-      if (hash === 'profile-setup') return 'profile-setup';
-      if (hash === 'profile') return 'profile-management';
+      if (
+        search.includes('type=recovery') ||
+        hash.includes('type=recovery') ||
+        hash === 'reset-password' ||
+        pathname === '/reset-password'
+      ) {
+        return 'reset-password';
+      }
+      if (hash === 'login' || pathname === '/login') return 'login';
+      if (hash === 'signup' || pathname === '/signup') return 'signup';
+      if (hash === 'forgot-password' || pathname === '/forgot-password') return 'forgot-password';
+      if (hash === 'profile-setup' || pathname === '/profile-setup') return 'profile-setup';
+      if (hash === 'profile' || pathname === '/profile') return 'profile-management';
       if (hash === 'products' || pathname === '/products') return 'products';
       if (
         hash === 'privacy' ||
@@ -144,19 +154,44 @@ export default function App() {
         hash === 'terms' ||
         hash === 'copyright' ||
         hash === 'contact' ||
-        pathname === '/about'
+        pathname === '/about' ||
+        pathname === '/faq' ||
+        pathname === '/terms' ||
+        pathname === '/copyright' ||
+        pathname === '/contact'
       ) {
         return 'about';
       }
-      if (hash === 'forum' || hash.startsWith('forum/post/')) return 'forum';
+      if (
+        hash === 'forum' ||
+        hash.startsWith('forum/post/') ||
+        pathname === '/forum' ||
+        pathname.startsWith('/forum/post/')
+      ) {
+        return 'forum';
+      }
+      if (hash === 'browse' || pathname === '/browse' || pathname === '/library') return 'browse';
+      if (hash === 'explore' || pathname === '/explore') return 'explore';
+      if (hash === 'upload' || pathname === '/upload') return 'upload';
+      if (hash === 'program' || pathname === '/program') return 'program';
+      if (hash === 'university' || pathname === '/university') return 'university';
     }
     return 'landing';
   });
   const [infoCenterSection, setInfoCenterSection] = useState<InfoCenterSectionId>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace(/^#/, '');
+      const pathname = window.location.pathname.replace(/\/+$/, '').replace(/^\/+/, '');
       if (hash === 'faq' || hash === 'terms' || hash === 'copyright' || hash === 'contact') {
         return hash;
+      }
+      if (
+        pathname === 'faq' ||
+        pathname === 'terms' ||
+        pathname === 'copyright' ||
+        pathname === 'contact'
+      ) {
+        return pathname;
       }
     }
     return 'about';
@@ -164,8 +199,12 @@ export default function App() {
   const [initialForumPostId, setInitialForumPostId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace(/^#/, '');
+      const pathname = window.location.pathname.replace(/\/+$/, '');
       if (hash.startsWith('forum/post/')) {
         return hash.replace('forum/post/', '').trim() || null;
+      }
+      if (pathname.startsWith('/forum/post/')) {
+        return pathname.replace('/forum/post/', '').trim() || null;
       }
     }
     return null;
@@ -294,6 +333,17 @@ export default function App() {
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
   const [authCallbackBanner, setAuthCallbackBanner] = useState<AuthCallbackBanner | null>(null);
   const processedAuthCallbackRef = useRef<string | null>(null);
+  const isPasswordRecoveryFlowRef = useRef<boolean>(
+    typeof window !== 'undefined' &&
+      (window.location.search.includes('type=recovery') ||
+        window.location.hash.includes('type=recovery') ||
+        window.location.hash === '#reset-password' ||
+        window.location.pathname.replace(/\/+$/, '') === '/reset-password')
+  );
+  const profileHydrationRef = useRef<{
+    signature: string;
+    promise: Promise<StudentUser>;
+  } | null>(null);
 
   // Modal visibility
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
@@ -686,8 +736,19 @@ export default function App() {
 
         const cleanUpAuthCallbackUrl = () => {
           if (typeof window !== 'undefined') {
-            window.history.replaceState({}, document.title, window.location.pathname);
+            window.history.replaceState({}, document.title, window.location.pathname || '/');
           }
+        };
+
+        // Deduplicates concurrent profile hydrations between initial callback check and onAuthStateChange
+        const hydrateUserDeduplicated = (authUser: any): Promise<StudentUser> => {
+          const sig = `${authUser.id}::${authUser.email_confirmed_at || ''}::${authUser.updated_at || ''}`;
+          if (profileHydrationRef.current && profileHydrationRef.current.signature === sig) {
+            return profileHydrationRef.current.promise;
+          }
+          const promise = fetchAuthenticatedUserProfile(supabase, authUser);
+          profileHydrationRef.current = { signature: sig, promise };
+          return promise;
         };
 
         const initializeAuthAndProcessCallback = async () => {
@@ -711,10 +772,14 @@ export default function App() {
             searchParams.get('error_description') || hashParams.get('error_description');
 
           const codeParam = searchParams.get('code');
-          const tokenHashParam = searchParams.get('token_hash');
+          const tokenHashParam = searchParams.get('token_hash') || hashParams.get('token_hash');
           const typeParam = searchParams.get('type') || hashParams.get('type');
           const hasImplicitToken =
             hashParams.has('access_token') || hashParams.has('refresh_token');
+
+          if (typeParam === 'recovery') {
+            isPasswordRecoveryFlowRef.current = true;
+          }
 
           const hasCallbackParams = Boolean(
             errorParam ||
@@ -722,47 +787,35 @@ export default function App() {
               errorDescription ||
               codeParam ||
               tokenHashParam ||
-              hasImplicitToken
+              hasImplicitToken ||
+              typeParam === 'recovery'
           );
 
-          // 1. Handle explicit callback errors (e.g. expired or invalid email confirmation link)
-          if (errorParam || errorCode || errorDescription) {
-            if (processedAuthCallbackRef.current !== callbackSignature) {
-              processedAuthCallbackRef.current = callbackSignature;
-              cleanUpAuthCallbackUrl();
-
-              const decodedDesc = (errorDescription || errorParam || '')
-                .replace(/\+/g, ' ')
-                .trim();
-              const lowerDesc = decodedDesc.toLowerCase();
-              const friendlyError =
-                errorCode === 'otp_expired' ||
-                lowerDesc.includes('expired') ||
-                lowerDesc.includes('invalid')
-                  ? 'This email verification link has expired or has already been used. Please log in if your account is already verified, or enter your email to request a new confirmation link.'
-                  : decodedDesc || 'Email verification could not be completed. Please try again.';
-
-              if (isMounted) {
-                setAuthCallbackBanner({ type: 'error', text: friendlyError });
-                setCurrentTab('login');
-              }
-            }
-          }
-
-          // 2. Process PKCE code or explicit token_hash callback once
-          let callbackError: string | null = null;
           const isNewCallbackToProcess =
             hasCallbackParams && processedAuthCallbackRef.current !== callbackSignature;
 
           if (isNewCallbackToProcess) {
             processedAuthCallbackRef.current = callbackSignature;
+          }
 
-            if (codeParam) {
-              const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(codeParam);
-              if (exchangeErr) {
-                callbackError = exchangeErr.message;
-              }
-            } else if (tokenHashParam && typeParam) {
+          // 1. Wait for Supabase's built-in detectSessionInUrl initialization first before any manual exchange
+          // so a single-use PKCE ?code= is never exchanged twice concurrently.
+          let {
+            data: { session },
+            error: sessionError
+          } = await supabase.auth.getSession();
+
+          let sessionUser = session?.user ?? null;
+          let callbackError: string | null = null;
+
+          // 2. Coordinate manual token/code exchange with detectSessionInUrl:
+          // - token_hash + type (OTP link) is NEVER consumed automatically by detectSessionInUrl, so always verify it even if a prior session was cached.
+          // - codeParam (PKCE) and standard implicit hashes ARE consumed by detectSessionInUrl during getSession(), so only exchange manually if !sessionUser.
+          if (isNewCallbackToProcess) {
+            let didManualExchange = false;
+
+            if (tokenHashParam && typeParam) {
+              didManualExchange = true;
               const { error: otpErr } = await supabase.auth.verifyOtp({
                 token_hash: tokenHashParam,
                 type: typeParam as any
@@ -770,8 +823,15 @@ export default function App() {
               if (otpErr) {
                 callbackError = otpErr.message;
               }
-            } else if (hasImplicitToken && rawHash.indexOf('#', 1) !== -1) {
+            } else if (!sessionUser && codeParam) {
+              didManualExchange = true;
+              const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(codeParam);
+              if (exchangeErr) {
+                callbackError = exchangeErr.message;
+              }
+            } else if (!sessionUser && hasImplicitToken && rawHash.indexOf('#', 1) !== -1) {
               // Recovery for legacy links with double hash (#profile-setup#access_token=...)
+              didManualExchange = true;
               const accessToken = hashParams.get('access_token');
               const refreshToken = hashParams.get('refresh_token');
               if (accessToken && refreshToken) {
@@ -784,18 +844,17 @@ export default function App() {
                 }
               }
             }
+
+            if (didManualExchange) {
+              // Re-read session after manual exchange attempt
+              const refreshed = await supabase.auth.getSession();
+              session = refreshed.data.session;
+              sessionError = refreshed.error;
+              sessionUser = session?.user ?? null;
+            }
           }
 
-          // 3. Retrieve current session and explicitly verify updated email_confirmed_at flag
-          const {
-            data: { session },
-            error: sessionError
-          } = await supabase.auth.getSession();
-
-          let sessionUser = session?.user ?? null;
-
-          // If a verification callback just occurred or email_confirmed_at is not yet reflected on cached session,
-          // fetch the fresh user object from Supabase Auth to check the updated email_confirmed_at flag
+          // 3. Confirm authenticated user using getUser() to verify authoritative email_confirmed_at flag
           if (sessionUser && (!sessionUser.email_confirmed_at || hasCallbackParams)) {
             const { data: freshUserData } = await supabase.auth.getUser();
             if (freshUserData?.user) {
@@ -809,23 +868,48 @@ export default function App() {
 
           if (!isMounted) return;
 
-          if (callbackError && !sessionUser) {
-            setAuthCallbackBanner({
-              type: 'error',
-              text:
-                callbackError.toLowerCase().includes('expired') ||
-                callbackError.toLowerCase().includes('invalid')
-                  ? 'This email confirmation link has expired or is invalid. Please request a new confirmation email.'
-                  : callbackError
-            });
+          // 4. Only display an expired/invalid link error if NO valid session was established
+          if ((errorParam || errorCode || errorDescription || callbackError) && !sessionUser) {
+            isPasswordRecoveryFlowRef.current = false;
+            const rawErrText = (
+              callbackError ||
+              errorDescription ||
+              errorParam ||
+              ''
+            )
+              .replace(/\+/g, ' ')
+              .trim();
+            const lowerDesc = rawErrText.toLowerCase();
+            const friendlyError =
+              errorCode === 'otp_expired' ||
+              lowerDesc.includes('expired') ||
+              lowerDesc.includes('invalid')
+                ? 'This email verification or recovery link has expired or has already been used. Please log in if your account is already verified, or request a new link.'
+                : rawErrText || 'Email verification could not be completed. Please try again.';
+
+            setAuthCallbackBanner({ type: 'error', text: friendlyError });
             setCurrentTab('login');
             setIsAuthInitializing(false);
             return;
           }
 
-          if (typeParam === 'recovery' && sessionUser) {
-            setCurrentTab('reset-password');
-            setIsAuthInitializing(false);
+          // 5. Preserve password recovery routing — never let normal landing or profile-setup redirect overwrite it
+          if ((isPasswordRecoveryFlowRef.current || typeParam === 'recovery') && sessionUser) {
+            isPasswordRecoveryFlowRef.current = true;
+            setAuthCallbackBanner(null);
+            if (sessionUser.email_confirmed_at) {
+              const hydrated = await hydrateUserDeduplicated(sessionUser);
+              if (isMounted) {
+                setUser(hydrated);
+                try {
+                  localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
+                } catch {}
+              }
+            }
+            if (isMounted) {
+              setCurrentTab('reset-password');
+              setIsAuthInitializing(false);
+            }
             return;
           }
 
@@ -847,13 +931,21 @@ export default function App() {
 
             // User's email_confirmed_at is verified
             setPendingVerificationEmail(null);
-            const hydrated = await fetchAuthenticatedUserProfile(supabase, sessionUser);
+            const hydrated = await hydrateUserDeduplicated(sessionUser);
             if (!isMounted) return;
 
             setUser(hydrated);
             try {
               localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
             } catch {}
+
+            // Re-check recovery ref in case PASSWORD_RECOVERY event fired while profile was hydrating
+            if (isPasswordRecoveryFlowRef.current) {
+              setAuthCallbackBanner(null);
+              setCurrentTab('reset-password');
+              setIsAuthInitializing(false);
+              return;
+            }
 
             if (!hydrated.setupCompleted) {
               setAuthCallbackBanner(null);
@@ -886,12 +978,23 @@ export default function App() {
           if (isMounted) setIsAuthInitializing(false);
         });
 
-        // Listen for live Supabase Auth state transitions (including email verification completion)
+        // Listen for live Supabase Auth state transitions (including email verification completion & password recovery)
         const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
           if (!isMounted) return;
 
           if (event === 'PASSWORD_RECOVERY') {
+            isPasswordRecoveryFlowRef.current = true;
+            setAuthCallbackBanner(null);
             setCurrentTab('reset-password');
+            if (session?.user?.email_confirmed_at) {
+              const hydrated = await hydrateUserDeduplicated(session.user);
+              if (isMounted) {
+                setUser(hydrated);
+                try {
+                  localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
+                } catch {}
+              }
+            }
             return;
           }
 
@@ -917,7 +1020,7 @@ export default function App() {
             }
 
             setPendingVerificationEmail(null);
-            const hydrated = await fetchAuthenticatedUserProfile(supabase, activeAuthUser);
+            const hydrated = await hydrateUserDeduplicated(activeAuthUser);
             if (!isMounted) return;
 
             setUser(hydrated);
@@ -925,12 +1028,19 @@ export default function App() {
               localStorage.setItem('studyvault_active_user', JSON.stringify(hydrated));
             } catch {}
 
+            if (isPasswordRecoveryFlowRef.current) {
+              setCurrentTab('reset-password');
+              return;
+            }
+
             if (!hydrated.setupCompleted) {
               setCurrentTab((prev) =>
                 prev === 'reset-password' ? 'reset-password' : 'profile-setup'
               );
             }
           } else if (event === 'SIGNED_OUT') {
+            isPasswordRecoveryFlowRef.current = false;
+            profileHydrationRef.current = null;
             clearUserSpecificLocalState();
             setUser(null);
           }
@@ -959,7 +1069,8 @@ export default function App() {
     const rawHash = window.location.hash.startsWith('#')
       ? window.location.hash.substring(1)
       : window.location.hash;
-    const hashParams = new URLSearchParams(rawHash);
+    const normalizedHashQuery = rawHash.replace(/#/g, '&');
+    const hashParams = new URLSearchParams(normalizedHashQuery);
     const hasActiveCallbackParams = Boolean(
       searchParams.get('code') ||
         searchParams.get('token_hash') ||
@@ -1067,7 +1178,8 @@ export default function App() {
           !user.isGuest &&
           user.setupCompleted === false &&
           currentTab !== 'profile-setup' &&
-          currentTab !== 'reset-password'
+          currentTab !== 'reset-password' &&
+          !isPasswordRecoveryFlowRef.current
         ) {
           setCurrentTab('profile-setup');
         }
@@ -1094,7 +1206,8 @@ export default function App() {
         isVerifiedLocal &&
         user?.setupCompleted === false &&
         currentTab !== 'profile-setup' &&
-        currentTab !== 'reset-password'
+        currentTab !== 'reset-password' &&
+        !isPasswordRecoveryFlowRef.current
       ) {
         setCurrentTab('profile-setup');
       }
@@ -1365,14 +1478,19 @@ export default function App() {
   );
 
   const handleOpenInfoCenter = (section: InfoCenterSectionId = 'about') => {
+    isPasswordRecoveryFlowRef.current = false;
     setInfoCenterSection(section);
     setCurrentTab('about');
     if (typeof window !== 'undefined') {
-      window.history.replaceState({}, document.title, `#${section}`);
+      window.history.replaceState({}, document.title, `/#${section}`);
     }
   };
 
   const handleNavigateTab = (targetTab: AppTab) => {
+    if (targetTab !== 'reset-password') {
+      isPasswordRecoveryFlowRef.current = false;
+    }
+
     const isPublicTab =
       targetTab === 'landing' ||
       targetTab === 'browse' ||
@@ -1402,13 +1520,13 @@ export default function App() {
 
     if (typeof window !== 'undefined') {
       if (targetTab === 'products') {
-        window.history.replaceState({}, document.title, '#products');
+        window.history.replaceState({}, document.title, '/#products');
       } else if (targetTab === 'privacy') {
-        window.history.replaceState({}, document.title, '#privacy');
+        window.history.replaceState({}, document.title, '/#privacy');
       } else if (targetTab === 'about') {
-        window.history.replaceState({}, document.title, '#about');
+        window.history.replaceState({}, document.title, '/#about');
       } else if (targetTab === 'landing') {
-        window.history.replaceState({}, document.title, window.location.pathname || '/');
+        window.history.replaceState({}, document.title, '/');
       }
     }
 
@@ -1561,15 +1679,12 @@ export default function App() {
 
   const handleSignOut = async () => {
     const previousUserId = user?.id;
-    try {
-      const supabase = getSupabaseInstance(supabaseConfig);
-      if (supabase) {
-        await supabase.auth.signOut();
-      }
-    } catch {
-      // Ignore network errors on logout
-    }
-    clearUserSpecificLocalState(previousUserId);
+    isPasswordRecoveryFlowRef.current = false;
+    profileHydrationRef.current = null;
+    const supabase = getSupabaseInstance(supabaseConfig);
+    await signOutCurrentUser(supabase, previousUserId);
+    setPendingVerificationEmail(null);
+    setAuthCallbackBanner(null);
     setUser(null);
     setCurrentTab('login');
     triggerToast('Signed out of Xeusar account');
@@ -1695,13 +1810,19 @@ export default function App() {
         currentTab === 'reset-password') && (
         <AuthPages
           mode={currentTab as AuthPageMode}
-          onChangeMode={(nextMode) => setCurrentTab(nextMode)}
+          onChangeMode={(nextMode) => {
+            if (nextMode !== 'reset-password') {
+              isPasswordRecoveryFlowRef.current = false;
+            }
+            setCurrentTab(nextMode);
+          }}
           supabaseConfig={supabaseConfig}
           initialVerificationPendingEmail={pendingVerificationEmail}
           onVerificationPendingChange={setPendingVerificationEmail}
           externalBannerMessage={authCallbackBanner}
           onClearExternalBanner={() => setAuthCallbackBanner(null)}
           onAuthenticated={(authenticatedUser, isNewSignup) => {
+            isPasswordRecoveryFlowRef.current = false;
             if (!authenticatedUser.emailConfirmed) {
               setPendingVerificationEmail(authenticatedUser.email);
               setCurrentTab('login');
@@ -1732,7 +1853,10 @@ export default function App() {
               triggerToast(`Welcome back, ${authenticatedUser.name}!`);
             }
           }}
-          onBackToHome={() => setCurrentTab('landing')}
+          onBackToHome={() => {
+            isPasswordRecoveryFlowRef.current = false;
+            setCurrentTab('landing');
+          }}
           onOpenBackendConfig={() => setIsSupabaseModalOpen(true)}
         />
       )}
@@ -2193,6 +2317,7 @@ export default function App() {
         rayBrightness={rayBrightness}
         onChangeRayBrightness={handleChangeRayBrightness}
         onResetFlare={handleResetFlare}
+        onSignOut={handleSignOut}
       />
 
       {/* University Setup Modal (Prompt & Search for unassigned / changing primary campus) */}

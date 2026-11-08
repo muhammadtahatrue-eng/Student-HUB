@@ -4,31 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xeusar</title>
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
-      // Single Page Application redirect for GitHub Pages
-      // When a user lands on a deep link or 404 on GitHub Pages, redirect to root index.html
-      var pathSegmentsToKeep = 1;
-      var l = window.location;
-      var path = l.pathname.slice(1).split('/');
-      var repo = path.length > 0 ? path[0] : '';
-      
-      // If deployed at username.github.io/repo-name/
-      if (l.hostname.endsWith('github.io') && repo) {
-        l.replace(
-          l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-          '/' + repo + '/' +
-          l.search +
-          l.hash
-        );
-      } else {
-        l.replace(
-          l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-          '/' +
-          l.search +
-          l.hash
-        );
-      }
+      // Fallback for static hosts without native SPA rewrite:
+      // Preserve the requested nested route in the hash rather than stripping it back to the homepage.
+      (function () {
+        var l = window.location;
+        var cleanPath = l.pathname.replace(/^\/+|\/+$/g, '');
+        if (l.hostname.endsWith('github.io')) {
+          var parts = cleanPath.split('/');
+          var repo = parts.shift() || '';
+          var subRoute = parts.join('/');
+          var targetHash = l.hash || (subRoute ? '#' + subRoute : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' + (repo ? repo + '/' : '') +
+            l.search +
+            targetHash
+          );
+        } else {
+          var routeHash = l.hash || (cleanPath ? '#' + cleanPath : '');
+          l.replace(
+            l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+            '/' +
+            l.search +
+            routeHash
+          );
+        }
+      })();
     </script>
   </head>
   <body style="background-color: #05070a; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">

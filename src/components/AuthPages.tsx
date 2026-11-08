@@ -40,6 +40,16 @@ export const EMAIL_REDIRECT_URL =
     ? `${window.location.origin}/`
     : '/';
 
+/**
+ * Production URL for Supabase password recovery redirects.
+ * Uses a query parameter (?type=recovery) with no #hash fragment so PKCE and implicit flows
+ * both preserve recovery state without double-hash collisions.
+ */
+export const PASSWORD_RESET_REDIRECT_URL =
+  typeof window !== 'undefined' && window.location?.origin
+    ? `${window.location.origin}/?type=recovery`
+    : '/?type=recovery';
+
 export interface AuthCallbackBanner {
   type: 'success' | 'error' | 'info';
   text: string;
@@ -170,7 +180,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   }, [username, mode, supabaseConfig]);
 
   const getPasswordResetRedirectUrl = () => {
-    return EMAIL_REDIRECT_URL;
+    return PASSWORD_RESET_REDIRECT_URL;
   };
 
   // ============================================================================
@@ -609,12 +619,20 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
         return;
       }
 
+      let updatedAuthUser = data.user ?? null;
+      if (!updatedAuthUser || !updatedAuthUser.email_confirmed_at) {
+        const { data: freshData } = await supabase.auth.getUser();
+        if (freshData?.user) {
+          updatedAuthUser = freshData.user;
+        }
+      }
+
       setPassword('');
       setConfirmPassword('');
       setInfoMsg('Your password has been updated. Redirecting...');
 
-      if (data.user && data.user.email_confirmed_at) {
-        const hydratedUser = await fetchAuthenticatedUserProfile(supabase, data.user);
+      if (updatedAuthUser && updatedAuthUser.email_confirmed_at) {
+        const hydratedUser = await fetchAuthenticatedUserProfile(supabase, updatedAuthUser);
         setTimeout(() => {
           onAuthenticated(hydratedUser, false);
         }, 900);
