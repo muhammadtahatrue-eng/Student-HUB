@@ -954,7 +954,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                           setEmail(e.target.value);
                           if (errorMsg) setErrorMsg(null);
                         }}
-                        placeholder="student@university.edu"
+                        placeholder="you@gmail.com"
                         className="w-full pl-10 pr-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff]"
                       />
                     </div>
@@ -1099,7 +1099,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                         autoComplete="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="student@university.edu"
+                        placeholder="you@gmail.com"
                         className="w-full pl-10 pr-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff]"
                       />
                     </div>
@@ -1205,7 +1205,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                         autoComplete="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="student@university.edu"
+                        placeholder="you@gmail.com"
                         className="w-full pl-10 pr-3.5 py-2.5 bg-white/[0.04] border border-white/15 rounded-xl text-white placeholder-white/30 text-xs focus:outline-none focus:border-[#00f0ff] focus:ring-1 focus:ring-[#00f0ff]"
                       />
                     </div>

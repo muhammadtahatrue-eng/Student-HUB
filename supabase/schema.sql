@@ -744,11 +744,967 @@ CREATE TABLE IF NOT EXISTS public.migration_orphan_quarantine (
 );
 
 -- -----------------------------------------------------------------------------
--- 8. COMPLETE INDEX INVENTORY (Section 3 + Download Deduplication Indexes)
+-- 8. IDEMPOTENT COLUMN RECONCILIATION & TARGETED UUID-TO-TEXT CONVERSION
+--    (Split into 8A: DDL Column Addition, 8B: Type Conversions, 8C: Data Backfill)
 -- -----------------------------------------------------------------------------
+DROP VIEW IF EXISTS public.public_student_profiles CASCADE;
+
+-- 8A. Pre-conversion policy/trigger cleanup & DDL column additions (Zero UPDATEs here)
+DO $$
+DECLARE
+  v_tbl text;
+  v_pol RECORD;
+  v_trg RECORD;
+  v_pages_type text;
+  v_tables text[] := ARRAY[
+    'profiles', 'academic_information', 'user_settings_preferences', 'moderator_roles',
+    'universities', 'departments', 'courses', 'academic_programs',
+    'program_enrollments', 'university_follows',
+    'stored_files', 'study_notes', 'study_note_upvotes', 'study_note_downloads',
+    'forum_topics', 'forum_posts', 'forum_comments', 'forum_post_votes',
+    'forum_comment_votes', 'forum_bookmarks', 'forum_reports',
+    'program_discussions', 'program_discussion_comments', 'program_doubts', 'program_doubt_answers',
+    'university_discussions', 'university_discussion_comments', 'university_doubts', 'university_doubt_answers',
+    'community_item_votes', 'migration_orphan_quarantine'
+  ];
+BEGIN
+  -- Drop existing RLS policies and user triggers on the 31 tables so nothing blocks ALTER COLUMN TYPE
+  FOREACH v_tbl IN ARRAY v_tables LOOP
+    FOR v_pol IN
+      SELECT policyname FROM pg_policies WHERE schemaname = 'public' AND tablename = v_tbl
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', v_pol.policyname, v_tbl);
+    END LOOP;
+
+    FOR v_trg IN
+      SELECT tg.tgname
+      FROM pg_trigger tg
+      JOIN pg_class rel ON rel.oid = tg.tgrelid
+      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+      WHERE nsp.nspname = 'public'
+        AND rel.relname = v_tbl
+        AND NOT tg.tgisinternal
+    LOOP
+      EXECUTE format('DROP TRIGGER IF EXISTS %I ON public.%I', v_trg.tgname, v_tbl);
+    END LOOP;
+  END LOOP;
+
+  -- Add any missing v4 columns across all 30 tables
+  ALTER TABLE public.profiles
+    ADD COLUMN IF NOT EXISTS username text,
+    ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS full_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS avatar_url text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS bio text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS email text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'student',
+    ADD COLUMN IF NOT EXISTS points integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS setup_completed boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.profiles ALTER COLUMN username DROP NOT NULL;
+  ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_username_length;
+  ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_username_format;
+  ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
+
+  ALTER TABLE public.moderator_roles
+    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'moderator',
+    ADD COLUMN IF NOT EXISTS assigned_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS notes text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.moderator_roles DROP CONSTRAINT IF EXISTS moderator_roles_role_check;
+
+  ALTER TABLE public.universities
+    ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'University',
+    ADD COLUMN IF NOT EXISTS short_name text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS slug text,
+    ADD COLUMN IF NOT EXISTS location text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS country text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS website text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS logo_url text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS banner_url text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'public',
+    ADD COLUMN IF NOT EXISTS access_scope text NOT NULL DEFAULT 'public',
+    ADD COLUMN IF NOT EXISTS is_verified boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS followers_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS courses_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS resources_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.departments
+    ADD COLUMN IF NOT EXISTS university_id text,
+    ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'Department',
+    ADD COLUMN IF NOT EXISTS code text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS faculty_head text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS courses_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.courses
+    ADD COLUMN IF NOT EXISTS university_id text,
+    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS code text NOT NULL DEFAULT 'COURSE',
+    ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'Course',
+    ADD COLUMN IF NOT EXISTS title text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS credits integer NOT NULL DEFAULT 3,
+    ADD COLUMN IF NOT EXISTS instructor text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS resources_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.academic_programs
+    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Program',
+    ADD COLUMN IF NOT EXISTS name text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS code text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS level text NOT NULL DEFAULT 'Undergraduate',
+    ADD COLUMN IF NOT EXISTS duration text DEFAULT '4 Years',
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS syllabus_summary text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS career_paths jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS subjects jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS access_scope text NOT NULL DEFAULT 'public',
+    ADD COLUMN IF NOT EXISTS is_verified boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS enrolled_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS discussions_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS doubts_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.academic_programs ALTER COLUMN name SET DEFAULT '';
+  ALTER TABLE public.academic_programs ALTER COLUMN name DROP NOT NULL;
+
+  ALTER TABLE public.academic_information
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS education_level text NOT NULL DEFAULT 'undergraduate',
+    ADD COLUMN IF NOT EXISTS academic_stage text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS institution_name text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS degree_program text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS major text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS field_of_study text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS academic_year text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS current_semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS student_id_number text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS graduation_year integer DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS enrollment_verified boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.academic_information DROP CONSTRAINT IF EXISTS academic_information_education_level_check;
+  ALTER TABLE public.academic_information DROP CONSTRAINT IF EXISTS academic_information_academic_stage_check;
+
+  ALTER TABLE public.user_settings_preferences
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS account_settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS privacy_settings jsonb NOT NULL DEFAULT '{"public_badge_enabled": true, "show_uni_on_notes": true}'::jsonb,
+    ADD COLUMN IF NOT EXISTS notification_settings jsonb NOT NULL DEFAULT '{"email_Resource_updates": true, "discussion_replies": true}'::jsonb,
+    ADD COLUMN IF NOT EXISTS appearance_settings jsonb NOT NULL DEFAULT '{"compact_mode": false}'::jsonb,
+    ADD COLUMN IF NOT EXISTS preferred_subjects text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS study_preferences jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS preferred_language text NOT NULL DEFAULT 'en',
+    ADD COLUMN IF NOT EXISTS theme_preference text NOT NULL DEFAULT 'system',
+    ADD COLUMN IF NOT EXISTS theme text NOT NULL DEFAULT 'system',
+    ADD COLUMN IF NOT EXISTS content_discovery_preferences jsonb NOT NULL DEFAULT '{"prioritize_User_uni": true, "hide_archived": false}'::jsonb,
+    ADD COLUMN IF NOT EXISTS email_notifications boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS forum_notifications boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS resource_alerts boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS public_profile boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS show_academic_info boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.program_enrollments
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS program_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'student',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.program_enrollments DROP CONSTRAINT IF EXISTS program_enrollments_role_check;
+
+  ALTER TABLE public.university_follows
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS university_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.stored_files
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS content_hash text,
+    ADD COLUMN IF NOT EXISTS sha256_hash text,
+    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
+    ADD COLUMN IF NOT EXISTS storage_path text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS file_url text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS original_filename text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS mime_type text NOT NULL DEFAULT 'application/pdf',
+    ADD COLUMN IF NOT EXISTS size_bytes bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS uploaded_by uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS reference_count integer NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.stored_files DROP CONSTRAINT IF EXISTS stored_files_size_bytes_check;
+
+  -- Fix study_notes.pages if a prior migration typed it as integer instead of jsonb
+  SELECT data_type INTO v_pages_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'pages';
+
+  IF v_pages_type IN ('integer', 'bigint', 'smallint') THEN
+    ALTER TABLE public.study_notes ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1;
+    EXECUTE 'UPDATE public.study_notes SET page_count = GREATEST(1, COALESCE(pages, 1))';
+    ALTER TABLE public.study_notes DROP COLUMN pages;
+    ALTER TABLE public.study_notes ADD COLUMN pages jsonb NOT NULL DEFAULT '[]'::jsonb;
+  END IF;
+
+  ALTER TABLE public.study_notes
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Untitled Note',
+    ADD COLUMN IF NOT EXISTS subject text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS course_code text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS course_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS university text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS department text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS semester text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS academic_year text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS professor text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS note_type text NOT NULL DEFAULT 'lecture_notes',
+    ADD COLUMN IF NOT EXISTS resource_type text DEFAULT 'notes',
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS summary text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS content text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS pages jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS file_url text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
+    ADD COLUMN IF NOT EXISTS storage_path text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS file_name text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS file_type text DEFAULT 'application/pdf',
+    ADD COLUMN IF NOT EXISTS mime_type text DEFAULT 'application/pdf',
+    ADD COLUMN IF NOT EXISTS file_size bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS file_size_bytes bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS content_hash text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS file_sha256 text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS file_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS preview_url text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS uploader_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_university text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downloads integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS rating numeric(3,2) NOT NULL DEFAULT 0.00,
+    ADD COLUMN IF NOT EXISTS is_verified boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS is_published boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS is_restricted boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.study_notes ALTER COLUMN course_code SET DEFAULT '';
+  ALTER TABLE public.study_notes ALTER COLUMN course_code DROP NOT NULL;
+  ALTER TABLE public.study_notes ALTER COLUMN file_url SET DEFAULT '';
+  ALTER TABLE public.study_notes ALTER COLUMN file_url DROP NOT NULL;
+  ALTER TABLE public.study_notes ALTER COLUMN file_name SET DEFAULT '';
+  ALTER TABLE public.study_notes ALTER COLUMN file_name DROP NOT NULL;
+  ALTER TABLE public.study_notes DROP CONSTRAINT IF EXISTS study_notes_status_check;
+  ALTER TABLE public.study_notes DROP CONSTRAINT IF EXISTS study_notes_file_size_bytes_check;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'course_name'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.study_notes ALTER COLUMN course_name SET DEFAULT ''''';
+    EXECUTE 'ALTER TABLE public.study_notes ALTER COLUMN course_name DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.study_note_upvotes
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS note_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.study_note_downloads
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS note_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS actor_fingerprint text NOT NULL DEFAULT 'legacy',
+    ADD COLUMN IF NOT EXISTS downloaded_date date NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::date,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_topics
+    ADD COLUMN IF NOT EXISTS id text,
+    ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS title text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS slug text,
+    ADD COLUMN IF NOT EXISTS description text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS icon text DEFAULT 'MessageSquare',
+    ADD COLUMN IF NOT EXISTS color text DEFAULT '#4F46E5',
+    ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS posts_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_posts
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS topic_id text NOT NULL DEFAULT 'general',
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Discussion',
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_username text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_role text NOT NULL DEFAULT 'student',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS score integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS comments_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_pinned boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_resolved boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS last_activity_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_posts DROP CONSTRAINT IF EXISTS forum_posts_status_check;
+  ALTER TABLE public.forum_posts DROP CONSTRAINT IF EXISTS forum_posts_post_type_check;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'forum_posts' AND column_name = 'body'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.forum_posts ALTER COLUMN body SET DEFAULT ''''';
+    EXECUTE 'ALTER TABLE public.forum_posts ALTER COLUMN body DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.forum_comments
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS post_id text,
+    ADD COLUMN IF NOT EXISTS parent_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_username text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_role text NOT NULL DEFAULT 'student',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS score integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_accepted boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_comments DROP CONSTRAINT IF EXISTS forum_comments_status_check;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'forum_comments' AND column_name = 'body'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.forum_comments ALTER COLUMN body SET DEFAULT ''''';
+    EXECUTE 'ALTER TABLE public.forum_comments ALTER COLUMN body DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.forum_post_votes
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS post_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS vote_type smallint NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_comment_votes
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS comment_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS vote_type smallint NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_bookmarks
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS post_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_reports
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS target_type text NOT NULL DEFAULT 'post',
+    ADD COLUMN IF NOT EXISTS target_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS post_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS comment_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS reporter_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS reason text NOT NULL DEFAULT 'Reported',
+    ADD COLUMN IF NOT EXISTS details text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'pending',
+    ADD COLUMN IF NOT EXISTS reviewed_by uuid DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS reviewed_at timestamptz DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.forum_reports DROP CONSTRAINT IF EXISTS forum_reports_target_type_check;
+  ALTER TABLE public.forum_reports DROP CONSTRAINT IF EXISTS forum_reports_status_check;
+
+  ALTER TABLE public.program_discussions
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS program_id text,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Discussion',
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS comments_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_pinned boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.program_discussion_comments
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS discussion_id text,
+    ADD COLUMN IF NOT EXISTS parent_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'program_discussion_comments' AND column_name = 'post_id'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.program_discussion_comments ALTER COLUMN post_id DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.program_doubts
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS program_id text,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Question',
+    ADD COLUMN IF NOT EXISTS question text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS subject text DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS answers_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_resolved boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS accepted_answer_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.program_doubts DROP CONSTRAINT IF EXISTS program_doubts_status_check;
+
+  ALTER TABLE public.program_doubt_answers
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS doubt_id text,
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_accepted boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'program_doubt_answers' AND column_name = 'question_id'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.program_doubt_answers ALTER COLUMN question_id DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.university_discussions
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS university_id text,
+    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS course_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Discussion',
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS comments_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_pinned boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.university_discussion_comments
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS discussion_id text,
+    ADD COLUMN IF NOT EXISTS parent_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'university_discussion_comments' AND column_name = 'post_id'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.university_discussion_comments ALTER COLUMN post_id DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.university_doubts
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS university_id text,
+    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS course_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS title text NOT NULL DEFAULT 'Question',
+    ADD COLUMN IF NOT EXISTS question text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS subject text DEFAULT 'General',
+    ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[],
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS answers_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS views_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_resolved boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS accepted_answer_id text DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.university_doubts DROP CONSTRAINT IF EXISTS university_doubts_status_check;
+
+  ALTER TABLE public.university_doubt_answers
+    ADD COLUMN IF NOT EXISTS id text DEFAULT gen_random_uuid()::text,
+    ADD COLUMN IF NOT EXISTS doubt_id text,
+    ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
+    ADD COLUMN IF NOT EXISTS author_name text NOT NULL DEFAULT 'Student',
+    ADD COLUMN IF NOT EXISTS author_avatar text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS upvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS downvotes integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_accepted boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'university_doubt_answers' AND column_name = 'question_id'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.university_doubt_answers ALTER COLUMN question_id DROP NOT NULL';
+  END IF;
+
+  ALTER TABLE public.community_item_votes
+    ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS item_type text,
+    ADD COLUMN IF NOT EXISTS item_id text,
+    ADD COLUMN IF NOT EXISTS user_id uuid,
+    ADD COLUMN IF NOT EXISTS vote_type smallint NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+  ALTER TABLE public.community_item_votes DROP CONSTRAINT IF EXISTS community_item_votes_target_table_check;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'community_item_votes' AND column_name = 'target_table'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.community_item_votes ALTER COLUMN target_table DROP NOT NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'community_item_votes' AND column_name = 'target_id'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.community_item_votes ALTER COLUMN target_id DROP NOT NULL';
+  END IF;
+END;
+$$;
+
+-- 8B. Targeted UUID-to-TEXT & Legacy Column Type Conversions (Runs BEFORE any UPDATEs)
+DO $$
+DECLARE
+  v_rec RECORD;
+  v_fk RECORD;
+  v_tags_type text;
+  v_file_size_type text;
+  v_acad_year_type text;
+  v_course_sem_type text;
+  v_rev_by_type text;
+BEGIN
+  FOR v_rec IN
+    SELECT c.table_name, c.column_name, c.column_default
+    FROM information_schema.columns c
+    WHERE c.table_schema = 'public'
+      AND c.data_type = 'uuid'
+      AND (c.table_name, c.column_name) IN (
+        ('universities', 'id'),
+        ('departments', 'id'), ('departments', 'university_id'),
+        ('courses', 'id'), ('courses', 'university_id'), ('courses', 'department_id'), ('courses', 'program_id'),
+        ('academic_programs', 'id'), ('academic_programs', 'university_id'),
+        ('academic_information', 'university_id'), ('academic_information', 'program_id'),
+        ('program_enrollments', 'program_id'),
+        ('university_follows', 'university_id'),
+        ('stored_files', 'id'),
+        ('study_notes', 'id'), ('study_notes', 'file_id'), ('study_notes', 'university_id'),
+        ('study_notes', 'program_id'), ('study_notes', 'department_id'), ('study_notes', 'course_id'),
+        ('study_note_upvotes', 'note_id'),
+        ('study_note_downloads', 'note_id'),
+        ('forum_topics', 'id'),
+        ('forum_posts', 'id'), ('forum_posts', 'topic_id'), ('forum_posts', 'accepted_comment_id'), ('forum_posts', 'resource_id'),
+        ('forum_comments', 'id'), ('forum_comments', 'post_id'), ('forum_comments', 'parent_id'), ('forum_comments', 'parent_comment_id'),
+        ('forum_post_votes', 'post_id'),
+        ('forum_comment_votes', 'comment_id'),
+        ('forum_bookmarks', 'post_id'),
+        ('forum_reports', 'target_id'), ('forum_reports', 'post_id'), ('forum_reports', 'comment_id'),
+        ('program_discussions', 'id'), ('program_discussions', 'program_id'),
+        ('program_discussion_comments', 'id'), ('program_discussion_comments', 'discussion_id'),
+        ('program_discussion_comments', 'parent_id'), ('program_discussion_comments', 'post_id'),
+        ('program_doubts', 'id'), ('program_doubts', 'program_id'), ('program_doubts', 'accepted_answer_id'),
+        ('program_doubt_answers', 'id'), ('program_doubt_answers', 'doubt_id'), ('program_doubt_answers', 'question_id'),
+        ('university_discussions', 'id'), ('university_discussions', 'university_id'),
+        ('university_discussions', 'department_id'), ('university_discussions', 'course_id'),
+        ('university_discussion_comments', 'id'), ('university_discussion_comments', 'discussion_id'),
+        ('university_discussion_comments', 'parent_id'), ('university_discussion_comments', 'post_id'),
+        ('university_doubts', 'id'), ('university_doubts', 'university_id'),
+        ('university_doubts', 'department_id'), ('university_doubts', 'course_id'), ('university_doubts', 'accepted_answer_id'),
+        ('university_doubt_answers', 'id'), ('university_doubt_answers', 'doubt_id'), ('university_doubt_answers', 'question_id'),
+        ('community_item_votes', 'item_id'), ('community_item_votes', 'target_id')
+      )
+  LOOP
+    FOR v_fk IN
+      SELECT DISTINCT con.conname, rel.relname AS tbl_name
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+      LEFT JOIN pg_class confrel ON confrel.oid = con.confrelid
+      LEFT JOIN pg_attribute a_src ON a_src.attrelid = con.conrelid AND a_src.attnum = ANY(con.conkey)
+      LEFT JOIN pg_attribute a_tgt ON a_tgt.attrelid = con.confrelid AND a_tgt.attnum = ANY(con.confkey)
+      WHERE nsp.nspname = 'public'
+        AND con.contype = 'f'
+        AND (
+          (rel.relname = v_rec.table_name AND a_src.attname = v_rec.column_name)
+          OR (confrel.relname = v_rec.table_name AND a_tgt.attname = v_rec.column_name)
+        )
+    LOOP
+      EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT IF EXISTS %I', v_fk.tbl_name, v_fk.conname);
+    END LOOP;
+
+    IF v_rec.column_default IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I DROP DEFAULT', v_rec.table_name, v_rec.column_name);
+    END IF;
+
+    EXECUTE format(
+      'ALTER TABLE public.%I ALTER COLUMN %I TYPE text USING %I::text',
+      v_rec.table_name, v_rec.column_name, v_rec.column_name
+    );
+
+    IF v_rec.column_name = 'id' AND coalesce(v_rec.column_default, '') LIKE '%gen_random_uuid%' THEN
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I SET DEFAULT gen_random_uuid()::text', v_rec.table_name, v_rec.column_name);
+    END IF;
+  END LOOP;
+
+  SELECT data_type INTO v_course_sem_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'courses' AND column_name = 'semester';
+
+  IF v_course_sem_type IN ('integer', 'bigint', 'smallint') THEN
+    ALTER TABLE public.courses ALTER COLUMN semester DROP DEFAULT;
+    ALTER TABLE public.courses ALTER COLUMN semester TYPE text USING coalesce(semester::text, '');
+    ALTER TABLE public.courses ALTER COLUMN semester SET DEFAULT '';
+  END IF;
+
+  SELECT data_type INTO v_acad_year_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'academic_year';
+
+  IF v_acad_year_type IN ('integer', 'bigint', 'smallint') THEN
+    ALTER TABLE public.study_notes ALTER COLUMN academic_year DROP DEFAULT;
+    ALTER TABLE public.study_notes ALTER COLUMN academic_year TYPE text USING coalesce(academic_year::text, '');
+    ALTER TABLE public.study_notes ALTER COLUMN academic_year SET DEFAULT '';
+  END IF;
+
+  SELECT data_type INTO v_file_size_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'file_size';
+
+  IF v_file_size_type = 'text' THEN
+    ALTER TABLE public.study_notes ALTER COLUMN file_size DROP DEFAULT;
+    ALTER TABLE public.study_notes ALTER COLUMN file_size TYPE bigint USING (
+      coalesce(nullif(regexp_replace(file_size, '[^0-9]', '', 'g'), '')::bigint, file_size_bytes, 0)
+    );
+    ALTER TABLE public.study_notes ALTER COLUMN file_size SET DEFAULT 0;
+  END IF;
+
+  SELECT data_type INTO v_tags_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'tags';
+
+  IF v_tags_type = 'jsonb' THEN
+    ALTER TABLE public.study_notes
+      ALTER COLUMN tags DROP DEFAULT,
+      ALTER COLUMN tags TYPE text[] USING (
+        CASE
+          WHEN jsonb_typeof(tags) = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(tags))
+          ELSE '{}'::text[]
+        END
+      ),
+      ALTER COLUMN tags SET DEFAULT '{}'::text[];
+  END IF;
+
+  SELECT data_type INTO v_rev_by_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'forum_reports' AND column_name = 'reviewed_by';
+
+  IF v_rev_by_type = 'text' THEN
+    ALTER TABLE public.forum_reports ALTER COLUMN reviewed_by DROP DEFAULT;
+    ALTER TABLE public.forum_reports ALTER COLUMN reviewed_by TYPE uuid USING (
+      CASE
+        WHEN reviewed_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN reviewed_by::uuid
+        ELSE NULL
+      END
+    );
+  END IF;
+END;
+$$;
+
+-- 8C. Safe Data Backfills, Alias Synchronization & Pre-Index Deduplication
+DO $$
+BEGIN
+  UPDATE public.academic_programs
+  SET
+    title = coalesce(nullif(btrim(title), ''), nullif(btrim(name), ''), 'Program'),
+    name  = coalesce(nullif(btrim(name), ''), nullif(btrim(title), ''), 'Program')
+  WHERE title IS NULL OR btrim(title) = '' OR name IS NULL OR btrim(name) = '';
+
+  UPDATE public.academic_information SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.academic_information SET university_id = NULL WHERE btrim(coalesce(university_id::text, '')) = '';
+  UPDATE public.academic_information SET program_id = NULL WHERE btrim(coalesce(program_id::text, '')) = '';
+
+  UPDATE public.user_settings_preferences SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.program_enrollments SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.university_follows SET id = gen_random_uuid() WHERE id IS NULL;
+
+  UPDATE public.stored_files
+  SET
+    id = coalesce(nullif(btrim(id::text), ''), gen_random_uuid()::text),
+    content_hash = coalesce(nullif(btrim(content_hash), ''), nullif(btrim(sha256_hash), ''), md5(storage_bucket || ':' || storage_path || ':' || coalesce(id::text, ''))),
+    sha256_hash  = coalesce(nullif(btrim(sha256_hash), ''), nullif(btrim(content_hash), ''), md5(storage_bucket || ':' || storage_path || ':' || coalesce(id::text, ''))),
+    uploaded_by  = coalesce(uploaded_by, created_by),
+    created_by   = coalesce(created_by, uploaded_by);
+
+  UPDATE public.study_notes
+  SET
+    university_id = NULLIF(btrim(coalesce(university_id::text, '')), ''),
+    program_id    = NULLIF(btrim(coalesce(program_id::text, '')), ''),
+    department_id = NULLIF(btrim(coalesce(department_id::text, '')), ''),
+    course_id     = NULLIF(btrim(coalesce(course_id::text, '')), ''),
+    file_id       = NULLIF(btrim(coalesce(file_id::text, '')), ''),
+    content_hash  = NULLIF(btrim(coalesce(content_hash, '')), ''),
+    file_sha256   = NULLIF(btrim(coalesce(file_sha256, '')), '');
+
+  UPDATE public.study_note_upvotes SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.study_note_downloads SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.forum_post_votes SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.forum_comment_votes SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.forum_bookmarks SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.forum_reports SET id = gen_random_uuid() WHERE id IS NULL;
+  UPDATE public.community_item_votes SET id = gen_random_uuid() WHERE id IS NULL;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'forum_posts' AND column_name = 'body'
+  ) THEN
+    EXECUTE 'UPDATE public.forum_posts SET content = coalesce(nullif(btrim(content), ''''), body, title, ''Post'') WHERE btrim(coalesce(content, '''')) = ''''';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'forum_comments' AND column_name = 'body'
+  ) THEN
+    EXECUTE 'UPDATE public.forum_comments SET content = coalesce(nullif(btrim(content), ''''), body, ''Comment'') WHERE btrim(coalesce(content, '''')) = ''''';
+  END IF;
+
+  UPDATE public.forum_reports SET post_id = NULL WHERE btrim(coalesce(post_id::text, '')) = '';
+  UPDATE public.forum_reports SET comment_id = NULL WHERE btrim(coalesce(comment_id::text, '')) = '';
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'program_discussion_comments' AND column_name = 'post_id'
+  ) THEN
+    EXECUTE 'UPDATE public.program_discussion_comments SET discussion_id = coalesce(nullif(btrim(discussion_id::text), ''''), post_id::text) WHERE discussion_id IS NULL OR btrim(discussion_id::text) = ''''';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'program_doubt_answers' AND column_name = 'question_id'
+  ) THEN
+    EXECUTE 'UPDATE public.program_doubt_answers SET doubt_id = coalesce(nullif(btrim(doubt_id::text), ''''), question_id::text) WHERE doubt_id IS NULL OR btrim(doubt_id::text) = ''''';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'university_discussion_comments' AND column_name = 'post_id'
+  ) THEN
+    EXECUTE 'UPDATE public.university_discussion_comments SET discussion_id = coalesce(nullif(btrim(discussion_id::text), ''''), post_id::text) WHERE discussion_id IS NULL OR btrim(discussion_id::text) = ''''';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'university_doubt_answers' AND column_name = 'question_id'
+  ) THEN
+    EXECUTE 'UPDATE public.university_doubt_answers SET doubt_id = coalesce(nullif(btrim(doubt_id::text), ''''), question_id::text) WHERE doubt_id IS NULL OR btrim(doubt_id::text) = ''''';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'community_item_votes' AND column_name = 'target_table'
+  ) THEN
+    EXECUTE $q$
+      UPDATE public.community_item_votes
+      SET item_type = CASE target_table
+        WHEN 'program_discussions' THEN 'program_discussion'
+        WHEN 'program_discussion_comments' THEN 'program_discussion_comment'
+        WHEN 'program_doubts' THEN 'program_doubt'
+        WHEN 'program_doubt_answers' THEN 'program_doubt_answer'
+        WHEN 'university_discussions' THEN 'university_discussion'
+        WHEN 'university_discussion_comments' THEN 'university_discussion_comment'
+        WHEN 'university_doubts' THEN 'university_doubt'
+        WHEN 'university_doubt_answers' THEN 'university_doubt_answer'
+        ELSE coalesce(item_type, target_table)
+      END
+      WHERE item_type IS NULL OR btrim(item_type) = ''
+    $q$;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'community_item_votes' AND column_name = 'target_id'
+  ) THEN
+    EXECUTE 'UPDATE public.community_item_votes SET item_id = coalesce(nullif(btrim(item_id::text), ''''), target_id::text) WHERE item_id IS NULL OR btrim(item_id::text) = ''''';
+  END IF;
+
+  -- Pre-deduplicate rows before creating unique indexes in Section 9
+  DELETE FROM public.study_note_upvotes a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY note_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM public.study_note_upvotes
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.forum_post_votes a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY post_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+    FROM public.forum_post_votes
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.forum_comment_votes a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY comment_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+    FROM public.forum_comment_votes
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.forum_bookmarks a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY post_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM public.forum_bookmarks
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.community_item_votes a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY item_type, item_id, user_id ORDER BY updated_at DESC, created_at DESC, id DESC) AS rn
+    FROM public.community_item_votes
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.program_enrollments a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY program_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM public.program_enrollments
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+
+  DELETE FROM public.university_follows a
+  USING (
+    SELECT id, row_number() OVER (PARTITION BY university_id, user_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM public.university_follows
+  ) b
+  WHERE a.id = b.id AND b.rn > 1;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 9. COMPLETE INDEX INVENTORY (Runs AFTER all columns & types are reconciled)
+-- -----------------------------------------------------------------------------
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stored_files_id_uniq ON public.stored_files(id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stored_files_content_hash_uniq ON public.stored_files(content_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stored_files_sha256_hash_uniq ON public.stored_files(sha256_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_academic_info_user_id_uniq ON public.academic_information(user_id);
 CREATE INDEX IF NOT EXISTS idx_academic_info_user_id ON public.academic_information(user_id);
 CREATE INDEX IF NOT EXISTS idx_academic_info_university_id ON public.academic_information(university_id);
 CREATE INDEX IF NOT EXISTS idx_academic_info_program_id ON public.academic_information(program_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_settings_user_id_uniq ON public.user_settings_preferences(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON public.user_settings_preferences(user_id);
 CREATE INDEX IF NOT EXISTS idx_moderator_roles_assigned_by ON public.moderator_roles(assigned_by);
 
@@ -761,8 +1717,10 @@ CREATE INDEX IF NOT EXISTS idx_courses_created_by ON public.courses(created_by);
 
 CREATE INDEX IF NOT EXISTS idx_academic_programs_university_id ON public.academic_programs(university_id);
 CREATE INDEX IF NOT EXISTS idx_academic_programs_created_by ON public.academic_programs(created_by);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_program_enrollments_prog_user_uniq ON public.program_enrollments(program_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_program_enrollments_program_user ON public.program_enrollments(program_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_program_enrollments_user_id ON public.program_enrollments(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_university_follows_uni_user_uniq ON public.university_follows(university_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_university_follows_uni_user ON public.university_follows(university_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_university_follows_user_id ON public.university_follows(user_id);
 
@@ -777,12 +1735,12 @@ CREATE INDEX IF NOT EXISTS idx_study_notes_course_id ON public.study_notes(cours
 CREATE INDEX IF NOT EXISTS idx_study_notes_author_id ON public.study_notes(author_id);
 CREATE INDEX IF NOT EXISTS idx_study_notes_uploader_id ON public.study_notes(uploader_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_study_note_upvotes_note_user_uniq ON public.study_note_upvotes(note_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_study_note_upvotes_note_user ON public.study_note_upvotes(note_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_study_note_upvotes_user_id ON public.study_note_upvotes(user_id);
 CREATE INDEX IF NOT EXISTS idx_study_note_downloads_note_id ON public.study_note_downloads(note_id);
 CREATE INDEX IF NOT EXISTS idx_study_note_downloads_user_id ON public.study_note_downloads(user_id);
 
--- Partial unique indexes for authenticated permanent deduplication & anonymous daily deduplication
 CREATE UNIQUE INDEX IF NOT EXISTS idx_study_note_downloads_auth_uniq
   ON public.study_note_downloads(note_id, user_id)
   WHERE user_id IS NOT NULL;
@@ -797,10 +1755,13 @@ CREATE INDEX IF NOT EXISTS idx_forum_posts_author_id ON public.forum_posts(autho
 CREATE INDEX IF NOT EXISTS idx_forum_comments_post_id ON public.forum_comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_forum_comments_parent_id ON public.forum_comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_forum_comments_author_id ON public.forum_comments(author_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_forum_post_votes_post_user_uniq ON public.forum_post_votes(post_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_post_votes_post_user ON public.forum_post_votes(post_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_post_votes_user_id ON public.forum_post_votes(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_forum_comment_votes_comment_user_uniq ON public.forum_comment_votes(comment_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_comment_votes_comment_user ON public.forum_comment_votes(comment_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_comment_votes_user_id ON public.forum_comment_votes(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_forum_bookmarks_post_user_uniq ON public.forum_bookmarks(post_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_bookmarks_post_user ON public.forum_bookmarks(post_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_bookmarks_user_id ON public.forum_bookmarks(user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_reports_post_id ON public.forum_reports(post_id);
@@ -830,10 +1791,11 @@ CREATE INDEX IF NOT EXISTS idx_uni_doubts_course_id ON public.university_doubts(
 CREATE INDEX IF NOT EXISTS idx_uni_doubts_author_id ON public.university_doubts(author_id);
 CREATE INDEX IF NOT EXISTS idx_uni_doubt_answers_doubt_id ON public.university_doubt_answers(doubt_id);
 CREATE INDEX IF NOT EXISTS idx_uni_doubt_answers_author_id ON public.university_doubt_answers(author_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_community_item_votes_item_user_uniq ON public.community_item_votes(item_type, item_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_community_item_votes_user_id ON public.community_item_votes(user_id);
 
 -- -----------------------------------------------------------------------------
--- 9. PUBLIC STUDENT PROFILES VIEW (Privacy-Masked, Zero Email/Student ID Leak)
+-- 10. PUBLIC STUDENT PROFILES VIEW (Privacy-Masked, Zero Email/Student ID Leak)
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW public.public_student_profiles AS
 SELECT
@@ -858,192 +1820,6 @@ LEFT JOIN public.academic_information ai ON ai.user_id = p.id
 WHERE coalesce(usp.public_profile, true) = true;
 
 ALTER VIEW public.public_student_profiles OWNER TO postgres;
-
--- =============================================================================
--- XEUSAR v4 COMPLETE SECURITY & PUBLIC SYNC REPAIR — PART 2 OF 4
--- Schema Reconciliation, UUID-to-TEXT Conversion, Class A/B Quarantine & FKs
--- =============================================================================
-
--- -----------------------------------------------------------------------------
--- 10. IDEMPOTENT COLUMN RECONCILIATION & TARGETED UUID-TO-TEXT CONVERSION
--- -----------------------------------------------------------------------------
-DO $$
-DECLARE
-  v_rec RECORD;
-  v_fk RECORD;
-  v_pages_type text;
-  v_tags_type text;
-BEGIN
-  -- 10.1 Fix study_notes.pages if a prior migration typed it as integer instead of jsonb
-  SELECT data_type INTO v_pages_type
-  FROM information_schema.columns
-  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'pages';
-
-  IF v_pages_type IN ('integer', 'bigint', 'smallint') THEN
-    ALTER TABLE public.study_notes ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1;
-    EXECUTE 'UPDATE public.study_notes SET page_count = GREATEST(1, COALESCE(pages, 1))';
-    ALTER TABLE public.study_notes DROP COLUMN pages;
-    ALTER TABLE public.study_notes ADD COLUMN pages jsonb NOT NULL DEFAULT '[]'::jsonb;
-  END IF;
-
-  -- 10.2 Ensure critical reconciled columns exist on legacy tables before conversion
-  ALTER TABLE public.profiles
-    ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT 'Student',
-    ADD COLUMN IF NOT EXISTS full_name text NOT NULL DEFAULT 'Student',
-    ADD COLUMN IF NOT EXISTS setup_completed boolean NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'student',
-    ADD COLUMN IF NOT EXISTS points integer NOT NULL DEFAULT 0;
-
-  ALTER TABLE public.academic_information
-    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS education_level text NOT NULL DEFAULT 'undergraduate',
-    ADD COLUMN IF NOT EXISTS academic_stage text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS institution_name text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS degree_program text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS major text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS field_of_study text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS academic_year text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS semester text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS current_semester text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS student_id_number text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS graduation_year integer DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS enrollment_verified boolean NOT NULL DEFAULT false;
-
-  ALTER TABLE public.user_settings_preferences
-    ADD COLUMN IF NOT EXISTS account_settings jsonb NOT NULL DEFAULT '{}'::jsonb,
-    ADD COLUMN IF NOT EXISTS privacy_settings jsonb NOT NULL DEFAULT '{"public_badge_enabled": true, "show_uni_on_notes": true}'::jsonb,
-    ADD COLUMN IF NOT EXISTS notification_settings jsonb NOT NULL DEFAULT '{"email_Resource_updates": true, "discussion_replies": true}'::jsonb,
-    ADD COLUMN IF NOT EXISTS appearance_settings jsonb NOT NULL DEFAULT '{"compact_mode": false}'::jsonb,
-    ADD COLUMN IF NOT EXISTS preferred_subjects text[] NOT NULL DEFAULT '{}'::text[],
-    ADD COLUMN IF NOT EXISTS study_preferences jsonb NOT NULL DEFAULT '{}'::jsonb,
-    ADD COLUMN IF NOT EXISTS preferred_language text NOT NULL DEFAULT 'en',
-    ADD COLUMN IF NOT EXISTS theme_preference text NOT NULL DEFAULT 'system',
-    ADD COLUMN IF NOT EXISTS theme text NOT NULL DEFAULT 'system',
-    ADD COLUMN IF NOT EXISTS content_discovery_preferences jsonb NOT NULL DEFAULT '{"prioritize_User_uni": true, "hide_archived": false}'::jsonb,
-    ADD COLUMN IF NOT EXISTS public_profile boolean NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS show_academic_info boolean NOT NULL DEFAULT false;
-
-  ALTER TABLE public.stored_files
-    ADD COLUMN IF NOT EXISTS content_hash text,
-    ADD COLUMN IF NOT EXISTS sha256_hash text,
-    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
-    ADD COLUMN IF NOT EXISTS file_url text NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS uploaded_by uuid DEFAULT auth.uid(),
-    ADD COLUMN IF NOT EXISTS created_by uuid DEFAULT auth.uid(),
-    ADD COLUMN IF NOT EXISTS reference_count integer NOT NULL DEFAULT 1;
-
-  ALTER TABLE public.study_notes
-    ADD COLUMN IF NOT EXISTS pages jsonb NOT NULL DEFAULT '[]'::jsonb,
-    ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1,
-    ADD COLUMN IF NOT EXISTS storage_bucket text NOT NULL DEFAULT 'study-materials',
-    ADD COLUMN IF NOT EXISTS storage_path text DEFAULT '',
-    ADD COLUMN IF NOT EXISTS content_hash text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS file_sha256 text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS file_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS university_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS program_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS department_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS course_id text DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS author_id uuid DEFAULT auth.uid(),
-    ADD COLUMN IF NOT EXISTS uploader_id uuid DEFAULT auth.uid(),
-    ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS is_published boolean NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS is_restricted boolean NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'approved';
-
-  -- Convert jsonb tags to text[] on study_notes if needed
-  SELECT data_type INTO v_tags_type
-  FROM information_schema.columns
-  WHERE table_schema = 'public' AND table_name = 'study_notes' AND column_name = 'tags';
-
-  IF v_tags_type = 'jsonb' THEN
-    ALTER TABLE public.study_notes
-      ALTER COLUMN tags DROP DEFAULT,
-      ALTER COLUMN tags TYPE text[] USING (
-        CASE
-          WHEN jsonb_typeof(tags) = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(tags))
-          ELSE '{}'::text[]
-        END
-      ),
-      ALTER COLUMN tags SET DEFAULT '{}'::text[];
-  END IF;
-
-  -- 10.3 Targeted UUID-to-TEXT conversion (Section 7.1)
-  CREATE TEMP TABLE IF NOT EXISTS _saved_fk_defs (
-    conname text PRIMARY KEY,
-    table_name text NOT NULL,
-    condef text NOT NULL
-  ) ON COMMIT DROP;
-
-  FOR v_rec IN
-    SELECT c.table_name, c.column_name
-    FROM information_schema.columns c
-    WHERE c.table_schema = 'public'
-      AND c.data_type = 'uuid'
-      AND (c.table_name, c.column_name) IN (
-        ('universities', 'id'),
-        ('departments', 'id'), ('departments', 'university_id'),
-        ('courses', 'id'), ('courses', 'university_id'), ('courses', 'department_id'),
-        ('academic_programs', 'id'), ('academic_programs', 'university_id'),
-        ('academic_information', 'university_id'), ('academic_information', 'program_id'),
-        ('program_enrollments', 'program_id'),
-        ('university_follows', 'university_id'),
-        ('stored_files', 'id'),
-        ('study_notes', 'id'), ('study_notes', 'file_id'), ('study_notes', 'university_id'),
-        ('study_notes', 'program_id'), ('study_notes', 'department_id'), ('study_notes', 'course_id'),
-        ('study_note_upvotes', 'note_id'),
-        ('study_note_downloads', 'note_id'),
-        ('forum_topics', 'id'),
-        ('forum_posts', 'id'), ('forum_posts', 'topic_id'),
-        ('forum_comments', 'id'), ('forum_comments', 'post_id'), ('forum_comments', 'parent_id'),
-        ('forum_post_votes', 'post_id'),
-        ('forum_comment_votes', 'comment_id'),
-        ('forum_bookmarks', 'post_id'),
-        ('forum_reports', 'target_id'), ('forum_reports', 'post_id'), ('forum_reports', 'comment_id'),
-        ('program_discussions', 'id'), ('program_discussions', 'program_id'),
-        ('program_discussion_comments', 'id'), ('program_discussion_comments', 'discussion_id'), ('program_discussion_comments', 'parent_id'),
-        ('program_doubts', 'id'), ('program_doubts', 'program_id'), ('program_doubts', 'accepted_answer_id'),
-        ('program_doubt_answers', 'id'), ('program_doubt_answers', 'doubt_id'),
-        ('university_discussions', 'id'), ('university_discussions', 'university_id'),
-        ('university_discussions', 'department_id'), ('university_discussions', 'course_id'),
-        ('university_discussion_comments', 'id'), ('university_discussion_comments', 'discussion_id'), ('university_discussion_comments', 'parent_id'),
-        ('university_doubts', 'id'), ('university_doubts', 'university_id'),
-        ('university_doubts', 'department_id'), ('university_doubts', 'course_id'), ('university_doubts', 'accepted_answer_id'),
-        ('university_doubt_answers', 'id'), ('university_doubt_answers', 'doubt_id'),
-        ('community_item_votes', 'item_id')
-      )
-  LOOP
-    FOR v_fk IN
-      SELECT DISTINCT con.conname, rel.relname AS tbl_name, pg_get_constraintdef(con.oid) AS condef
-      FROM pg_constraint con
-      JOIN pg_class rel ON rel.oid = con.conrelid
-      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-      LEFT JOIN pg_class confrel ON confrel.oid = con.confrelid
-      LEFT JOIN pg_attribute a_src ON a_src.attrelid = con.conrelid AND a_src.attnum = ANY(con.conkey)
-      LEFT JOIN pg_attribute a_tgt ON a_tgt.attrelid = con.confrelid AND a_tgt.attnum = ANY(con.confkey)
-      WHERE nsp.nspname = 'public'
-        AND con.contype = 'f'
-        AND (
-          (rel.relname = v_rec.table_name AND a_src.attname = v_rec.column_name)
-          OR (confrel.relname = v_rec.table_name AND a_tgt.attname = v_rec.column_name)
-        )
-    LOOP
-      INSERT INTO _saved_fk_defs (conname, table_name, condef)
-      VALUES (v_fk.conname, v_fk.tbl_name, v_fk.condef)
-      ON CONFLICT (conname) DO NOTHING;
-
-      EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT IF EXISTS %I', v_fk.tbl_name, v_fk.conname);
-    END LOOP;
-
-    EXECUTE format(
-      'ALTER TABLE public.%I ALTER COLUMN %I TYPE text USING %I::text',
-      v_rec.table_name, v_rec.column_name, v_rec.column_name
-    );
-  END LOOP;
-END;
-$$;
 
 -- -----------------------------------------------------------------------------
 -- 11. CLASS A: SAFE AUTOMATIC DATA REPAIRS (DETERMINISTIC ONLY)
@@ -1073,8 +1849,8 @@ ON CONFLICT (user_id) DO NOTHING;
 
 UPDATE public.stored_files
 SET
-  content_hash = coalesce(nullif(btrim(content_hash), ''), nullif(btrim(sha256_hash), ''), md5(storage_bucket || ':' || storage_path)),
-  sha256_hash  = coalesce(nullif(btrim(sha256_hash), ''), nullif(btrim(content_hash), ''), md5(storage_bucket || ':' || storage_path)),
+  content_hash = coalesce(nullif(btrim(content_hash), ''), nullif(btrim(sha256_hash), ''), md5(storage_bucket || ':' || storage_path || ':' || coalesce(id::text, ''))),
+  sha256_hash  = coalesce(nullif(btrim(sha256_hash), ''), nullif(btrim(content_hash), ''), md5(storage_bucket || ':' || storage_path || ':' || coalesce(id::text, ''))),
   uploaded_by  = coalesce(uploaded_by, created_by),
   created_by   = coalesce(created_by, uploaded_by)
 WHERE content_hash IS NULL OR sha256_hash IS NULL OR uploaded_by IS DISTINCT FROM created_by;
@@ -1109,7 +1885,22 @@ VALUES
   ('career-internships', 'Careers & Scholarships', 'Careers & Scholarships', 'career-internships', 'Internships, scholarships, and career guidance', 'Briefcase', '#EC4899', 'Career', 6),
   ('university-life', 'Campus & University Life', 'Campus & University Life', 'university-life', 'Admissions, societies, hostels, and student life', 'GraduationCap', '#6366F1', 'Community', 7),
   ('announcements', 'Platform Announcements', 'Platform Announcements', 'announcements', 'Official Xeusar updates and community announcements', 'Megaphone', '#EF4444', 'Official', 8)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT DO NOTHING;
+
+-- Ensure any topic_id already referenced by existing forum_posts exists in forum_topics
+INSERT INTO public.forum_topics (id, name, title, slug, description, category)
+SELECT DISTINCT
+  fp.topic_id,
+  initcap(replace(fp.topic_id, '-', ' ')),
+  initcap(replace(fp.topic_id, '-', ' ')),
+  fp.topic_id,
+  'Community discussion topic',
+  'General'
+FROM public.forum_posts fp
+WHERE fp.topic_id IS NOT NULL
+  AND btrim(fp.topic_id) <> ''
+  AND NOT EXISTS (SELECT 1 FROM public.forum_topics ft WHERE ft.id = fp.topic_id OR ft.slug = fp.topic_id)
+ON CONFLICT DO NOTHING;
 
 DO $$
 DECLARE
