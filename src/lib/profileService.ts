@@ -47,8 +47,21 @@ export const DEFAULT_USER_PREFERENCES: UserPreferencesData = {
 // VALIDATION UTILITIES
 // ============================================================================
 
+export function normalizeUsernameInput(raw: string): string {
+  if (typeof raw !== 'string') return '';
+  let cleaned = raw.trim().toLowerCase().replace(/\s+/g, '');
+  // Strip leading @ if user typed @username
+  cleaned = cleaned.replace(/^@+/, '');
+  // If browser autofill or user pasted an email address (e.g. muhammadtahatrue@gmail.com),
+  // extract the handle before the @ symbol
+  if (cleaned.includes('@')) {
+    cleaned = cleaned.split('@')[0] || '';
+  }
+  return cleaned;
+}
+
 export function validateUsernameFormat(username: string): { valid: boolean; error?: string } {
-  const trimmed = username.trim();
+  const trimmed = normalizeUsernameInput(username);
   if (!trimmed) {
     return { valid: false, error: 'Username is required.' };
   }
@@ -148,7 +161,7 @@ export async function checkUsernameAvailability(
     return { available: false, error: formatCheck.error };
   }
 
-  const normalized = username.trim().toLowerCase();
+  const normalized = normalizeUsernameInput(username);
 
   try {
     // 1. Try security-definer RPC function first
@@ -786,7 +799,7 @@ export async function saveUserProfileToSupabase(
   }
 
   const cleanDisplayName = payload.displayName.trim();
-  const cleanUsername = payload.username.trim().toLowerCase();
+  const cleanUsername = normalizeUsernameInput(payload.username);
   const cleanBio = payload.bio?.trim() || null;
   const cleanAvatar = payload.avatarUrl?.trim() || null;
 

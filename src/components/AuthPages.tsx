@@ -21,6 +21,7 @@ import { getSupabaseInstance } from '../lib/supabaseClient.ts';
 import {
   validateDisplayName,
   validateUsernameFormat,
+  normalizeUsernameInput,
   validateEmailFormat,
   validatePasswordStrength,
   checkUsernameAvailability,
@@ -140,7 +141,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   // Debounced username format + availability check during signup
   useEffect(() => {
     if (mode !== 'signup') return;
-    const trimmed = username.trim().toLowerCase();
+    const trimmed = normalizeUsernameInput(username);
     if (!trimmed) {
       setUsernameAvailable(null);
       setUsernameHint(null);
@@ -257,7 +258,9 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     const domDisplayName =
       (formEl.elements.namedItem('displayName') as HTMLInputElement | null)?.value ?? '';
     const domUsername =
-      (formEl.elements.namedItem('username') as HTMLInputElement | null)?.value ?? '';
+      (formEl.elements.namedItem('handle') as HTMLInputElement | null)?.value ??
+      (formEl.elements.namedItem('username') as HTMLInputElement | null)?.value ??
+      '';
     const domEmail =
       (formEl.elements.namedItem('email') as HTMLInputElement | null)?.value ?? '';
     const domPassword =
@@ -266,7 +269,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
       (formEl.elements.namedItem('confirmPassword') as HTMLInputElement | null)?.value ?? '';
 
     const rawDisplayName = (displayName || domDisplayName).trim();
-    const rawUsername = (username || domUsername).trim().toLowerCase().replace(/\s+/g, '');
+    const rawUsername = normalizeUsernameInput(username || domUsername);
     const rawEmail = (email || domEmail).trim().toLowerCase();
     const rawPassword = password || domPassword;
     const rawConfirmPassword = confirmPassword || domConfirmPassword;
@@ -888,22 +891,22 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
                   {/* Username */}
                   <div>
-                    <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
                       <label
                         htmlFor="xeusar-signup-username"
-                        className="block text-xs font-semibold text-white/85"
+                        className="block text-xs font-semibold text-white/85 shrink-0"
                       >
                         Username <span className="text-cyan-400">*</span>
                       </label>
                       {checkingUsername && (
-                        <span className="text-[10px] font-mono text-white/50 flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin" />
+                        <span className="text-[10px] font-mono text-white/50 flex items-center gap-1 truncate">
+                          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
                           Checking...
                         </span>
                       )}
                       {!checkingUsername && usernameHint && (
                         <span
-                          className={`text-[10px] font-mono ${
+                          className={`text-[10px] font-mono text-right truncate ${
                             usernameAvailable ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
@@ -915,13 +918,17 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                       <AtSign className="w-4 h-4 text-cyan-400/70 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       <input
                         id="xeusar-signup-username"
-                        name="username"
+                        name="handle"
                         type="text"
                         required
-                        autoComplete="username"
+                        autoComplete="off"
                         value={username}
                         onChange={(e) => {
-                          setUsername(e.target.value.toLowerCase().replace(/\s+/g, ''));
+                          setUsername(normalizeUsernameInput(e.target.value));
+                          if (errorMsg) setErrorMsg(null);
+                        }}
+                        onInput={(e) => {
+                          setUsername(normalizeUsernameInput((e.target as HTMLInputElement).value));
                           if (errorMsg) setErrorMsg(null);
                         }}
                         placeholder="amina_t"
@@ -948,7 +955,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
                         name="email"
                         type="email"
                         required
-                        autoComplete="email"
+                        autoComplete="username email"
                         value={email}
                         onChange={(e) => {
                           setEmail(e.target.value);
