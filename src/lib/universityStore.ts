@@ -212,33 +212,58 @@ export function registerCustomUniversity(details: {
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(details.studentId)) {
-    sb.from('universities')
-      .upsert(
-        [
-          {
-            id: newCustomUni.id,
-            name: newCustomUni.name,
-            short_name: newCustomUni.shortName,
-            location: newCustomUni.location,
-            country: newCustomUni.country,
-            badge: newCustomUni.badge,
-            logo_url: newCustomUni.logoUrl,
-            banner_url: newCustomUni.bannerUrl,
-            disciplines: newCustomUni.disciplines,
-            website: newCustomUni.website,
-            established_year: newCustomUni.establishedYear,
-            verified_students: 1,
-            description: newCustomUni.description,
-            is_member_restricted: false,
-            created_by: details.studentId
-          }
-        ],
-        { onConflict: 'id' }
-      )
-      .then(() => {}, () => {});
+    ensureUniversityExistsInSupabase(sb, newCustomUni, details.studentId).catch(() => {});
   }
 
   return newCustomUni;
+}
+
+export async function ensureUniversityExistsInSupabase(
+  supabaseClient: SupabaseClient | null,
+  universityOrId: University | string | null | undefined,
+  userId?: string | null
+): Promise<boolean> {
+  if (!supabaseClient || !universityOrId) return false;
+  const uni =
+    typeof universityOrId === 'string'
+      ? getUniversityById(universityOrId) || findUniversityByNameOrFuzzy(universityOrId)
+      : universityOrId;
+  if (!uni || !uni.id) return false;
+
+  try {
+    const { data: existing } = await supabaseClient
+      .from('universities')
+      .select('id')
+      .eq('id', uni.id)
+      .maybeSingle();
+    if (existing?.id) return true;
+
+    const cleanUid = isUuidString(userId) ? userId!.trim() : undefined;
+    const payload: Record<string, any> = {
+      id: uni.id,
+      name: uni.name,
+      short_name: uni.shortName || '',
+      slug: uni.id,
+      location: uni.location || uni.city || 'Pakistan',
+      country: uni.country || 'Pakistan',
+      website: uni.website || '',
+      description: uni.description || '',
+      logo_url: uni.logoUrl || '',
+      banner_url: uni.bannerUrl || '',
+      type: (uni.sector || 'public').toLowerCase(),
+      access_scope: uni.isMemberRestricted ? 'members_only' : 'public'
+    };
+    if (cleanUid) {
+      payload.created_by = cleanUid;
+    }
+
+    const { error } = await supabaseClient
+      .from('universities')
+      .upsert([payload], { onConflict: 'id', ignoreDuplicates: true });
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 export function registerStudentToUniversity(studentId: string, universityId: string): void {
@@ -498,32 +523,35 @@ export function addDiscussionPost(
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(payload.authorId)) {
-    sb.from('university_discussions')
-      .insert([
+    (async () => {
+      await ensureUniversityExistsInSupabase(sb, newPost.universityId, payload.authorId);
+      const tags = [
+        newPost.courseTag ? `course:${newPost.courseTag}` : '',
+        newPost.authorMajor ? `major:${newPost.authorMajor}` : '',
+        newPost.authorUniversity ? `uni:${newPost.authorUniversity}` : ''
+      ].filter(Boolean);
+      const { error } = await sb.from('university_discussions').insert([
         {
           id: newPost.id,
           university_id: newPost.universityId,
           title: newPost.title,
           content: newPost.content,
           category: newPost.category,
-          course_tag: newPost.courseTag || null,
+          tags,
           author_id: payload.authorId,
           author_name: newPost.authorName,
-          author_avatar: newPost.authorAvatar || null,
-          author_major: newPost.authorMajor || null,
-          author_university: newPost.authorUniversity,
-          upvotes_count: 1,
-          comments_count: 0,
+          author_avatar: newPost.authorAvatar || '',
           is_pinned: false
         }
-      ])
-      .then(() => {
-        sb.rpc('adjust_community_upvote', {
-          p_table: 'university_discussions',
-          p_id: newPost.id,
-          p_delta: 1
-        }).then(() => {}, () => {});
-      }, () => {});
+      ]);
+      if (!error) {
+        await sb.rpc('toggle_community_vote', {
+          p_item_type: 'university_discussion',
+          p_item_id: newPost.id,
+          p_vote: 1
+        });
+      }
+    })().catch(() => {});
   }
 
   return newPost;
@@ -599,13 +627,11 @@ export function addDiscussionComment(
   if (sb && isUuidString(payload.authorId)) {
     const commentRow = {
       id: newComment.id,
-      post_id: newComment.postId,
+      discussion_id: newComment.postId,
       author_id: payload.authorId,
       author_name: newComment.authorName,
-      author_avatar: newComment.authorAvatar || null,
-      author_university: newComment.authorUniversity,
-      content: newComment.content,
-      upvotes_count: 0
+      author_avatar: newComment.authorAvatar || '',
+      content: newComment.content
     };
     sb.from('university_discussion_comments')
       .insert([commentRow])
@@ -662,10 +688,10 @@ export function toggleDiscussionUpvote(postId: string): { upvoted: boolean; coun
 
   const sb = getSupabaseInstance();
   if (sb) {
-    sb.rpc('adjust_community_upvote', {
-      p_table: 'university_discussions',
-      p_id: postId,
-      p_delta: hasUpvoted ? -1 : 1
+    sb.rpc('toggle_community_vote', {
+      p_item_type: 'university_discussion',
+      p_item_id: postId,
+      p_vote: 1
     }).then(() => {}, () => {});
   }
 
@@ -786,32 +812,31 @@ export function addDoubtQuestion(
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(payload.authorId)) {
-    sb.from('university_doubts')
-      .insert([
+    (async () => {
+      await ensureUniversityExistsInSupabase(sb, newQuestion.universityId, payload.authorId);
+      const { error } = await sb.from('university_doubts').insert([
         {
           id: newQuestion.id,
           university_id: newQuestion.universityId,
           title: newQuestion.title,
+          question: newQuestion.content,
           content: newQuestion.content,
-          department: newQuestion.department,
-          course_code: newQuestion.courseCode,
+          subject: newQuestion.courseCode || newQuestion.department || 'General',
           tags: newQuestion.tags,
-          attachments: newQuestion.attachments || [],
           author_id: payload.authorId,
           author_name: newQuestion.authorName,
-          author_avatar: newQuestion.authorAvatar || null,
-          author_university: newQuestion.authorUniversity,
-          upvotes_count: 1,
-          status: 'unanswered'
+          author_avatar: newQuestion.authorAvatar || '',
+          is_resolved: false
         }
-      ])
-      .then(() => {
-        sb.rpc('adjust_community_upvote', {
-          p_table: 'university_doubts',
-          p_id: newQuestion.id,
-          p_delta: 1
-        }).then(() => {}, () => {});
-      }, () => {});
+      ]);
+      if (!error) {
+        await sb.rpc('toggle_community_vote', {
+          p_item_type: 'university_doubt',
+          p_item_id: newQuestion.id,
+          p_vote: 1
+        });
+      }
+    })().catch(() => {});
   }
 
   return newQuestion;
@@ -892,14 +917,11 @@ export function addDoubtAnswer(
   if (sb && isUuidString(payload.authorId)) {
     const answerRow = {
       id: newAnswer.id,
-      question_id: newAnswer.questionId,
+      doubt_id: newAnswer.questionId,
       author_id: payload.authorId,
       author_name: newAnswer.authorName,
-      author_avatar: newAnswer.authorAvatar || null,
-      author_role: newAnswer.authorRole || 'Peer Member',
-      author_university: newAnswer.authorUniversity,
+      author_avatar: newAnswer.authorAvatar || '',
       content: newAnswer.content,
-      upvotes_count: 0,
       is_accepted: false
     };
     sb.from('university_doubt_answers')
@@ -972,21 +994,11 @@ export function acceptDoubtAnswer(
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(activeUserId)) {
-    sb.from('university_doubts')
-      .update({ status: 'answered', accepted_answer_id: answerId })
-      .eq('id', questionId)
-      .eq('author_id', activeUserId!)
-      .then(() => {}, () => {});
-    sb.from('university_doubt_answers')
-      .update({ is_accepted: false })
-      .eq('question_id', questionId)
-      .then(() => {
-        sb.from('university_doubt_answers')
-          .update({ is_accepted: true })
-          .eq('id', answerId)
-          .eq('question_id', questionId)
-          .then(() => {}, () => {});
-      }, () => {});
+    sb.rpc('accept_doubt_answer', {
+      p_scope: 'university',
+      p_doubt_id: questionId,
+      p_answer_id: answerId
+    }).then(() => {}, () => {});
   }
 }
 
@@ -1023,10 +1035,10 @@ export function toggleDoubtUpvote(questionId: string): { upvoted: boolean; count
 
   const sb = getSupabaseInstance();
   if (sb) {
-    sb.rpc('adjust_community_upvote', {
-      p_table: 'university_doubts',
-      p_id: questionId,
-      p_delta: hasUpvoted ? -1 : 1
+    sb.rpc('toggle_community_vote', {
+      p_item_type: 'university_doubt',
+      p_item_id: questionId,
+      p_vote: 1
     }).then(() => {}, () => {});
   }
 
@@ -1141,22 +1153,26 @@ export async function syncUniversitiesFromSupabase(
   if (!sb) return;
 
   try {
-    // 1. Merge custom universities from canonical universities table
-    const storedCustom = getCustomUniversities();
+    // 1. Authoritative custom universities from canonical universities table
     const customById = new Map<string, University>();
-    storedCustom.forEach(u => customById.set(u.id, u));
+    const dbUniCounts: Record<string, number> = {};
 
     try {
-      const { data: dbUnis } = await sb.from('universities').select('*').limit(200);
-      if (Array.isArray(dbUnis)) {
+      const { data: dbUnis, error: uniErr } = await sb.from('universities').select('*').limit(300);
+      if (!uniErr && Array.isArray(dbUnis)) {
         for (const row of dbUnis) {
+          if (!row?.id) continue;
+          const followersCount = Number(row.followers_count ?? row.verified_students ?? 0);
+          if (followersCount > 0) {
+            dbUniCounts[row.id] = followersCount;
+          }
           const isMaster = HEC_MASTER_UNIVERSITIES.some(m => m.id === row.id);
-          if (row?.id && !isMaster && !customById.has(row.id)) {
+          if (!isMaster) {
             customById.set(row.id, {
               id: row.id,
               name: row.name,
               shortName: row.short_name || 'UNI',
-              sector: 'Private',
+              sector: row.type === 'public' ? 'Public' : 'Private',
               province: 'Pakistan',
               city: row.location || 'Pakistan',
               location: row.location || 'Pakistan',
@@ -1164,54 +1180,58 @@ export async function syncUniversitiesFromSupabase(
               badge: row.badge || 'Community Added',
               logoUrl: row.logo_url || '',
               bannerUrl: row.banner_url || '',
-              disciplines: Array.isArray(row.disciplines) ? row.disciplines : [],
+              disciplines: Array.isArray(row.disciplines) ? row.disciplines : ['General Studies'],
               website: row.website || 'https://hec.gov.pk',
               establishedYear: Number(row.established_year) || 2024,
-              verifiedStudents: Math.max(1, Number(row.verified_students) || 1),
-              totalCoursesCount: Number(row.total_courses_count) || 0,
+              verifiedStudents: Math.max(1, followersCount || 1),
+              totalCoursesCount: Number(row.courses_count ?? row.total_courses_count) || 0,
               description: row.description || '',
-              hecRecognized: true,
+              hecRecognized: Boolean(row.is_verified),
               isCustom: true,
               status: 'verified',
-              isMemberRestricted: Boolean(row.is_member_restricted)
+              isMemberRestricted: row.access_scope === 'members_only' || row.access_scope === 'verified_members_only'
             });
           }
         }
+        saveCustomUniversities(Array.from(customById.values()));
       }
     } catch {}
 
-    saveCustomUniversities(Array.from(customById.values()));
-
-    // 2. Sync aggregated student enrollments per university via SECURITY DEFINER RPC (never querying private academic_information rows)
-    const enrollments = getStudentEnrollments();
+    // 2. Compute authoritative student enrollments per university from live Supabase profiles + notes (replaces stale local counts)
     const studentsPerUni: Record<string, Set<string>> = {};
-    const rpcUniCounts: Record<string, number> = {};
 
     try {
-      const { data: cohortRows } = await sb.rpc('get_public_cohort_counts');
-      if (Array.isArray(cohortRows)) {
-        for (const r of cohortRows) {
-          if (r?.institution_name) {
-            const matched = findUniversityByNameOrFuzzy(r.institution_name);
-            if (matched) {
-              const countVal = Math.max(1, Number(r.student_count) || 1);
-              rpcUniCounts[matched.id] = (rpcUniCounts[matched.id] || 0) + countVal;
-            }
+      const { data: pubProfiles } = await sb
+        .from('public_student_profiles')
+        .select('id, institution_name, university_id')
+        .limit(1000);
+      if (Array.isArray(pubProfiles)) {
+        for (const prof of pubProfiles) {
+          if (!prof?.id) continue;
+          const matched =
+            (prof.university_id ? getUniversityById(prof.university_id) : null) ||
+            (prof.institution_name ? findUniversityByNameOrFuzzy(prof.institution_name) : null);
+          if (matched) {
+            if (!studentsPerUni[matched.id]) studentsPerUni[matched.id] = new Set();
+            studentsPerUni[matched.id].add(String(prof.id));
           }
         }
       }
     } catch {}
 
-    const notesList = currentNotes || (() => {
-      try {
-        const raw = localStorage.getItem('xeusar_local_notes_v2');
-        return raw ? (JSON.parse(raw) as StudyNote[]) : [];
-      } catch {
-        return [];
-      }
-    })();
+    const notesList =
+      currentNotes ||
+      (() => {
+        try {
+          const raw = localStorage.getItem('xeusar_local_notes_v2');
+          return raw ? (JSON.parse(raw) as StudyNote[]) : [];
+        } catch {
+          return [];
+        }
+      })();
 
     for (const note of notesList) {
+      if (note.id.startsWith('seed-') || note.isUnsynced) continue;
       const matched =
         (note.universityId ? getUniversityById(note.universityId) : null) ||
         (note.uploaderUniversity ? findUniversityByNameOrFuzzy(note.uploaderUniversity) : null);
@@ -1221,30 +1241,37 @@ export async function syncUniversitiesFromSupabase(
       }
     }
 
+    const freshEnrollments: Record<string, number> = {};
     for (const [uniId, set] of Object.entries(studentsPerUni)) {
-      enrollments[uniId] = Math.max(enrollments[uniId] || 0, set.size);
+      if (set.size > 0) {
+        freshEnrollments[uniId] = set.size;
+      }
     }
-    for (const [uniId, count] of Object.entries(rpcUniCounts)) {
-      enrollments[uniId] = Math.max(enrollments[uniId] || 0, count);
+    for (const [uniId, count] of Object.entries(dbUniCounts)) {
+      if (count > 0) {
+        freshEnrollments[uniId] = Math.max(freshEnrollments[uniId] || 0, count);
+      }
     }
-    saveStudentEnrollments(enrollments);
+    saveStudentEnrollments(freshEnrollments);
 
     // Hydrate user's persisted community votes if signed in
     const activeUserId = getActiveUserIdFromStorage();
-    const upvotedList = new Set<string>(getCommunityUpvotes(activeUserId));
+    const upvotedList = new Set<string>();
     if (isUuidString(activeUserId)) {
       try {
         const { data: voteRows } = await sb
           .from('community_item_votes')
-          .select('target_table, target_id')
+          .select('item_type, item_id, vote_type')
           .eq('user_id', activeUserId!)
-          .in('target_table', ['university_discussions', 'university_doubts']);
+          .in('item_type', ['university_discussion', 'university_doubt']);
         if (Array.isArray(voteRows)) {
           for (const vr of voteRows) {
-            if (vr.target_table === 'university_discussions') {
-              upvotedList.add(`disc-${vr.target_id}`);
-            } else if (vr.target_table === 'university_doubts') {
-              upvotedList.add(`doubt-${vr.target_id}`);
+            if ((vr.vote_type ?? 1) > 0) {
+              if (vr.item_type === 'university_discussion') {
+                upvotedList.add(`disc-${vr.item_id}`);
+              } else if (vr.item_type === 'university_doubt') {
+                upvotedList.add(`doubt-${vr.item_id}`);
+              }
             }
           }
           try {
@@ -1257,36 +1284,38 @@ export async function syncUniversitiesFromSupabase(
       } catch {}
     }
 
-    // 3. Merge University Discussions & Comments from canonical tables
-    const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
-    const localDiscs: DiscussionPost[] = rawDisc ? JSON.parse(rawDisc) : [...INITIAL_DISCUSSIONS];
+    // 3. Authoritative University Discussions & Comments from canonical tables
     const discById = new Map<string, DiscussionPost>();
-    localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
+    INITIAL_DISCUSSIONS.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
 
     try {
-      const { data: dbDiscs } = await sb
+      const { data: dbDiscs, error: discErr } = await sb
         .from('university_discussions')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200);
-      if (Array.isArray(dbDiscs)) {
+      if (!discErr && Array.isArray(dbDiscs)) {
         for (const row of dbDiscs) {
-          if (row?.id) {
+          if (row?.id && row.moderation_status !== 'rejected' && row.moderation_status !== 'archived') {
             const existing = discById.get(row.id);
+            const rowTags: string[] = Array.isArray(row.tags) ? row.tags : [];
+            const courseTagFromTags = rowTags.find(t => t.startsWith('course:'))?.slice(7);
+            const majorFromTags = rowTags.find(t => t.startsWith('major:'))?.slice(6);
+            const uniFromTags = rowTags.find(t => t.startsWith('uni:'))?.slice(4);
             discById.set(row.id, {
               id: row.id,
               universityId: row.university_id,
               title: row.title,
               content: row.content,
               category: row.category || 'Academic Advice',
-              courseTag: row.course_tag || undefined,
+              courseTag: row.course_tag || courseTagFromTags || undefined,
               authorId: row.author_id || `user-${row.id}`,
               authorName: row.author_name || 'Student Member',
               authorAvatar: row.author_avatar || undefined,
-              authorMajor: row.author_major || 'Student Member',
-              authorUniversity: row.author_university || 'University Campus',
+              authorMajor: row.author_major || majorFromTags || 'Student Member',
+              authorUniversity: row.author_university || uniFromTags || 'University Campus',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count ?? 1),
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count ?? 1),
               hasUpvoted: upvotedList.has(`disc-${row.id}`),
               commentsCount: Number(row.comments_count ?? 0),
               comments: existing?.comments ? [...existing.comments] : [],
@@ -1306,17 +1335,18 @@ export async function syncUniversitiesFromSupabase(
         .limit(500);
       if (Array.isArray(dbComments)) {
         for (const row of dbComments) {
-          if (row?.id) {
+          const parentDiscId = row?.discussion_id || row?.post_id;
+          if (row?.id && parentDiscId && row.moderation_status !== 'rejected') {
             allComments.push({
               id: row.id,
-              postId: row.post_id,
+              postId: parentDiscId,
               authorId: row.author_id || `user-${row.id}`,
               authorName: row.author_name || 'Student Member',
               authorAvatar: row.author_avatar || undefined,
               authorUniversity: row.author_university || 'University Campus',
               content: row.content,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 0,
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count) || 0,
               hasUpvoted: false
             });
           }
@@ -1337,29 +1367,28 @@ export async function syncUniversitiesFromSupabase(
 
     saveAllDiscussions(Array.from(discById.values()));
 
-    // 4. Merge University Doubts & Answers from canonical tables
-    const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
-    const localDoubts: DoubtQuestion[] = rawDoubts ? JSON.parse(rawDoubts) : [...INITIAL_DOUBTS];
+    // 4. Authoritative University Doubts & Answers from canonical tables
     const doubtById = new Map<string, DoubtQuestion>();
-    localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
+    INITIAL_DOUBTS.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
 
     try {
-      const { data: dbDoubts } = await sb
+      const { data: dbDoubts, error: doubtErr } = await sb
         .from('university_doubts')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200);
-      if (Array.isArray(dbDoubts)) {
+      if (!doubtErr && Array.isArray(dbDoubts)) {
         for (const row of dbDoubts) {
-          if (row?.id) {
+          if (row?.id && row.moderation_status !== 'rejected' && row.moderation_status !== 'archived') {
             const existing = doubtById.get(row.id);
+            const isResolved = Boolean(row.is_resolved || row.status === 'answered' || row.accepted_answer_id);
             doubtById.set(row.id, {
               id: row.id,
               universityId: row.university_id,
               title: row.title,
-              content: row.content,
+              content: row.content || row.question || '',
               department: row.department || 'General',
-              courseCode: row.course_code || 'GEN',
+              courseCode: row.course_code || row.subject || 'GEN',
               tags: Array.isArray(row.tags) ? row.tags : [],
               attachments: Array.isArray(row.attachments) ? row.attachments : [],
               authorId: row.author_id || `user-${row.id}`,
@@ -1367,9 +1396,9 @@ export async function syncUniversitiesFromSupabase(
               authorAvatar: row.author_avatar || undefined,
               authorUniversity: row.author_university || 'University Campus',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count ?? 1),
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count ?? 1),
               hasUpvoted: upvotedList.has(`doubt-${row.id}`),
-              status: row.status || 'unanswered',
+              status: isResolved ? 'answered' : 'unanswered',
               acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
               answers: existing?.answers ? [...existing.answers] : []
             });
@@ -1387,10 +1416,11 @@ export async function syncUniversitiesFromSupabase(
         .limit(500);
       if (Array.isArray(dbAnswers)) {
         for (const row of dbAnswers) {
-          if (row?.id) {
+          const parentDoubtId = row?.doubt_id || row?.question_id;
+          if (row?.id && parentDoubtId && row.moderation_status !== 'rejected') {
             allAnswers.push({
               id: row.id,
-              questionId: row.question_id,
+              questionId: parentDoubtId,
               authorId: row.author_id || `user-${row.id}`,
               authorName: row.author_name || 'Student Member',
               authorAvatar: row.author_avatar || undefined,
@@ -1398,7 +1428,7 @@ export async function syncUniversitiesFromSupabase(
               authorUniversity: row.author_university || 'University Campus',
               content: row.content,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 0,
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count) || 0,
               hasUpvoted: false,
               isAccepted: Boolean(row.is_accepted)
             });

@@ -529,6 +529,11 @@ export async function syncNoteUpvoteToSupabase(
   if (!supabase) return;
   try {
     if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(userId)) {
+      const { error: rpcErr } = await supabase.rpc('toggle_study_note_upvote', {
+        p_note_id: noteId
+      });
+      if (!rpcErr) return;
+
       if (upvoted) {
         const { error } = await supabase
           .from('study_note_upvotes')
@@ -583,7 +588,10 @@ export async function syncNoteDownloadToSupabase(
 ): Promise<void> {
   if (!supabase) return;
   try {
-    await supabase.rpc('increment_downloads', { note_id: noteId });
+    const { error } = await supabase.rpc('increment_downloads', { p_note_id: noteId });
+    if (error) {
+      await supabase.rpc('increment_downloads', { note_id: noteId });
+    }
   } catch {
     // Ignore offline errors
   }
@@ -682,6 +690,7 @@ export async function fetchAllNotes(
             row &&
             row.id &&
             row.status !== 'removed' &&
+            row.moderation_status !== 'removed' &&
             !deletedIds.has(String(row.id))
         )
         .map((row: any) => {
@@ -722,8 +731,9 @@ export async function fetchAllNotes(
               row.subject,
             courseId: row.course_id || embeddedMeta.courseId || localMatch?.courseId,
             subject: row.subject,
-            materialType: row.material_type || row.resource_type || 'lecture_notes',
-            academicYear: row.academic_year || new Date().getFullYear(),
+            materialType:
+              row.note_type || row.material_type || row.resource_type || 'lecture_notes',
+            academicYear: Number(row.academic_year) || new Date().getFullYear(),
             semester: row.semester || localMatch?.semester || 'Current Semester',
             semesterNumber: resolvedSemesterNum,
             semesterId: resolvedSemesterNum
@@ -732,13 +742,16 @@ export async function fetchAllNotes(
             professor: row.professor || 'Instructor',
             fileUrl: row.file_url,
             fileName: row.file_name,
-            fileSizeBytes: Number(row.file_size_bytes) || 2048000,
+            fileSizeBytes: Number(row.file_size_bytes ?? row.file_size) || 2048000,
             pageCount: Number(row.page_count) || 10,
             authorId: resolvedUploaderId,
             uploaderId: resolvedUploaderId,
-            uploaderName: row.uploader_name || row.author_name || 'Student Contributor',
+            uploaderName: row.author_name || row.uploader_name || 'Student Contributor',
             uploaderUniversity:
-              row.uploader_university || row.author_university || row.university || 'Open Campus',
+              row.author_university ||
+              row.uploader_university ||
+              row.university ||
+              'Open Campus',
             universityId:
               row.university_id ||
               embeddedMeta.universityId ||
@@ -753,6 +766,7 @@ export async function fetchAllNotes(
               row.degree_tier || embeddedMeta.degreeTier || localMatch?.degreeTier,
             contentHash:
               row.content_hash ||
+              row.file_sha256 ||
               embeddedMeta.contentHash ||
               localMatch?.contentHash,
             storagePath:
@@ -761,8 +775,8 @@ export async function fetchAllNotes(
               localMatch?.storagePath,
             isRestricted: Boolean(row.is_restricted),
             isUnsynced: false,
-            downloadsCount: Number(row.downloads_count ?? row.downloads) || 0,
-            upvotesCount: Number(row.upvotes_count ?? row.upvotes) || 0,
+            downloadsCount: Number(row.downloads ?? row.downloads_count) || 0,
+            upvotesCount: Number(row.upvotes ?? row.upvotes_count) || 0,
             hasUpvoted: upvotes.has(id),
             createdAt: row.created_at,
             updatedAt: row.updated_at || row.created_at,
@@ -797,20 +811,91 @@ export async function fetchAllNotes(
 
     studyNotesTableRows.forEach(n => mergedById.set(n.id, n));
 
-    // Preserve built-in seed notes and any explicitly unsynced notes created by the active user
-    localNotes.forEach(ln => {
-      if (deletedIds.has(ln.id) || mergedById.has(ln.id)) return;
+    const isUuidEffectiveUser = Boolean(
+      effectiveUserId &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveUserId)
+    );
+
+    // Auto-sync any previously unsynced local notes belonging to the authenticated user
+    for (const ln of localNotes) {
+      if (deletedIds.has(ln.id) || mergedById.has(ln.id)) continue;
       const isSeed = SEED_NOTE_IDS.has(ln.id) || ln.id.startsWith('seed-');
-      const isOwnUnsynced = Boolean(
-        ln.isUnsynced && effectiveUserId && ln.uploaderId === effectiveUserId
-      );
-      if (isSeed || isOwnUnsynced) {
+      if (isSeed) {
         mergedById.set(ln.id, {
           ...ln,
           hasUpvoted: upvotes.has(ln.id)
         });
+        continue;
       }
-    });
+
+      const belongsToCurrentUser = Boolean(
+        ln.isUnsynced &&
+          isUuidEffectiveUser &&
+          (!ln.uploaderId ||
+            ln.uploaderId === effectiveUserId ||
+            ln.uploaderId.startsWith('local-uploader-'))
+      );
+
+      if (belongsToCurrentUser && effectiveUserId) {
+        try {
+          const syncPayload: Record<string, any> = {
+            id: ln.id,
+            title: ln.title,
+            description: ln.description || '',
+            subject: ln.subject || 'Engineering',
+            course_code: ln.courseCode || 'CRS-GEN',
+            university: ln.uploaderUniversity || 'Open Campus',
+            university_id: null,
+            program_id: null,
+            course_id: null,
+            semester: ln.semester || 'Semester 1',
+            academic_year: String(ln.academicYear || new Date().getFullYear()),
+            professor: ln.professor || 'Course Instructor',
+            note_type: ln.materialType || 'lecture_notes',
+            resource_type: ln.materialType || 'lecture_notes',
+            storage_bucket: ln.isRestricted ? 'study-materials-restricted' : 'study-materials',
+            storage_path: ln.storagePath || '',
+            file_url: ln.fileUrl || '',
+            file_name: ln.fileName || 'Study_Notes.pdf',
+            file_type: 'application/pdf',
+            mime_type: 'application/pdf',
+            file_size: ln.fileSizeBytes || 142000,
+            file_size_bytes: ln.fileSizeBytes || 142000,
+            content_hash: null,
+            file_sha256: ln.contentHash || null,
+            page_count: ln.pageCount || 4,
+            tags: Array.isArray(ln.tags) ? ln.tags : [],
+            pages: Array.isArray(ln.pages) ? ln.pages : [],
+            upvotes: ln.upvotesCount || 1,
+            downloads: ln.downloadsCount || 0,
+            is_public: !ln.isRestricted,
+            is_published: true,
+            is_restricted: Boolean(ln.isRestricted),
+            author_id: effectiveUserId,
+            uploader_id: effectiveUserId,
+            author_name: ln.uploaderName || 'Student Contributor',
+            author_university: ln.uploaderUniversity || 'Open Campus'
+          };
+
+          const { error: pushErr } = await supabaseClient
+            .from('study_notes')
+            .upsert([syncPayload], { onConflict: 'id' });
+
+          if (!pushErr) {
+            mergedById.set(ln.id, {
+              ...ln,
+              uploaderId: effectiveUserId,
+              isUnsynced: false,
+              syncError: undefined,
+              hasUpvoted: upvotes.has(ln.id)
+            });
+            continue;
+          }
+        } catch {
+          // Ignore background push failure
+        }
+      }
+    }
 
     const finalNotes = Array.from(mergedById.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()

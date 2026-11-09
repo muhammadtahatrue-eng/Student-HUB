@@ -13,7 +13,8 @@ import {
   recordDeletedNoteId,
   classifySupabaseError
 } from './supabaseClient.ts';
-import { getAllPrograms, getProgramById } from './programStore.ts';
+import { getAllPrograms, getProgramById, ensureProgramExistsInSupabase } from './programStore.ts';
+import { ensureUniversityExistsInSupabase } from './universityStore.ts';
 import {
   storeLocalPdfBlob,
   storeUploadedFileAllKeys,
@@ -1316,6 +1317,38 @@ endobj
           ? 'study-materials-restricted'
           : 'study-materials';
 
+      // Ensure referenced university, program, and stored_files rows exist in Supabase before FK insert
+      if (params.universityId) {
+        await ensureUniversityExistsInSupabase(
+          params.supabaseClient,
+          params.universityId,
+          isUuidUploaderId ? effectiveUploaderId : undefined
+        );
+      }
+      if (params.programId) {
+        await ensureProgramExistsInSupabase(
+          params.supabaseClient,
+          params.programId,
+          isUuidUploaderId ? effectiveUploaderId : undefined
+        );
+      }
+      if (contentHash) {
+        try {
+          await params.supabaseClient.rpc('upsert_stored_file', {
+            p_content_hash: contentHash,
+            p_storage_bucket: resolvedTargetBucket,
+            p_storage_path: storagePath,
+            p_file_url: resolvedTargetBucket === 'study-materials-restricted' ? '' : fileUrl,
+            p_original_filename: finalFile ? finalFile.name : `${normalizedCourseName.replace(/\s+/g, '_')}.pdf`,
+            p_mime_type: finalFile?.type || 'application/pdf',
+            p_size_bytes: finalSizeBytes,
+            p_is_public: resolvedTargetBucket === 'study-materials'
+          });
+        } catch {
+          // Ignore if RPC fails
+        }
+      }
+
       const fullPayload: Record<string, any> = {
         id: noteId,
         title: params.title.trim(),
@@ -1323,7 +1356,7 @@ endobj
           params.description.trim() ||
           `Comprehensive ${params.materialType.replace(/_/g, ' ')} for ${normalizedCourseName} (${resolvedSubject}).`,
         course_code: normalizedCode,
-        course_id: params.courseId || null,
+        course_id: null,
         subject: resolvedSubject,
         note_type: params.materialType,
         resource_type: params.materialType,
@@ -1347,8 +1380,10 @@ endobj
         university: params.uploaderUniversity.trim() || 'Open Campus',
         university_id: params.universityId || null,
         program_id: params.programId || null,
-        content_hash: contentHash,
-        file_sha256: contentHash,
+        content_hash: contentHash || null,
+        file_sha256: contentHash || null,
+        upvotes: 1,
+        downloads: 0,
         is_public: params.isPublic !== false && !params.isRestricted,
         is_published: params.isPublished !== false,
         is_restricted: Boolean(params.isRestricted),
@@ -1359,24 +1394,37 @@ endobj
         pages: notePages
       };
 
-      const { error: fullInsertErr } = await params.supabaseClient
+      let { error: fullInsertErr } = await params.supabaseClient
         .from('study_notes')
         .insert([fullPayload]);
+
+      // If any FK constraint still rejects optional reference IDs, retry with nullable FK columns cleared
+      if (fullInsertErr && fullInsertErr.code === '23503') {
+        const safeFkPayload: Record<string, any> = {
+          ...fullPayload,
+          university_id: null,
+          program_id: null,
+          course_id: null,
+          content_hash: null
+        };
+        const retryFk = await params.supabaseClient
+          .from('study_notes')
+          .insert([safeFkPayload]);
+        fullInsertErr = retryFk.error;
+      }
 
       if (!fullInsertErr) {
         syncedToSupabase = true;
       } else {
         const classified = classifySupabaseError(fullInsertErr, 'study_notes');
         if (classified.category === 'missing_column') {
-          // Only fallback to base columns if a column is missing (42703 / PGRST204)
           const basePayload: Record<string, any> = {
             id: noteId,
             title: fullPayload.title,
             description: fullPayload.description,
             course_code: fullPayload.course_code,
-            course_name: fullPayload.course_name,
             subject: fullPayload.subject,
-            material_type: fullPayload.material_type,
+            note_type: fullPayload.note_type,
             academic_year: fullPayload.academic_year,
             semester: fullPayload.semester,
             professor: fullPayload.professor,
@@ -1384,15 +1432,16 @@ endobj
             file_name: fullPayload.file_name,
             file_size_bytes: fullPayload.file_size_bytes,
             page_count: fullPayload.page_count,
-            uploader_name: fullPayload.uploader_name,
-            uploader_university: fullPayload.uploader_university,
-            downloads_count: 0,
-            upvotes_count: 1,
+            author_name: fullPayload.author_name,
+            author_university: fullPayload.author_university,
+            downloads: 0,
+            upvotes: 1,
             tags: fullPayload.tags,
             pages: notePages
           };
           if (isUuidUploaderId) {
             basePayload.uploader_id = effectiveUploaderId;
+            basePayload.author_id = effectiveUploaderId;
           }
 
           const { error: baseInsertErr } = await params.supabaseClient
@@ -1410,9 +1459,18 @@ endobj
 
       if (syncedToSupabase && isUuidUploaderId) {
         params.supabaseClient
-          .from('study_note_upvotes')
-          .upsert({ note_id: noteId, user_id: effectiveUploaderId }, { onConflict: 'note_id,user_id' })
-          .then(() => {}, () => {});
+          .rpc('toggle_study_note_upvote', { p_note_id: noteId })
+          .then(
+            ({ error }) => {
+              if (error) {
+                params.supabaseClient!
+                  .from('study_note_upvotes')
+                  .upsert({ note_id: noteId, user_id: effectiveUploaderId }, { onConflict: 'note_id,user_id' })
+                  .then(() => {}, () => {});
+              }
+            },
+            () => {}
+          );
       }
     } else {
       dbSyncWarning = 'Supabase connection is not active; saved to local browser storage only.';
@@ -1603,13 +1661,21 @@ export async function updateSharedResource(
   };
 
   if (params.supabaseClient) {
+    if (updated.programId) {
+      await ensureProgramExistsInSupabase(
+        params.supabaseClient,
+        updated.programId,
+        params.currentUser?.id
+      );
+    }
+
     const { error: extUpdateErr } = await params.supabaseClient
       .from('study_notes')
       .update({
         title: updated.title,
         description: updated.description,
         course_code: updated.courseCode,
-        course_id: updated.courseId || null,
+        course_id: null,
         subject: updated.subject,
         note_type: updated.materialType,
         resource_type: updated.materialType,
@@ -1633,9 +1699,8 @@ export async function updateSharedResource(
             title: updated.title,
             description: updated.description,
             course_code: updated.courseCode,
-            course_name: updated.courseName,
             subject: updated.subject,
-            material_type: updated.materialType,
+            note_type: updated.materialType,
             semester: updated.semester,
             professor: updated.professor,
             tags: updated.tags,

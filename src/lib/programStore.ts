@@ -451,29 +451,56 @@ export function ensureSystemProgramForRegisteredStudent(params: {
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(params.studentId)) {
-    sb.from('academic_programs')
-      .upsert(
-        [
-          {
-            id: newSystemProgram.id,
-            name: newSystemProgram.name,
-            short_code: newSystemProgram.shortCode,
-            degree_tier: newSystemProgram.degreeTier,
-            discipline: newSystemProgram.discipline,
-            description: newSystemProgram.description,
-            duration_years: newSystemProgram.durationYears,
-            total_semesters: newSystemProgram.totalSemesters,
-            total_credits: newSystemProgram.totalCredits,
-            semesters: newSystemProgram.semesters,
-            created_by: params.studentId
-          }
-        ],
-        { onConflict: 'id' }
-      )
-      .then(() => {}, () => {});
+    ensureProgramExistsInSupabase(sb, newSystemProgram, params.studentId).catch(() => {});
   }
 
   return getProgramById(id) || newSystemProgram;
+}
+
+export async function ensureProgramExistsInSupabase(
+  supabaseClient: SupabaseClient | null,
+  programOrId: AcademicProgram | string | null | undefined,
+  userId?: string | null
+): Promise<boolean> {
+  if (!supabaseClient || !programOrId) return false;
+  const prog =
+    typeof programOrId === 'string'
+      ? getProgramById(programOrId) || findProgramByNameOrFuzzy(programOrId)
+      : programOrId;
+  if (!prog || !prog.id) return false;
+
+  try {
+    const { data: existing } = await supabaseClient
+      .from('academic_programs')
+      .select('id')
+      .eq('id', prog.id)
+      .maybeSingle();
+    if (existing?.id) return true;
+
+    const cleanUid = isUuidString(userId) ? userId!.trim() : undefined;
+    const payload: Record<string, any> = {
+      id: prog.id,
+      title: prog.name,
+      name: prog.name,
+      code: prog.shortCode || 'PROG',
+      category: prog.discipline || 'General',
+      level: prog.degreeTier || 'Undergraduate',
+      duration: `${prog.durationYears || 4} Years`,
+      description: prog.description || '',
+      subjects: Array.isArray(prog.semesters) ? prog.semesters : [],
+      access_scope: 'public'
+    };
+    if (cleanUid) {
+      payload.created_by = cleanUid;
+    }
+
+    const { error } = await supabaseClient
+      .from('academic_programs')
+      .upsert([payload], { onConflict: 'id', ignoreDuplicates: true });
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 export function registerCustomProgram(params: {
@@ -640,32 +667,35 @@ export function createProgramDiscussion(params: {
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(params.author.id)) {
-    sb.from('program_discussions')
-      .insert([
+    (async () => {
+      await ensureProgramExistsInSupabase(sb, newPost.programId, params.author.id);
+      const tags = [
+        newPost.semesterTag ? `sem:${newPost.semesterTag}` : '',
+        newPost.courseTag ? `course:${newPost.courseTag}` : '',
+        newPost.authorProgram ? `prog:${newPost.authorProgram}` : '',
+        newPost.authorDegreeTier ? `tier:${newPost.authorDegreeTier}` : ''
+      ].filter(Boolean);
+      const { error } = await sb.from('program_discussions').insert([
         {
           id: newPost.id,
           program_id: newPost.programId,
           title: newPost.title,
           content: newPost.content,
           category: newPost.category,
-          semester_tag: newPost.semesterTag || null,
-          course_tag: newPost.courseTag || null,
+          tags,
           author_id: params.author.id,
           author_name: newPost.authorName,
-          author_avatar: newPost.authorAvatar || null,
-          author_program: newPost.authorProgram,
-          author_degree_tier: newPost.authorDegreeTier || null,
-          upvotes_count: 1,
-          comments_count: 0
+          author_avatar: newPost.authorAvatar || ''
         }
-      ])
-      .then(() => {
-        sb.rpc('adjust_community_upvote', {
-          p_table: 'program_discussions',
-          p_id: newPost.id,
-          p_delta: 1
-        }).then(() => {}, () => {});
-      }, () => {});
+      ]);
+      if (!error) {
+        await sb.rpc('toggle_community_vote', {
+          p_item_type: 'program_discussion',
+          p_item_id: newPost.id,
+          p_vote: 1
+        });
+      }
+    })().catch(() => {});
   }
 
   return newPost;
@@ -697,10 +727,10 @@ export function toggleUpvoteProgramDiscussion(postId: string): { upvotesCount: n
 
     const sb = getSupabaseInstance();
     if (sb) {
-      sb.rpc('adjust_community_upvote', {
-        p_table: 'program_discussions',
-        p_id: postId,
-        p_delta: wasUpvoted ? -1 : 1
+      sb.rpc('toggle_community_vote', {
+        p_item_type: 'program_discussion',
+        p_item_id: postId,
+        p_vote: 1
       }).then(() => {}, () => {});
     }
 
@@ -747,12 +777,10 @@ export function addProgramDiscussionComment(params: {
         .insert([
           {
             id: comment.id,
-            post_id: comment.postId,
+            discussion_id: comment.postId,
             author_id: params.author.id,
             author_name: comment.authorName,
-            author_avatar: comment.authorAvatar || null,
-            author_program: comment.authorProgram,
-            author_degree_tier: comment.authorDegreeTier || null,
+            author_avatar: comment.authorAvatar || '',
             content: comment.content
           }
         ])
@@ -826,31 +854,31 @@ export function createProgramDoubt(params: {
 
   const sb = getSupabaseInstance();
   if (sb && isUuidString(params.author.id)) {
-    sb.from('program_doubts')
-      .insert([
+    (async () => {
+      await ensureProgramExistsInSupabase(sb, newQuestion.programId, params.author.id);
+      const { error } = await sb.from('program_doubts').insert([
         {
           id: newQuestion.id,
           program_id: newQuestion.programId,
           title: newQuestion.title,
+          question: newQuestion.content,
           content: newQuestion.content,
-          course_code: newQuestion.courseCode,
-          semester_tag: newQuestion.semesterTag || null,
+          subject: newQuestion.courseCode || 'GEN',
           tags: newQuestion.tags,
           author_id: params.author.id,
           author_name: newQuestion.authorName,
-          author_avatar: newQuestion.authorAvatar || null,
-          author_program: newQuestion.authorProgram,
-          upvotes_count: 1,
-          status: 'unanswered'
+          author_avatar: newQuestion.authorAvatar || '',
+          is_resolved: false
         }
-      ])
-      .then(() => {
-        sb.rpc('adjust_community_upvote', {
-          p_table: 'program_doubts',
-          p_id: newQuestion.id,
-          p_delta: 1
-        }).then(() => {}, () => {});
-      }, () => {});
+      ]);
+      if (!error) {
+        await sb.rpc('toggle_community_vote', {
+          p_item_type: 'program_doubt',
+          p_item_id: newQuestion.id,
+          p_vote: 1
+        });
+      }
+    })().catch(() => {});
   }
 
   return newQuestion;
@@ -882,10 +910,10 @@ export function toggleUpvoteProgramDoubt(doubtId: string): { upvotesCount: numbe
 
     const sb = getSupabaseInstance();
     if (sb) {
-      sb.rpc('adjust_community_upvote', {
-        p_table: 'program_doubts',
-        p_id: doubtId,
-        p_delta: wasUpvoted ? -1 : 1
+      sb.rpc('toggle_community_vote', {
+        p_item_type: 'program_doubt',
+        p_item_id: doubtId,
+        p_vote: 1
       }).then(() => {}, () => {});
     }
 
@@ -936,12 +964,10 @@ export function addProgramDoubtAnswer(params: {
         .insert([
           {
             id: answer.id,
-            question_id: answer.questionId,
+            doubt_id: answer.questionId,
             author_id: params.author.id,
             author_name: answer.authorName,
-            author_avatar: answer.authorAvatar || null,
-            author_role: answer.authorRole,
-            author_program: answer.authorProgram,
+            author_avatar: answer.authorAvatar || '',
             content: answer.content
           }
         ])
@@ -981,21 +1007,11 @@ export function markAcceptedProgramAnswer(
 
     const sb = getSupabaseInstance();
     if (sb && isUuidString(activeUserId)) {
-      sb.from('program_doubts')
-        .update({ accepted_answer_id: answerId, status: 'answered' })
-        .eq('id', questionId)
-        .eq('author_id', activeUserId!)
-        .then(() => {}, () => {});
-      sb.from('program_doubt_answers')
-        .update({ is_accepted: false })
-        .eq('question_id', questionId)
-        .then(() => {
-          sb.from('program_doubt_answers')
-            .update({ is_accepted: true })
-            .eq('id', answerId)
-            .eq('question_id', questionId)
-            .then(() => {}, () => {});
-        }, () => {});
+      sb.rpc('accept_doubt_answer', {
+        p_scope: 'program',
+        p_doubt_id: questionId,
+        p_answer_id: answerId
+      }).then(() => {}, () => {});
     }
 
     return true;
@@ -1016,78 +1032,88 @@ export async function syncProgramsFromSupabase(
   if (!sb) return;
 
   try {
-    // 1. Merge custom programs from canonical academic_programs table
-    const storedCustom = getStoredSystemPrograms();
+    // 1. Authoritative custom programs from canonical academic_programs table
     const customById = new Map<string, AcademicProgram>();
-    storedCustom.forEach(p => customById.set(p.id, p));
+    const dbProgCounts: Record<string, number> = {};
 
     try {
-      const { data: dbProgs } = await sb.from('academic_programs').select('*').limit(200);
-      if (Array.isArray(dbProgs)) {
+      const { data: dbProgs, error: progErr } = await sb.from('academic_programs').select('*').limit(300);
+      if (!progErr && Array.isArray(dbProgs)) {
         for (const row of dbProgs) {
-          if (row?.id && !customById.has(row.id)) {
+          if (!row?.id) continue;
+          const enrolledCount = Number(row.enrolled_count ?? 0);
+          if (enrolledCount > 0) {
+            dbProgCounts[row.id] = enrolledCount;
+          }
+          const isMaster = MASTER_ACADEMIC_PROGRAMS.some(m => m.id === row.id);
+          if (!isMaster) {
+            const progName = row.name || row.title || 'Academic Program';
+            const tier = ((row.level || row.degree_tier || 'Undergraduate') as DegreeTier);
             customById.set(row.id, {
               id: row.id,
-              name: row.name,
-              shortCode: row.short_code || 'PROG',
-              degreeTier: (row.degree_tier as DegreeTier) || 'Undergraduate',
-              discipline: row.discipline || 'Interdisciplinary Studies',
+              name: progName,
+              shortCode: row.code || row.short_code || 'PROG',
+              degreeTier: tier,
+              discipline: row.category || row.discipline || 'Interdisciplinary Studies',
               description: row.description || '',
-              badge: `${row.degree_tier || 'Undergraduate'} Cohort`,
+              badge: `${tier} Cohort`,
               durationYears: Number(row.duration_years) || 4,
               totalSemesters: Number(row.total_semesters) || 8,
               totalCredits: Number(row.total_credits) || 130,
-              activeStudents: 1,
+              activeStudents: Math.max(1, enrolledCount || 1),
               resourceCount: 0,
               status: 'verified',
               bannerGradient: 'from-cyan-950/40 via-indigo-950/60 to-black',
-              semesters: Array.isArray(row.semesters) ? row.semesters : []
+              semesters: Array.isArray(row.subjects)
+                ? row.subjects
+                : Array.isArray(row.semesters)
+                ? row.semesters
+                : []
             });
           }
         }
+        saveStoredSystemPrograms(Array.from(customById.values()));
       }
     } catch {}
 
-    saveStoredSystemPrograms(Array.from(customById.values()));
-
-    // 2. Sync aggregated public cohort counts via SECURITY DEFINER RPC (never querying private academic_information rows)
-    const studentMap = getStudentProgramMap();
-    const rpcCohortCounts: Record<string, number> = {};
-    try {
-      const { data: cohortRows } = await sb.rpc('get_public_cohort_counts');
-      if (Array.isArray(cohortRows)) {
-        for (const r of cohortRows) {
-          if (r?.major) {
-            const prog = ensureSystemProgramForRegisteredStudent({
-              programName: r.major
-            });
-            if (prog) {
-              const countVal = Math.max(1, Number(r.student_count) || 1);
-              rpcCohortCounts[prog.id] = (rpcCohortCounts[prog.id] || 0) + countVal;
-            }
-          }
-        }
-      }
-    } catch {}
-
-    // Recompute enrollment counts from distinct students + RPC cohort counts + current notes
+    // 2. Compute authoritative cohort counts from live public_student_profiles + notes (replaces stale local counts)
+    const freshStudentMap: Record<string, string> = {};
     const countsByProgram: Record<string, Set<string>> = {};
-    for (const [uid, pid] of Object.entries(studentMap)) {
-      if (!pid) continue;
-      if (!countsByProgram[pid]) countsByProgram[pid] = new Set();
-      countsByProgram[pid].add(uid);
-    }
 
-    const notesList = currentNotes || (() => {
-      try {
-        const raw = localStorage.getItem('xeusar_local_notes_v2');
-        return raw ? (JSON.parse(raw) as StudyNote[]) : [];
-      } catch {
-        return [];
+    try {
+      const { data: pubProfiles } = await sb
+        .from('public_student_profiles')
+        .select('id, degree_program, program_id')
+        .limit(1000);
+      if (Array.isArray(pubProfiles)) {
+        for (const prof of pubProfiles) {
+          if (!prof?.id) continue;
+          const matchedProg =
+            (prof.program_id ? getProgramById(prof.program_id) : undefined) ||
+            (prof.degree_program ? findProgramByNameOrFuzzy(prof.degree_program) : undefined);
+          if (matchedProg) {
+            const uid = String(prof.id);
+            freshStudentMap[uid] = matchedProg.id;
+            if (!countsByProgram[matchedProg.id]) countsByProgram[matchedProg.id] = new Set();
+            countsByProgram[matchedProg.id].add(uid);
+          }
+        }
       }
-    })();
+    } catch {}
+
+    const notesList =
+      currentNotes ||
+      (() => {
+        try {
+          const raw = localStorage.getItem('xeusar_local_notes_v2');
+          return raw ? (JSON.parse(raw) as StudyNote[]) : [];
+        } catch {
+          return [];
+        }
+      })();
 
     for (const note of notesList) {
+      if (note.id.startsWith('seed-') || note.isUnsynced) continue;
       const pids = new Set<string>();
       if (note.programId) pids.add(note.programId);
       if (Array.isArray(note.programIds)) note.programIds.forEach(p => p && pids.add(p));
@@ -1097,31 +1123,38 @@ export async function syncProgramsFromSupabase(
       }
     }
 
-    const enrollmentCounts = getProgramEnrollmentMap();
+    const freshEnrollmentCounts: Record<string, number> = {};
     for (const [pid, set] of Object.entries(countsByProgram)) {
-      enrollmentCounts[pid] = Math.max(enrollmentCounts[pid] || 0, set.size);
+      if (set.size > 0) {
+        freshEnrollmentCounts[pid] = set.size;
+      }
     }
-    for (const [pid, count] of Object.entries(rpcCohortCounts)) {
-      enrollmentCounts[pid] = Math.max(enrollmentCounts[pid] || 0, count);
+    for (const [pid, count] of Object.entries(dbProgCounts)) {
+      if (count > 0) {
+        freshEnrollmentCounts[pid] = Math.max(freshEnrollmentCounts[pid] || 0, count);
+      }
     }
-    saveProgramEnrollmentMap(enrollmentCounts);
+    saveStudentProgramMap(freshStudentMap);
+    saveProgramEnrollmentMap(freshEnrollmentCounts);
 
     // Hydrate user's persisted community votes if signed in
     const activeUserId = getActiveUserFromStorage()?.id;
-    const upvotedSet = getProgramUpvotedSet(activeUserId);
+    const upvotedSet = new Set<string>();
     if (isUuidString(activeUserId)) {
       try {
         const { data: voteRows } = await sb
           .from('community_item_votes')
-          .select('target_table, target_id')
+          .select('item_type, item_id, vote_type')
           .eq('user_id', activeUserId!)
-          .in('target_table', ['program_discussions', 'program_doubts']);
+          .in('item_type', ['program_discussion', 'program_doubt']);
         if (Array.isArray(voteRows)) {
           for (const vr of voteRows) {
-            if (vr.target_table === 'program_discussions') {
-              upvotedSet.add(`disc-${vr.target_id}`);
-            } else if (vr.target_table === 'program_doubts') {
-              upvotedSet.add(`doubt-${vr.target_id}`);
+            if ((vr.vote_type ?? 1) > 0) {
+              if (vr.item_type === 'program_discussion') {
+                upvotedSet.add(`disc-${vr.item_id}`);
+              } else if (vr.item_type === 'program_doubt') {
+                upvotedSet.add(`doubt-${vr.item_id}`);
+              }
             }
           }
           saveProgramUpvotedSet(upvotedSet, activeUserId);
@@ -1129,39 +1162,42 @@ export async function syncProgramsFromSupabase(
       } catch {}
     }
 
-    // 3. Merge Program Discussions & Comments from canonical tables
-    const rawDisc = localStorage.getItem(STORAGE_KEY_DISCUSSIONS);
-    const localDiscs: ProgramDiscussionPost[] = rawDisc
-      ? JSON.parse(rawDisc)
-      : [...INITIAL_PROGRAM_DISCUSSIONS];
+    // 3. Authoritative Program Discussions & Comments from canonical tables
     const discById = new Map<string, ProgramDiscussionPost>();
-    localDiscs.forEach(d => discById.set(d.id, { ...d, comments: [...(d.comments || [])] }));
+    INITIAL_PROGRAM_DISCUSSIONS.forEach(d =>
+      discById.set(d.id, { ...d, comments: [...(d.comments || [])] })
+    );
 
     try {
-      const { data: dbDiscs } = await sb
+      const { data: dbDiscs, error: discErr } = await sb
         .from('program_discussions')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200);
-      if (Array.isArray(dbDiscs)) {
+      if (!discErr && Array.isArray(dbDiscs)) {
         for (const row of dbDiscs) {
-          if (row?.id) {
+          if (row?.id && row.moderation_status !== 'rejected' && row.moderation_status !== 'archived') {
             const existing = discById.get(row.id);
+            const rowTags: string[] = Array.isArray(row.tags) ? row.tags : [];
+            const semTagFromTags = rowTags.find(t => t.startsWith('sem:'))?.slice(4);
+            const courseTagFromTags = rowTags.find(t => t.startsWith('course:'))?.slice(7);
+            const progFromTags = rowTags.find(t => t.startsWith('prog:'))?.slice(5);
+            const tierFromTags = rowTags.find(t => t.startsWith('tier:'))?.slice(5);
             discById.set(row.id, {
               id: row.id,
               programId: row.program_id,
               title: row.title,
               content: row.content,
               category: row.category || 'Course Advice',
-              semesterTag: row.semester_tag || undefined,
-              courseTag: row.course_tag || undefined,
+              semesterTag: row.semester_tag || semTagFromTags || undefined,
+              courseTag: row.course_tag || courseTagFromTags || undefined,
               authorId: row.author_id,
               authorName: row.author_name || 'Student Peer',
               authorAvatar: row.author_avatar || undefined,
-              authorProgram: row.author_program || 'Student Peer',
-              authorDegreeTier: row.author_degree_tier || undefined,
+              authorProgram: row.author_program || progFromTags || 'Student Peer',
+              authorDegreeTier: (row.author_degree_tier || tierFromTags || undefined) as DegreeTier | undefined,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count ?? 1),
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count ?? 1),
               hasUpvoted: upvotedSet.has(`disc-${row.id}`),
               commentsCount: Number(row.comments_count ?? 0),
               isPinned: Boolean(row.is_pinned ?? existing?.isPinned),
@@ -1181,10 +1217,11 @@ export async function syncProgramsFromSupabase(
         .limit(500);
       if (Array.isArray(dbComments)) {
         for (const row of dbComments) {
-          if (row?.id) {
+          const parentDiscId = row?.discussion_id || row?.post_id;
+          if (row?.id && parentDiscId && row.moderation_status !== 'rejected') {
             allComments.push({
               id: row.id,
-              postId: row.post_id,
+              postId: parentDiscId,
               authorId: row.author_id,
               authorName: row.author_name || 'Student Peer',
               authorAvatar: row.author_avatar || undefined,
@@ -1192,7 +1229,7 @@ export async function syncProgramsFromSupabase(
               authorDegreeTier: row.author_degree_tier || undefined,
               content: row.content,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 0,
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count) || 0,
               hasUpvoted: false
             });
           }
@@ -1216,30 +1253,29 @@ export async function syncProgramsFromSupabase(
     );
     localStorage.setItem(STORAGE_KEY_DISCUSSIONS, JSON.stringify(mergedDiscs));
 
-    // 4. Merge Program Doubts & Answers from canonical tables
-    const rawDoubts = localStorage.getItem(STORAGE_KEY_DOUBTS);
-    const localDoubts: ProgramDoubtQuestion[] = rawDoubts
-      ? JSON.parse(rawDoubts)
-      : [...INITIAL_PROGRAM_DOUBTS];
+    // 4. Authoritative Program Doubts & Answers from canonical tables
     const doubtById = new Map<string, ProgramDoubtQuestion>();
-    localDoubts.forEach(q => doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] }));
+    INITIAL_PROGRAM_DOUBTS.forEach(q =>
+      doubtById.set(q.id, { ...q, answers: [...(q.answers || [])] })
+    );
 
     try {
-      const { data: dbDoubts } = await sb
+      const { data: dbDoubts, error: doubtErr } = await sb
         .from('program_doubts')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200);
-      if (Array.isArray(dbDoubts)) {
+      if (!doubtErr && Array.isArray(dbDoubts)) {
         for (const row of dbDoubts) {
-          if (row?.id) {
+          if (row?.id && row.moderation_status !== 'rejected' && row.moderation_status !== 'archived') {
             const existing = doubtById.get(row.id);
+            const isResolved = Boolean(row.is_resolved || row.status === 'answered' || row.accepted_answer_id);
             doubtById.set(row.id, {
               id: row.id,
               programId: row.program_id,
               title: row.title,
-              content: row.content,
-              courseCode: row.course_code || 'GEN',
+              content: row.content || row.question || '',
+              courseCode: row.course_code || row.subject || 'GEN',
               semesterTag: row.semester_tag || undefined,
               tags: Array.isArray(row.tags) ? row.tags : [],
               authorId: row.author_id,
@@ -1247,9 +1283,9 @@ export async function syncProgramsFromSupabase(
               authorAvatar: row.author_avatar || undefined,
               authorProgram: row.author_program || 'Student Peer',
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count ?? 1),
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count ?? 1),
               hasUpvoted: upvotedSet.has(`doubt-${row.id}`),
-              status: row.status || 'unanswered',
+              status: isResolved ? 'answered' : 'unanswered',
               acceptedAnswerId: row.accepted_answer_id || existing?.acceptedAnswerId || undefined,
               answers: existing?.answers ? [...existing.answers] : []
             });
@@ -1267,10 +1303,11 @@ export async function syncProgramsFromSupabase(
         .limit(500);
       if (Array.isArray(dbAnswers)) {
         for (const row of dbAnswers) {
-          if (row?.id) {
+          const parentDoubtId = row?.doubt_id || row?.question_id;
+          if (row?.id && parentDoubtId && row.moderation_status !== 'rejected') {
             allAnswers.push({
               id: row.id,
-              questionId: row.question_id,
+              questionId: parentDoubtId,
               authorId: row.author_id,
               authorName: row.author_name || 'Student Peer',
               authorAvatar: row.author_avatar || undefined,
@@ -1278,7 +1315,7 @@ export async function syncProgramsFromSupabase(
               authorProgram: row.author_program || 'Student Peer',
               content: row.content,
               createdAt: row.created_at || new Date().toISOString(),
-              upvotesCount: Number(row.upvotes_count) || 0,
+              upvotesCount: Number(row.upvotes ?? row.upvotes_count) || 0,
               hasUpvoted: false,
               isAccepted: Boolean(row.is_accepted)
             });

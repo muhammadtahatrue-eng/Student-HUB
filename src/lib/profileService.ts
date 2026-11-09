@@ -10,11 +10,13 @@ import {
 } from '../types/index.ts';
 import {
   findUniversityByNameOrFuzzy,
-  registerStudentToUniversity
+  registerStudentToUniversity,
+  ensureUniversityExistsInSupabase
 } from './universityStore.ts';
 import {
   ensureSystemProgramForRegisteredStudent,
-  unenrollStudentFromProgram
+  unenrollStudentFromProgram,
+  ensureProgramExistsInSupabase
 } from './programStore.ts';
 import { extractCleanDisplayName } from './publicSyncRelay.ts';
 
@@ -553,6 +555,51 @@ export async function fetchAuthenticatedUserProfile(
         })
       : undefined;
 
+  if (emailConfirmed && (matchedUni || systemProgram || institution || majorOrField)) {
+    (async () => {
+      try {
+        if (matchedUni) {
+          await ensureUniversityExistsInSupabase(supabase, matchedUni, userId);
+          await supabase
+            .from('university_follows')
+            .upsert({ university_id: matchedUni.id, user_id: userId }, { onConflict: 'university_id,user_id' });
+        }
+        if (systemProgram) {
+          await ensureProgramExistsInSupabase(supabase, systemProgram, userId);
+          await supabase
+            .from('program_enrollments')
+            .upsert({ program_id: systemProgram.id, user_id: userId }, { onConflict: 'program_id,user_id' });
+        }
+        await supabase.from('academic_information').upsert(
+          {
+            user_id: userId,
+            university_id: matchedUni?.id || null,
+            program_id: systemProgram?.id || null,
+            institution_name: institution || '',
+            degree_program: systemProgram?.name || majorOrField || '',
+            field_of_study: majorOrField || '',
+            major: majorOrField || '',
+            education_level: educationLevel || 'undergraduate',
+            academic_stage: undergraduateStage || '',
+            academic_year: academicYear || '',
+            semester: semester || ''
+          },
+          { onConflict: 'user_id' }
+        );
+        await supabase.from('user_settings_preferences').upsert(
+          {
+            user_id: userId,
+            public_profile: settings.publicBadgeEnabled !== false,
+            show_academic_info: settings.showUniOnNotes !== false
+          },
+          { onConflict: 'user_id' }
+        );
+      } catch {
+        // Ignore background cohort sync errors
+      }
+    })();
+  }
+
   const studentUser: StudentUser = {
     id: userId,
     email,
@@ -776,6 +823,14 @@ export async function saveUserProfileToSupabase(
     registerStudentToUniversity(matchedUniEarly.id, userId);
   }
 
+  // Ensure university and program catalog records exist in Supabase before FK references
+  if (matchedUniEarly) {
+    await ensureUniversityExistsInSupabase(supabase, matchedUniEarly, userId);
+  }
+  if (earlyProgram) {
+    await ensureProgramExistsInSupabase(supabase, earlyProgram, userId);
+  }
+
   // 3. Upsert public.profiles with clean display_name and full_name (no comment-tag payloads)
   const { error: profileError } = await supabase.from('profiles').upsert(
     {
@@ -822,22 +877,42 @@ export async function saveUserProfileToSupabase(
     }
   }
 
-  // 4. Upsert private owner-only public.academic_information
+  // 4. Upsert private owner-only public.academic_information (including university_id, program_id, degree_program)
   const { error: academicError } = await supabase.from('academic_information').upsert(
     {
       user_id: userId,
-      education_level: eduLevel,
-      academic_stage: acadStage,
-      major: cleanMajor,
-      institution_name: cleanInstitution,
-      academic_year: cleanYear,
-      semester: cleanSemester
+      university_id: matchedUniEarly?.id || null,
+      program_id: earlyProgram?.id || null,
+      degree_program: earlyProgram?.name || cleanMajor || '',
+      field_of_study: cleanMajor || '',
+      education_level: eduLevel || 'undergraduate',
+      academic_stage: acadStage || '',
+      major: cleanMajor || '',
+      institution_name: cleanInstitution || '',
+      academic_year: cleanYear || '',
+      semester: cleanSemester || ''
     },
     { onConflict: 'user_id' }
   );
 
   if (academicError && !isIgnorableSchemaOrTableError(academicError)) {
     return { success: false, error: academicError.message };
+  }
+
+  // Sync program_enrollments and university_follows in Supabase
+  try {
+    if (earlyProgram) {
+      await supabase
+        .from('program_enrollments')
+        .upsert({ program_id: earlyProgram.id, user_id: userId }, { onConflict: 'program_id,user_id' });
+    }
+    if (matchedUniEarly) {
+      await supabase
+        .from('university_follows')
+        .upsert({ university_id: matchedUniEarly.id, user_id: userId }, { onConflict: 'university_id,user_id' });
+    }
+  } catch {
+    // Ignore optional enrollment join table errors
   }
 
   // 5. Upsert private owner-only public.user_settings_preferences
@@ -860,6 +935,8 @@ export async function saveUserProfileToSupabase(
   const { error: prefsError } = await supabase.from('user_settings_preferences').upsert(
     {
       user_id: userId,
+      public_profile: finalSettings.publicBadgeEnabled !== false,
+      show_academic_info: finalSettings.showUniOnNotes !== false,
       privacy_settings: {
         public_badge_enabled: finalSettings.publicBadgeEnabled,
         show_uni_on_notes: finalSettings.showUniOnNotes

@@ -670,8 +670,42 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Refresh notes, programs, and universities whenever the authenticated user changes
+  useEffect(() => {
+    const supabase = getSupabaseInstance(supabaseConfig);
+    if (!supabase || !supabaseConfig.isConnected) return;
+    fetchAllNotes(supabase, user?.id)
+      .then((res) => {
+        setNotes(res.notes);
+        syncProgramsFromSupabase(supabase, res.notes).catch(() => {});
+        syncUniversitiesFromSupabase(supabase, res.notes).catch(() => {});
+      })
+      .catch(() => {});
+  }, [user?.id, supabaseConfig.isConnected]);
+
   // Safe data loader & Supabase Auth / Email Verification Callback Handler
   useEffect(() => {
+    const isDeletedOrInvalidAuthUserError = (err: any): boolean => {
+      if (!err) return false;
+      const status = Number(err.status || err.statusCode || 0);
+      const code = String(err.code || '').toLowerCase();
+      const msg = String(err.message || '').toLowerCase();
+      if (status === 401 || status === 403 || status === 404) return true;
+      if (
+        code === 'user_not_found' ||
+        code === 'session_not_found' ||
+        code === 'bad_jwt' ||
+        msg.includes('user from sub claim in jwt does not exist') ||
+        msg.includes('user not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('invalid claim') ||
+        msg.includes('jwt')
+      ) {
+        return true;
+      }
+      return false;
+    };
+
     async function loadData() {
       setIsLoading(true);
       const supabase = getSupabaseInstance(supabaseConfig);
@@ -854,11 +888,16 @@ export default function App() {
             }
           }
 
-          // 3. Confirm authenticated user using getUser() to verify authoritative email_confirmed_at flag
-          if (sessionUser && (!sessionUser.email_confirmed_at || hasCallbackParams)) {
-            const { data: freshUserData } = await supabase.auth.getUser();
+          // 3. Always verify the cached sessionUser against Supabase server via getUser()
+          // so that if an account was deleted in Supabase Dashboard, the stale local JWT is immediately cleared.
+          if (sessionUser) {
+            const { data: freshUserData, error: freshUserErr } = await supabase.auth.getUser();
             if (freshUserData?.user) {
               sessionUser = freshUserData.user;
+            } else if (!freshUserErr || isDeletedOrInvalidAuthUserError(freshUserErr)) {
+              const staleUserId = sessionUser.id;
+              sessionUser = null;
+              await signOutCurrentUser(supabase, staleUserId);
             }
           }
 
@@ -965,10 +1004,8 @@ export default function App() {
               );
             }
           } else if (!sessionUser) {
+            clearUserSpecificLocalState();
             setUser(null);
-            try {
-              localStorage.removeItem('studyvault_active_user');
-            } catch {}
           }
 
           setIsAuthInitializing(false);
@@ -999,12 +1036,17 @@ export default function App() {
           }
 
           if (session?.user) {
-            let activeAuthUser = session.user;
-            if (!activeAuthUser.email_confirmed_at) {
-              const { data: freshUserData } = await supabase.auth.getUser();
-              if (freshUserData?.user) {
-                activeAuthUser = freshUserData.user;
+            let activeAuthUser: any = session.user;
+            const { data: freshUserData, error: freshUserErr } = await supabase.auth.getUser();
+            if (freshUserData?.user) {
+              activeAuthUser = freshUserData.user;
+            } else if (!freshUserErr || isDeletedOrInvalidAuthUserError(freshUserErr)) {
+              await signOutCurrentUser(supabase, activeAuthUser.id);
+              if (isMounted) {
+                setUser(null);
+                setCurrentTab('landing');
               }
+              return;
             }
 
             const isVerified = Boolean(activeAuthUser.email_confirmed_at);
@@ -1105,12 +1147,38 @@ export default function App() {
 
         let sessionUser = data.session?.user ?? null;
 
-        if (sessionUser && !sessionUser.email_confirmed_at) {
-          const { data: freshUserData } = await supabase.auth.getUser();
+        if (sessionUser) {
+          const { data: freshUserData, error: freshUserErr } = await supabase.auth.getUser();
           if (isCancelled) return;
           if (freshUserData?.user) {
             sessionUser = freshUserData.user;
+          } else {
+            const status = Number((freshUserErr as any)?.status || 0);
+            const code = String((freshUserErr as any)?.code || '').toLowerCase();
+            const msg = String(freshUserErr?.message || '').toLowerCase();
+            if (
+              !freshUserErr ||
+              status === 401 ||
+              status === 403 ||
+              status === 404 ||
+              code === 'user_not_found' ||
+              code === 'session_not_found' ||
+              msg.includes('does not exist') ||
+              msg.includes('user not found') ||
+              msg.includes('jwt')
+            ) {
+              const staleId = sessionUser.id;
+              sessionUser = null;
+              await signOutCurrentUser(supabase, staleId);
+              if (!isCancelled) {
+                setUser(null);
+              }
+            }
           }
+        } else if (user && !user.isGuest) {
+          // If Supabase is connected and has no active session, never keep a stale local user logged in
+          clearUserSpecificLocalState(user.id);
+          setUser(null);
         }
 
         // Explicitly check email_confirmed_at on the Supabase Auth user
@@ -1147,17 +1215,13 @@ export default function App() {
         const hasConfirmedSupabaseEmail = Boolean(
           sessionUser && sessionUser.email_confirmed_at
         );
-        const hasConfirmedLocalUser = Boolean(
-          user && !user.isGuest && (user.emailConfirmedAt || user.emailConfirmed === true)
-        );
-        const isVerifiedAuthenticated = hasConfirmedSupabaseEmail || hasConfirmedLocalUser;
+        const isVerifiedAuthenticated = hasConfirmedSupabaseEmail;
 
         // Block unverified local user objects from accessing profile-setup or any dashboard view
-        if (user && !user.isGuest && !hasConfirmedSupabaseEmail && !hasConfirmedLocalUser) {
-          if (user.email && !pendingVerificationEmail) {
-            setPendingVerificationEmail(user.email);
-          }
-          if (isDashboardOrProfileSetupView) {
+        if (user && !user.isGuest && !hasConfirmedSupabaseEmail) {
+          clearUserSpecificLocalState(user.id);
+          setUser(null);
+          if (isDashboardOrProfileSetupView && isRegisteredOnlyTab) {
             setCurrentTab('login');
           }
           return;
